@@ -359,6 +359,50 @@ html, body {
 }
 
 /* New "After" Playful atoms */
+.list-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--list-tint);
+  color: var(--list-ink);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.overdue-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--tint);
+  color: var(--accent-strong);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
 .list-ref {
   display: inline-flex;
   align-items: center;
@@ -386,29 +430,6 @@ html, body {
   font-weight: 500;
   color: var(--list-ink);
   white-space: nowrap;
-}
-
-.overdue-text {
-  font-family: "Geist Mono", ui-monospace, monospace;
-  font-size: 12.5px;
-  line-height: 20px;
-  font-weight: 600;
-  color: var(--danger-ink);
-  white-space: nowrap;
-}
-
-.status-inline {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-size: 12px;
-  line-height: 16px;
-  font-weight: 500;
-  color: var(--ink-2);
-  white-space: nowrap;
-}
-.status-inline .ic {
-  color: var(--accent-strong);
 }
 
 .section-heading {

@@ -13,9 +13,6 @@
       box-shadow: var(--shadow-overlay);
       overflow: hidden;
     }
-    .modal-shell.clean {
-      border: none;
-    }
     .modal-top {
       display: flex;
       align-items: center;
@@ -38,8 +35,7 @@
       gap: 12px;
     }
 
-    /* BEFORE: matches shipped apps/desktop/src/ui/shell/assistant/views.rs */
-    .legacy-card {
+    .provider-card {
       position: relative;
       background: var(--raised);
       border: 1px solid var(--accent);
@@ -50,8 +46,8 @@
       flex-direction: column;
       gap: 10px;
     }
-    .legacy-card::before {
-      /* Shipped PROPOSAL_BAR (3 px) clipped by rounded-lg (10 px) */
+    .provider-card.clipped-rail::before {
+      /* Shipped 3 px left rail clipped by 10 px rounded corners */
       content: "";
       position: absolute;
       left: 0;
@@ -60,6 +56,12 @@
       width: 3px;
       background: var(--accent);
     }
+    .provider-card.clean-border {
+      padding-left: 14px;
+      border-color: var(--accent);
+      box-shadow: inset 0 0 0 0.5px var(--accent);
+    }
+
     .card-row {
       display: flex;
       align-items: center;
@@ -145,7 +147,7 @@
       align-items: center;
       gap: 6px;
     }
-    .legacy-enable-strip {
+    .enable-strip {
       display: flex;
       align-items: center;
       gap: 8px;
@@ -156,7 +158,7 @@
       font-size: 12.5px;
       font-weight: 600;
     }
-    .legacy-info-card {
+    .info-card {
       display: flex;
       align-items: flex-start;
       gap: 8px;
@@ -168,7 +170,7 @@
       line-height: 17px;
       color: var(--ink-2);
     }
-    .legacy-list-box {
+    .list-box {
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
       background: var(--raised);
@@ -183,42 +185,6 @@
       border-bottom: 1px solid var(--line);
     }
     .perm-row:last-child { border-bottom: none; }
-
-    /* AFTER: flat hairline sections, zero dots, zero card-in-card, zero clipped rail */
-    .flat-section {
-      border-top: 1px solid var(--line);
-      padding-top: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-    }
-    .network-meta {
-      font-family: "Geist Mono", ui-monospace, monospace;
-      font-size: 11.5px;
-      line-height: 16px;
-      color: var(--ink-3);
-    }
-    .enable-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding-top: 8px;
-      border-top: 1px solid var(--line);
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--ink);
-    }
-    .privacy-note {
-      font-size: 12px;
-      line-height: 17px;
-      color: var(--ink-3);
-    }
-    .perm-flat {
-      border-top: 1px solid var(--line);
-    }
-    .perm-flat .perm-row {
-      padding: 8px 0;
-    }
 
     /* Footer + titlebar strip beneath each modal */
     .sub-strip {
@@ -268,14 +234,14 @@
   <div class="sheet">
     <div class="sheet-header">
       <h1 class="sheet-title">Assistant settings, provider card &amp; footer</h1>
-      <p class="sheet-subtitle">My Day · Light · Removing status LEDs, clipped rail, nested cards, and sparkles</p>
+      <p class="sheet-subtitle">My Day · Light · Keeping the existing structure; fixing only status dots &amp; clipped left rail</p>
     </div>
 
     <div class="compare-grid">
       <!-- BEFORE -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag">Before — 2 green dots in 1 card, clipped left rail, card-in-card</span>
+          <span class="state-tag">Before — 2 green dots in card, clipped rail, dotted footer &amp; trigger</span>
         </div>
         <div class="modal-shell">
           <div class="modal-top">
@@ -288,7 +254,7 @@
           <div class="modal-body">
             <div class="legacy-caps">MODEL PROVIDER</div>
 
-            <div class="legacy-card">
+            <div class="provider-card clipped-rail">
               <div class="card-row">
                 <span class="provider-name">Your own server</span>
                 <span class="led-caps"><span class="led green"></span>PRIVATE NETWORK</span>
@@ -310,19 +276,19 @@
               <div class="status-line">
                 <span class="status-left"><span class="led green"></span><span class="mono">Connected · 4 models · 38 ms</span></span>
               </div>
-              <div class="legacy-enable-strip">
+              <div class="enable-strip">
                 <span class="ic ic-16" data-lucide="circle-check" style="color:var(--accent-strong)"></span>
                 <span>Enable assistant on this device</span>
               </div>
             </div>
 
-            <div class="legacy-info-card">
+            <div class="info-card">
               <span class="ic ic-16" data-lucide="cloud-off" style="color:var(--ink-3);margin-top:1px"></span>
               <span>No cloud fallback. Prompts and allowed task fields go to the server you enter.</span>
             </div>
 
             <div class="legacy-caps">LISTS THE ASSISTANT CAN SEE</div>
-            <div class="legacy-list-box">
+            <div class="list-box">
               <div class="perm-row">
                 <span style="display:inline-flex;align-items:center;gap:8px" data-list-hue="clay"><span class="ic ic-16" data-glyph="basket" style="color:var(--list-glyph)"></span>Home · Errands</span>
                 <span style="display:inline-flex;align-items:center;gap:5px;color:var(--accent-strong);font-size:12.5px"><span class="ic ic-14" data-lucide="eye"></span>Private only<span class="ic ic-14" data-lucide="chevron-down"></span></span>
@@ -356,64 +322,61 @@
       <!-- AFTER -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag after">After — zero dots, flat hairlines, A mark, failure icons only</span>
+          <span class="state-tag after">After — same structure; no status dots, clean accent border, fault alert</span>
         </div>
-        <div class="modal-shell clean">
+        <div class="modal-shell">
           <div class="modal-top">
             <div class="modal-title-row">
               <span class="agent-mark" data-agent="assistant">A</span>
-              <span>Assistant</span>
+              <span>AI Assistant</span>
             </div>
             <span class="ic ic-16" data-lucide="x" style="color:var(--ink-3)"></span>
           </div>
           <div class="modal-body">
-            <div class="card-row">
-              <span class="section-heading">Model server</span>
-              <span class="network-meta">Private network · no cloud fallback</span>
-            </div>
+            <div class="legacy-caps">MODEL PROVIDER</div>
 
-            <div class="flat-section">
+            <div class="provider-card clean-border">
+              <div class="card-row">
+                <span class="provider-name">Your own server</span>
+                <span class="led-caps" style="color:var(--ink-3)">PRIVATE NETWORK</span>
+              </div>
               <div class="field-grid">
                 <span class="field-label">Base URL</span>
                 <div class="input-box">http://100.64.0.1:11434/v1</div>
                 <span class="field-label">API key</span>
                 <div style="display:flex;gap:8px;align-items:center">
                   <div class="input-box" style="flex:1;color:var(--ink-3)">Key saved · enter to replace</div>
-                  <span style="font-size:12px;font-weight:500;color:var(--ink-2)">Remove</span>
+                  <span style="font-size:12px;font-weight:600;color:var(--accent-strong)">Remove</span>
                 </div>
                 <span class="field-label">Model</span>
                 <div style="display:flex;gap:8px;align-items:center">
                   <div class="input-box" style="flex:1"><span>local-model</span><span class="ic ic-14" data-lucide="chevron-down" style="color:var(--ink-3)"></span></div>
-                  <div class="btn-sm">Test</div>
+                  <div class="btn-sm">Test connection</div>
                 </div>
               </div>
-
-              <div class="status-line" style="padding-left:78px">
-                <span class="mono" style="color:var(--ink-2)">Connected · 4 models</span>
-                <span class="mono" style="color:var(--ink-3)">38 ms</span>
+              <div class="status-line">
+                <span class="status-left"><span class="ic ic-14" data-lucide="check" style="color:var(--ink-2)"></span><span class="mono">Connected · 4 models · 38 ms</span></span>
               </div>
-
-              <div class="enable-row">
-                <span style="display:inline-flex;align-items:center;gap:10px">
-                  <span class="check checked" style="width:18px;height:18px"><span class="ic ic-14" data-lucide="check"></span></span>
-                  <span>Enabled on this device</span>
-                </span>
-                <span class="privacy-note">Prompts stay on your server</span>
+              <div class="enable-strip">
+                <span class="ic ic-16" data-lucide="circle-check" style="color:var(--accent-strong)"></span>
+                <span>Enable assistant on this device</span>
               </div>
             </div>
 
-            <div class="card-row" style="margin-top:4px">
-              <span class="section-heading">Lists the assistant can see</span>
-              <span class="privacy-note">Hidden lists are never sent</span>
+            <div class="info-card">
+              <span class="ic ic-16" data-lucide="cloud-off" style="color:var(--ink-3);margin-top:1px"></span>
+              <span>No cloud fallback. Prompts and allowed task fields go to the server you enter.</span>
             </div>
-            <div class="perm-flat">
+
+            <div class="legacy-caps">LISTS THE ASSISTANT CAN SEE</div>
+            <div class="list-box">
               <div class="perm-row">
-                <span class="list-ref" data-list-hue="clay" style="font-size:13px"><span class="ic ic-16" data-glyph="basket"></span><span class="col-prefix">Home ·</span><span style="color:var(--ink);font-weight:400">Errands</span></span>
-                <span style="display:inline-flex;align-items:center;gap:4px;color:var(--accent-strong);font-size:12.5px;font-weight:500">Private only<span class="ic ic-14" data-lucide="chevron-down"></span></span>
+                <span style="display:inline-flex;align-items:center;gap:8px" data-list-hue="clay"><span class="ic ic-16" data-glyph="basket" style="color:var(--list-glyph)"></span>Home · Errands</span>
+                <span style="display:inline-flex;align-items:center;gap:5px;color:var(--accent-strong);font-size:12.5px"><span class="ic ic-14" data-lucide="eye"></span>Private only<span class="ic ic-14" data-lucide="chevron-down"></span></span>
               </div>
               <div class="perm-row">
-                <span class="list-ref" data-list-hue="rose" style="font-size:13px"><span class="ic ic-16" data-glyph="heart"></span><span class="col-prefix">Home ·</span><span style="color:var(--ink);font-weight:400">Health</span></span>
-                <span style="display:inline-flex;align-items:center;gap:4px;color:var(--ink-3);font-size:12.5px">Hidden<span class="ic ic-14" data-lucide="chevron-down"></span></span>
+                <span style="display:inline-flex;align-items:center;gap:8px" data-list-hue="rose"><span class="ic ic-16" data-glyph="heart" style="color:var(--list-glyph)"></span>Home · Health</span>
+                <span style="display:inline-flex;align-items:center;gap:5px;color:var(--ink-3);font-size:12.5px"><span class="ic ic-14" data-lucide="eye-off"></span>Hidden<span class="ic ic-14" data-lucide="chevron-down"></span></span>
               </div>
             </div>
           </div>
@@ -422,14 +385,14 @@
         <div class="sub-strip">
           <div class="sub-strip-label">Assistant footer (healthy &amp; unreachable) + titlebar trigger</div>
           <div class="assistant-footer-row">
-            <span class="status-left"><span>Private · <span class="mono" style="color:var(--ink)">local-model</span></span><span class="ic ic-14" data-lucide="chevron-down" style="color:var(--ink-3)"></span></span>
+            <span class="status-left"><span>Private network · <span class="mono">local-model</span></span><span class="ic ic-14" data-lucide="chevron-down" style="color:var(--ink-3)"></span></span>
             <span class="status-left" style="color:var(--ink-3)"><span class="ic ic-14" data-lucide="eye-off"></span>1 list hidden</span>
           </div>
           <div class="assistant-footer-row">
             <span class="status-left" style="color:var(--danger-ink);font-weight:500"><span class="ic ic-14" data-lucide="circle-alert"></span><span>Unreachable · <span class="mono">local-model</span></span></span>
             <span class="ask-btn active">
-              <span class="agent-mark" data-agent="assistant" style="width:18px;height:18px;font-size:9.5px">A</span>
-              <span>Assistant</span>
+              <span class="ic ic-14" data-lucide="sparkles" style="color:var(--accent-strong)"></span>
+              <span>Ask AI</span>
               <span class="mono" style="font-size:11px;font-weight:600;color:var(--accent-strong)">1</span>
               <span class="keycap">Ctrl J</span>
             </span>

@@ -2,7 +2,7 @@
 <html lang="en" data-theme="light" data-room-hue="coral">
 <head>
   <meta charset="utf-8" />
-  <title>Board Column & Cards — Before / After</title>
+  <title>Board Columns & Cards — Before / After</title>
   <link rel="stylesheet" href="../../../crates/todo-design/generated/tokens.css" />
   <link rel="stylesheet" href="shared.css" />
   <style>
@@ -22,8 +22,7 @@
       align-items: start;
     }
 
-    /* BEFORE: bordered rounded column wrapping bordered rounded cards + clipped left rail */
-    .legacy-col {
+    .board-col {
       background: var(--canvas);
       border: 1px solid var(--line);
       border-radius: var(--radius-lg);
@@ -53,7 +52,7 @@
       color: var(--ink-3);
     }
 
-    .legacy-card {
+    .board-card {
       position: relative;
       background: var(--raised);
       border: 1px solid var(--line);
@@ -64,12 +63,12 @@
       gap: 8px;
       overflow: hidden;
     }
-    .legacy-card.selected {
+    .board-card.selected-clipped {
       background: var(--wash);
       border-color: var(--accent);
     }
-    .legacy-card.selected::before {
-      /* Reproduces the clipped left accent bar on Android BoardCard / timeline bars */
+    .board-card.selected-clipped::before {
+      /* Shipped full-height 3 px bar clipped by 10 px rounded corners */
       content: "";
       position: absolute;
       left: 0;
@@ -77,6 +76,11 @@
       bottom: 0;
       width: 3px;
       background: var(--accent-strong);
+    }
+    .board-card.selected-clean {
+      background: var(--wash);
+      border-color: var(--accent-strong);
+      box-shadow: inset 0 0 0 0.5px var(--accent-strong);
     }
 
     .dashed-add {
@@ -88,45 +92,6 @@
       justify-content: center;
       gap: 6px;
       font-size: 12.5px;
-      color: var(--ink-3);
-    }
-
-    /* AFTER: open borderless canvas lane (radius 10) + concentric radius-6 cards, clean selection ring */
-    .clean-col {
-      background: var(--canvas);
-      border-radius: var(--radius-lg);
-      padding: 8px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .clean-col .col-head {
-      padding: 4px 6px 6px;
-      border-bottom: 1px solid var(--line);
-      margin-bottom: 2px;
-    }
-    .clean-card {
-      background: var(--raised);
-      border: 1px solid var(--line);
-      border-radius: var(--radius-md);
-      padding: 12px;
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
-    .clean-card.selected {
-      background: var(--wash);
-      border-color: var(--accent-strong);
-      box-shadow: inset 0 0 0 0.5px var(--accent-strong);
-    }
-    .quiet-add {
-      height: 32px;
-      padding: 0 6px;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-size: 12.5px;
-      font-weight: 500;
       color: var(--ink-3);
     }
 
@@ -180,24 +145,24 @@
   <div class="sheet">
     <div class="sheet-header">
       <h1 class="sheet-title">Board columns &amp; cards</h1>
-      <p class="sheet-subtitle">Home renovation (coral room) · Light · Ending card-in-card borders, clipped rail &amp; pills</p>
+      <p class="sheet-subtitle">Home renovation (coral room) · Light · Same lanes &amp; cards; fixing clipped rail, pill dot &amp; diamond</p>
     </div>
 
     <div class="compare-grid">
       <!-- BEFORE -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag">Before — card inside card, clipped left rail, pill &amp; diamond</span>
+          <span class="state-tag">Before — clipped left rail, dot inside list pill, diamond on overdue</span>
         </div>
         <div class="board-stage">
           <div class="board-cols">
-            <div class="legacy-col">
+            <div class="board-col">
               <div class="col-head">
                 <span class="col-head-left"><span class="ic ic-14" data-lucide="status-progress" style="color:var(--accent-strong)"></span>In progress</span>
                 <span class="col-count">2</span>
               </div>
 
-              <div class="legacy-card selected">
+              <div class="board-card selected-clipped">
                 <div class="card-top">
                   <span class="check"></span>
                   <div class="card-title">Strip wallpaper and prime hallway walls</div>
@@ -214,10 +179,10 @@
                 </div>
               </div>
 
-              <div class="legacy-card">
+              <div class="board-card">
                 <div class="card-top">
                   <span class="check overdue"></span>
-                  <div class="card-title">Pick grout colour for bathroom tiles</div>
+                  <div class="card-title">Pick grout color for bathroom tiles</div>
                   <span class="ic ic-14" data-lucide="star" style="color:var(--ink-3);margin-top:2px"></span>
                 </div>
                 <div class="card-meta">
@@ -233,13 +198,13 @@
               <div class="dashed-add"><span class="ic ic-14" data-lucide="plus"></span>Add to In progress</div>
             </div>
 
-            <div class="legacy-col">
+            <div class="board-col">
               <div class="col-head">
                 <span class="col-head-left"><span class="ic ic-14" data-lucide="status-todo" style="color:var(--ink-3)"></span>To do</span>
                 <span class="col-count">2</span>
               </div>
 
-              <div class="legacy-card">
+              <div class="board-card">
                 <div class="card-top">
                   <span class="check"></span>
                   <div class="card-title">Order matte oak flooring samples</div>
@@ -270,17 +235,17 @@
       <!-- AFTER -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag after">After — borderless lanes, concentric cards, clean selection</span>
+          <span class="state-tag after">After — same lanes &amp; cards; clean border, dot-free &amp; diamond-free pills</span>
         </div>
         <div class="board-stage">
           <div class="board-cols">
-            <div class="clean-col">
+            <div class="board-col">
               <div class="col-head">
                 <span class="col-head-left"><span class="ic ic-14" data-lucide="status-progress" style="color:var(--accent-strong)"></span>In progress</span>
                 <span class="col-count">2</span>
               </div>
 
-              <div class="clean-card selected">
+              <div class="board-card selected-clean">
                 <div class="card-top">
                   <span class="check"></span>
                   <div class="card-title">Strip wallpaper and prime hallway walls</div>
@@ -297,31 +262,32 @@
                 </div>
               </div>
 
-              <div class="clean-card">
+              <div class="board-card">
                 <div class="card-top">
                   <span class="check overdue"></span>
-                  <div class="card-title">Pick grout colour for bathroom tiles</div>
+                  <div class="card-title">Pick grout color for bathroom tiles</div>
                   <span class="ic ic-14" data-lucide="star" style="color:var(--ink-3);margin-top:2px"></span>
                 </div>
                 <div class="card-meta">
+                  <span class="list-pill" data-list-hue="coral">Home renovation</span>
                   <span class="tag-tinted" data-list-hue="teal">#bathroom</span>
                 </div>
                 <div class="card-foot">
-                  <span class="overdue-text" style="font-size:12px">1d overdue</span>
+                  <span class="overdue-pill">1d overdue</span>
                   <span class="card-foot-right"><span class="agent-mark" data-agent="codex">X</span></span>
                 </div>
               </div>
 
-              <div class="quiet-add"><span class="ic ic-14" data-lucide="plus"></span>Add task</div>
+              <div class="dashed-add"><span class="ic ic-14" data-lucide="plus"></span>Add to In progress</div>
             </div>
 
-            <div class="clean-col">
+            <div class="board-col">
               <div class="col-head">
                 <span class="col-head-left"><span class="ic ic-14" data-lucide="status-todo" style="color:var(--ink-3)"></span>To do</span>
                 <span class="col-count">2</span>
               </div>
 
-              <div class="clean-card">
+              <div class="board-card">
                 <div class="card-top">
                   <span class="check"></span>
                   <div class="card-title">Order matte oak flooring samples</div>
@@ -338,12 +304,12 @@
                 </div>
               </div>
 
-              <div class="quiet-add"><span class="ic ic-14" data-lucide="plus"></span>Add task</div>
+              <div class="dashed-add"><span class="ic ic-14" data-lucide="plus"></span>Add to To do</div>
             </div>
           </div>
 
           <div class="board-footer-note">
-            <span>Done shows last 7 days</span>
+            <span class="legacy-caps" style="display:inline-flex;align-items:center;gap:6px"><span class="ic ic-14" data-lucide="columns-3"></span>DONE SHOWS LAST 7 DAYS</span>
             <span class="mono" style="font-size:11.5px">4 open</span>
           </div>
         </div>

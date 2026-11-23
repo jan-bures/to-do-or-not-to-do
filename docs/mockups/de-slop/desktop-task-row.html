@@ -132,8 +132,8 @@
       <!-- BEFORE -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag">Before — pill + dot confetti on every row and detail tag</span>
-          <span class="state-note">5 pastel list pills, 5 dots, 1 diamond overdue pill, 1 status chip, detail tags drop # for dots</span>
+          <span class="state-tag">Before — dots in list pills, overdue diamond, dotted detail tags</span>
+          <span class="state-note">5 list dots · 1 overdue diamond · detail tags drop # for dots</span>
         </div>
         <div class="frame">
           <div class="task-list">
@@ -236,8 +236,8 @@
       <!-- AFTER -->
       <div class="panel-col">
         <div class="state-heading">
-          <span class="state-tag after">After — hand-drawn list glyphs, tinted mono #tags, typographic overdue</span>
-          <span class="state-note">Zero dots · Zero pills · --list-glyph + --list-ink (≥ 6.9:1)</span>
+          <span class="state-tag after">After — dot-free tinted pills for list &amp; state, tinted mono #tags</span>
+          <span class="state-note">Zero dots · Zero diamonds · Tinted pills carry list &amp; state cleanly</span>
         </div>
         <div class="frame">
           <div class="task-list after-list">
@@ -246,7 +246,7 @@
               <div class="task-main">
                 <div class="task-title">Prepare Q4 launch checklist</div>
                 <div class="task-meta">
-                  <span class="list-ref" data-list-hue="lagoon"><span class="ic ic-14" data-glyph="flag"></span><span class="col-prefix">Work ·</span><span class="list-name">Planning</span></span>
+                  <span class="list-pill" data-list-hue="lagoon">Work · Planning</span>
                   <span class="step-meter"><span class="step-pip done"></span><span class="step-pip done"></span><span class="step-pip"></span><span class="step-pip"></span><span class="step-pip"></span></span>
                   <span class="mono">2/5</span>
                   <span class="ic ic-14" data-lucide="mail"></span>
@@ -265,13 +265,13 @@
               <div class="task-main">
                 <div class="task-title">Pay quarterly VAT filing</div>
                 <div class="task-meta">
-                  <span class="list-ref" data-list-hue="teal"><span class="ic ic-14" data-glyph="coin"></span><span class="col-prefix">Work ·</span><span class="list-name">Finance</span></span>
+                  <span class="list-pill" data-list-hue="teal">Work · Finance</span>
                   <span class="tag-tinted" data-list-hue="azure">#tax</span>
                 </div>
               </div>
               <div class="task-agent"></div>
               <div class="task-prio"><span class="prio high">!!!</span></div>
-              <div class="task-due"><span class="overdue-text">2d overdue</span></div>
+              <div class="task-due"><span class="overdue-pill">2d overdue</span></div>
               <div class="task-star on"><span class="ic ic-16" data-lucide="star-filled"></span></div>
             </div>
 
@@ -280,7 +280,7 @@
               <div class="task-main">
                 <div class="task-title">Send venue booking confirmation</div>
                 <div class="task-meta">
-                  <span class="list-ref" data-list-hue="fern"><span class="ic ic-14" data-glyph="calendar-star"></span><span class="col-prefix">Work ·</span><span class="list-name">Events</span></span>
+                  <span class="list-pill" data-list-hue="fern">Work · Events</span>
                   <span class="ic ic-14" data-lucide="mail"></span>
                 </div>
               </div>
@@ -295,7 +295,7 @@
               <div class="task-main">
                 <div class="task-title">Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení</div>
                 <div class="task-meta">
-                  <span class="list-ref" data-list-hue="rose"><span class="ic ic-14" data-glyph="heart"></span><span class="col-prefix">Home ·</span><span class="list-name">Health</span></span>
+                  <span class="list-pill" data-list-hue="rose">Home · Health</span>
                   <span class="tag-tinted" data-list-hue="rose">#pojištění</span>
                 </div>
               </div>
@@ -310,8 +310,8 @@
               <div class="task-main">
                 <div class="task-title">Pick up parcel from post office</div>
                 <div class="task-meta">
-                  <span class="list-ref" data-list-hue="clay"><span class="ic ic-14" data-glyph="basket"></span><span class="col-prefix">Home ·</span><span class="list-name">Errands</span></span>
-                  <span class="status-inline"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
+                  <span class="list-pill" data-list-hue="clay">Home · Errands</span>
+                  <span class="status-pill"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
                   <span class="tag-tinted" data-list-hue="clay">#errands</span>
                 </div>
               </div>
@@ -324,7 +324,9 @@
           <div class="detail-strip">
             <div class="detail-strip-group">
               <span class="detail-label">Detail breadcrumb:</span>
-              <span class="list-ref" data-list-hue="lagoon" style="font-size:13px"><span class="ic ic-16" data-glyph="flag"></span><span class="col-prefix">Work /</span><span class="list-name">Planning</span></span>
+              <span class="list-pill" data-list-hue="lagoon">Work</span>
+              <span style="color:var(--ink-4)">/</span>
+              <span style="font-weight:500;color:var(--ink)">Planning</span>
             </div>
             <div class="detail-strip-group">
               <span class="detail-label">Detail tags row:</span>
