@@ -4103,7 +4103,6 @@ a.source:hover {
 .timeline-completion .tick { stroke-dashoffset: 0; }
 .timeline-lane.completing .timeline-completion { animation: check-fill var(--duration-check-fill) var(--ease-pop) both; }
 .timeline-task {
-  position: relative;
   display: flex;
   align-items: center;
   gap: var(--space-2);
