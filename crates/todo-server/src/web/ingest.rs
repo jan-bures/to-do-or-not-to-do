@@ -7,7 +7,7 @@
 //! Every change is owner-only: it needs the session's CSRF token and a recent passkey check
 //! (step-up), and is written to the audit log in the same transaction as the change.
 
-use super::html::{PageError, esc, time};
+use super::html::{PageError, Section, date, esc, row};
 use super::pages::{
     PageResult, bad_input, csrf_field, guard, not_found, ok_page, owner_chrome, sorted_structure,
 };
@@ -78,11 +78,11 @@ pub async fn page(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     let mut body = String::new();
     if ingest.enabled() {
         body.push_str(
-            "<p>Email ingest is <strong>on</strong>: an email forwarded from an allowed address to the ingest address becomes a task.</p>",
+            r#"<p class="lead">Email ingest is <strong>on</strong>. Forward mail from an allowed sender to turn it into a task.</p>"#,
         );
     } else {
         body.push_str(
-            "<p>Email ingest is <strong>off</strong>: set <code>ingest.email_hmac_secret_file</code> in the server config to turn it on.</p>",
+            r#"<p class="lead">Email ingest is <strong>off</strong>. To enable it, set <code>ingest.email_hmac_secret_file</code> in the server config.</p>"#,
         );
     }
 
@@ -90,7 +90,7 @@ pub async fn page(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     let inbox_label = inbox.and_then(|l| list_label(&state, l));
     let _ = write!(
         body,
-        "<h2>Inbox</h2><p>Plain <code>todo@</code> mail, <code>todo+{INBOX_KEY}@</code>, and keys that name no list go to this list.</p>"
+        r#"<section aria-labelledby="inbox"><h2 id="inbox">Inbox</h2><p>Mail to <code>todo@</code>, <code>todo+{INBOX_KEY}@</code> or an unknown key goes to this list.</p>"#
     );
     match (inbox, &inbox_label) {
         (None, _) => body.push_str(
@@ -105,64 +105,88 @@ pub async fn page(State(app): State<AppState>, s: OwnerSession) -> PageResult {
     }
     let _ = write!(
         body,
-        r#"<form method="post" action="/admin/ingest/inbox">{csrf}
-<label>Inbox <select name="list"><option value="">(none)</option>{opts}</select></label>
+        r#"<form class="stack" method="post" action="/admin/ingest/inbox">{csrf}
+<div class="fields"><label>Inbox list <select name="list"><option value="">None</option>{opts}</select></label><button type="submit">Save Inbox</button></div>
 <p class="hint">{VISIBILITY}</p>
-<button type="submit">Save Inbox</button>
-</form>"#,
+</form></section>"#,
         opts = list_options(&state, inbox.filter(|_| inbox_label.is_some())),
     );
 
     // Senders.
     body.push_str(
-        "<h2>Allowed senders</h2><p>Only mail forwarded from these addresses becomes a task. The Email Worker has its own copy of the list (<code>ALLOWED_SENDERS</code>); keep both up to date.</p><table><tr><th>Address</th><th>Added</th><th>From</th><th></th></tr>",
+        r#"<section aria-labelledby="senders"><h2 id="senders">Allowed senders</h2><p>The Email Worker keeps its own list in <code>ALLOWED_SENDERS</code>. Keep it in sync with the addresses here.</p>"#,
     );
-    for r in &senders {
-        let _ = write!(
-            body,
-            r#"<tr><td>{a}</td><td>{at}</td><td>{src}</td><td><form method="post" action="/admin/ingest/senders/remove">{csrf}<input type="hidden" name="address" value="{a}"><button type="submit" class="danger">Remove</button></form></td></tr>"#,
-            a = esc(&r.address),
-            at = esc(&time(r.added_at)),
-            src = esc(&r.source),
-        );
+    if senders.is_empty() {
+        body.push_str(r#"<p class="empty">No senders yet. Add an address to accept forwarded mail from it.</p>"#);
+    } else {
+        body.push_str(r#"<ul class="rows" role="list">"#);
+        for r in &senders {
+            let action = format!(
+                r#"<form method="post" action="/admin/ingest/senders/remove">{csrf}<input type="hidden" name="address" value="{}"><button type="submit" class="danger">Remove</button></form>"#,
+                esc(&r.address)
+            );
+            row(
+                &mut body,
+                &r.address,
+                &[format!("Added {}", date(r.added_at)), esc(&r.source)],
+                "",
+                &action,
+            );
+        }
+        body.push_str("</ul>");
     }
     let _ = write!(
         body,
-        r#"</table>
-<form method="post" action="/admin/ingest/senders">{csrf}
-<label>Address <input name="address" type="email" required maxlength="320"></label>
+        r#"<form class="fields" method="post" action="/admin/ingest/senders">{csrf}
+<label>Email address <input name="address" type="email" required maxlength="320"></label>
 <button type="submit">Add sender</button>
-</form>"#
+</form></section>"#
     );
 
     // List keys.
     let _ = write!(
         body,
-        "<h2>List keys</h2><p><code>todo+&lt;key&gt;@</code> puts the task in the list the key names. Only the keys below work; list names are never matched. A key is lowercase letters, digits, <code>-</code> and <code>_</code>, starting with a letter or digit; <code>{INBOX_KEY}</code> is reserved for the Inbox.</p><table><tr><th>Key</th><th>List</th><th></th></tr>"
+        r#"<section aria-labelledby="list-keys"><h2 id="list-keys">List keys</h2><p>Address mail to <code>todo+&lt;key&gt;@</code> to route it to a specific list. Only the keys set here work, not list names. <code>{INBOX_KEY}</code> is reserved for the Inbox.</p>"#
     );
-    for (key, list) in &keys {
-        let label = match list_label(&state, *list) {
-            Some(l) => esc(&l),
-            None => r#"<span class="error"><strong>list deleted</strong>: this key's mail goes to the Inbox</span>"#.to_owned(),
-        };
+    if keys.is_empty() {
+        body.push_str(
+            r#"<p class="empty">No list keys yet. Add one to route mail past the Inbox.</p>"#,
+        );
+    } else {
+        body.push_str(r#"<ul class="rows" role="list">"#);
+        for (key, list) in &keys {
+            let label = match list_label(&state, *list) {
+                Some(l) => esc(&l),
+                None => r#"<span class="error"><strong>list deleted</strong>: this key's mail goes to the Inbox</span>"#.to_owned(),
+            };
+            let action = format!(
+                r#"<form method="post" action="/admin/ingest/keys/remove">{csrf}<input type="hidden" name="key" value="{}"><button type="submit" class="danger">Remove</button></form>"#,
+                esc(key)
+            );
+            row(&mut body, key, &[label], "", &action);
+        }
+        body.push_str("</ul>");
+    }
+    let opts = list_options(&state, None);
+    if opts.is_empty() {
+        body.push_str(r#"<p class="hint">Create a list in the app before adding a key.</p>"#);
+    } else {
         let _ = write!(
             body,
-            r#"<tr><td><code>{k}</code></td><td>{label}</td><td><form method="post" action="/admin/ingest/keys/remove">{csrf}<input type="hidden" name="key" value="{k}"><button type="submit" class="danger">Remove</button></form></td></tr>"#,
-            k = esc(key),
+            r#"<form class="stack" method="post" action="/admin/ingest/keys">{csrf}
+<div class="fields"><label>Key <input name="key" class="code-input" aria-describedby="key-format" required maxlength="64" pattern="[a-z0-9][a-z0-9_\-]{{0,63}}"></label>
+<label>Destination list <select name="list" required><option value="">Choose a list</option>{opts}</select></label><button type="submit">Add key</button></div>
+<p class="hint" id="key-format">Start with a lowercase letter or digit. Use only lowercase letters, digits, hyphens or underscores.</p>
+<p class="hint">{VISIBILITY}</p>
+</form>"#
         );
     }
-    let _ = write!(
-        body,
-        r#"</table>
-<form method="post" action="/admin/ingest/keys">{csrf}
-<label>Key <input name="key" required maxlength="64" pattern="[a-z0-9][a-z0-9_\-]{{0,63}}"></label>
-<label>List <select name="list" required>{opts}</select></label>
-<p class="hint">{VISIBILITY}</p>
-<button type="submit">Add key</button>
-</form>"#,
-        opts = list_options(&state, None),
-    );
-    ok_page("Email", &owner_chrome(&app.authsvc, &s), &body)
+    body.push_str("</section>");
+    ok_page(
+        "Email",
+        &owner_chrome(&app.authsvc, &s).in_section(Section::Email),
+        &body,
+    )
 }
 
 /// The sender forms.

@@ -168,9 +168,14 @@ async fn paired_only_invites_and_approval_with_csrf_for_sessions() {
         .await;
     assert_eq!(polled.json()["status"], "approved");
     let devices = owner.get("/admin/devices").await.body;
-    assert!(devices.contains("Issued by"));
-    assert!(devices.contains("Browser session "));
-    assert!(devices.contains(&format!("Device {}", string(&credential, "device_id"))));
+    assert!(devices.contains("Approved from this browser session (passkey)"));
+    assert!(devices.contains("Approved from a paired device"));
+    let session_hash = todo_server::auth::secret::digest_hex(owner.cookie.as_deref().unwrap());
+    assert!(!devices.contains(&session_hash));
+    assert!(!devices.contains(string(&credential, "device_id")));
+    let audit = owner.get("/admin/audit").await.body;
+    assert!(!audit.contains(&session_hash));
+    assert!(audit.contains("Browser session (passkey)"));
 }
 
 #[tokio::test]
@@ -330,7 +335,7 @@ async fn passkey_revocation_ends_both_kinds_of_sessions_and_their_live_invites()
     let mut invited = join_browser(&env, &invite, "Invited browser").await;
     let revoke = "/auth/passkeys/2/revoke";
     let list = owner.get("/admin/devices").await.body;
-    assert!(list.contains(revoke) && list.contains("Browser session "));
+    assert!(list.contains(revoke) && list.contains("Approved from this browser session (passkey)"));
     assert_eq!(
         invited.post_json(INVITES, json!({})).await.json()["error"]["code"],
         "step_up_required"

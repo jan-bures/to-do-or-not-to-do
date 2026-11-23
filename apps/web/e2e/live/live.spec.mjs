@@ -456,7 +456,7 @@ test("a signed-in tab invites a new browser without sharing its existing passkey
     expect((await cdp.send("WebAuthn.getCredentials", { authenticatorId })).credentials).toHaveLength(1);
     await expect(issuer.getByText("Invited browser signed in.")).toBeVisible({ timeout: 10_000 });
     await fresh.goto("/admin/devices");
-    const row = (page) => page.getByRole("row").filter({ hasText: "Invited browser" });
+    const row = (page) => page.getByRole("listitem").filter({ has: page.getByRole("heading", { name: "Invited browser", exact: true }) });
     await expect(row(fresh)).toBeVisible();
     await expect(row(fresh).getByRole("button", { name: "Revoke" })).toHaveCount(0);
     await issuer.goto("/admin/devices");

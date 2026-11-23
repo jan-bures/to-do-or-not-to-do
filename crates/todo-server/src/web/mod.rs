@@ -62,14 +62,67 @@ pub const CSP: &str = "default-src 'self'; frame-ancestors 'none'; base-uri 'non
 
 const AUTH_JS: &str = include_str!("assets/auth.js");
 const APP_CSS: &str = include_str!("assets/app.css");
+const TOKENS_CSS: &str = include_str!("../../../todo-design/generated/tokens.css");
+const ADMIN_CSS: &str = include_str!("assets/admin.css");
+
+/// The app selects a palette via data attributes. The server UI has no theme script, so apply
+/// the same generated palette declarations via the browser's color scheme preference.
+fn admin_css() -> &'static str {
+    static CSS: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    CSS.get_or_init(|| {
+        let mut css = String::new();
+        for (theme, start, end) in [
+            ("light", "", ""),
+            ("dark", "@media (prefers-color-scheme: dark) {", "}"),
+        ] {
+            let selector = format!(r#"[data-theme="{theme}"][data-room-hue="all"] {{"#);
+            if let Some((vars, _)) = TOKENS_CSS
+                .split_once(&selector)
+                .and_then(|(_, after)| after.split_once('}'))
+            {
+                css.push_str(&format!(
+                    "{start}\n:root {{ color-scheme: {theme};{vars}}}\n{end}\n"
+                ));
+            }
+        }
+        css.push_str(ADMIN_CSS);
+        css
+    })
+}
 
 /// `GET /assets/{file}`.
 async fn asset(Path(file): Path<String>) -> Response {
     let (body, ty) = match file.as_str() {
         "auth.js" => (AUTH_JS, "text/javascript; charset=utf-8"),
         "app.css" => (APP_CSS, "text/css; charset=utf-8"),
+        "tokens.css" => (TOKENS_CSS, "text/css; charset=utf-8"),
+        "admin.css" => (admin_css(), "text/css; charset=utf-8"),
         _ => return StatusCode::NOT_FOUND.into_response(),
     };
+    static_asset(body, ty)
+}
+
+/// Fonts referenced by the same generated stylesheet as the web app, even without a web build.
+async fn font(Path(file): Path<String>) -> Response {
+    macro_rules! face {
+        ($file:literal) => {
+            include_bytes!(concat!("../../../../assets/fonts/", $file)).as_slice()
+        };
+    }
+    let body = match file.as_str() {
+        "Geist-400.ttf" => face!("Geist-400.ttf"),
+        "Geist-500.ttf" => face!("Geist-500.ttf"),
+        "Geist-600.ttf" => face!("Geist-600.ttf"),
+        "GeistMono-400.ttf" => face!("GeistMono-400.ttf"),
+        "GeistMono-500.ttf" => face!("GeistMono-500.ttf"),
+        "GeistMono-600.ttf" => face!("GeistMono-600.ttf"),
+        "GeistMono-700.ttf" => face!("GeistMono-700.ttf"),
+        _ => return StatusCode::NOT_FOUND.into_response(),
+    };
+    static_asset(body, "font/ttf")
+}
+
+fn static_asset(body: impl IntoResponse, ty: &'static str) -> Response {
     (
         [
             (CONTENT_TYPE, HeaderValue::from_static(ty)),
@@ -437,6 +490,13 @@ fn table() -> Vec<Route> {
         r(Method::GET, "/app/{*path}", Session, false, get(spa::path)),
         // Static assets and share pages.
         r(Method::GET, "/assets/{file}", Public, false, get(asset)),
+        r(
+            Method::GET,
+            "/assets/fonts/{file}",
+            Public,
+            false,
+            get(font),
+        ),
         r(Method::GET, "/s/{token}", Public, false, get(share::show)),
     ]
 }

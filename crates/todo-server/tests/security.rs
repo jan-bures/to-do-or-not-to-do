@@ -57,6 +57,7 @@ const PUBLIC: &[(&str, &str)] = &[
     ("POST", "/auth/setup/start"),
     ("POST", "/auth/setup/finish"),
     ("GET", "/assets/{file}"),
+    ("GET", "/assets/fonts/{file}"),
     ("GET", "/s/{token}"),
     // Authenticated by an HMAC signature instead (see `email_ingest_needs_a_fresh_signature_and_an_unused_nonce`).
     ("POST", "/api/v1/ingest/email"),
@@ -1833,6 +1834,10 @@ async fn html_pages_carry_strict_security_headers() {
     for (path, ty) in [
         ("/assets/auth.js", "text/javascript"),
         ("/assets/app.css", "text/css"),
+        ("/assets/admin.css", "text/css"),
+        ("/assets/tokens.css", "text/css"),
+        ("/assets/fonts/Geist-400.ttf", "font/ttf"),
+        ("/assets/fonts/GeistMono-400.ttf", "font/ttf"),
     ] {
         let p = anon.get(path).await;
         assert_eq!(p.status, StatusCode::OK);

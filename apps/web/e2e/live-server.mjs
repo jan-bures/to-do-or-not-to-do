@@ -4,10 +4,10 @@
 //   cargo build -p todo-server && node ../scripts/build.mjs && npx playwright test -c live.config.mjs
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DATA, PORT } from "./live-env.mjs";
+import { DATA, GALLERY_DATA, GALLERY_PORT, PORT } from "./live-env.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "../../..");
@@ -24,15 +24,25 @@ if (!existsSync(join(dist, "index.html"))) {
   process.exit(1);
 }
 
-rmSync(DATA, { recursive: true, force: true });
-mkdirSync(DATA, { recursive: true });
-const child = spawn(bin, ["serve"], {
+const gallery = process.argv.includes("--admin-gallery");
+const data = gallery ? GALLERY_DATA : DATA;
+const port = gallery ? GALLERY_PORT : PORT;
+rmSync(data, { recursive: true, force: true });
+mkdirSync(data, { recursive: true });
+const args = ["serve"];
+if (gallery) {
+  // The gallery visits all auth pages and pairs several invented devices in a few seconds.
+  const config = join(data, "gallery.toml");
+  writeFileSync(config, "[auth]\nauth_request_burst = 200\n");
+  args.push("--config", config);
+}
+const child = spawn(bin, args, {
   stdio: "inherit",
   env: {
     ...process.env,
-    TODO_SERVER_BIND: `127.0.0.1:${PORT}`,
-    TODO_SERVER_DATA_DIR: DATA,
-    TODO_SERVER_PUBLIC_ORIGIN: `http://localhost:${PORT}`,
+    TODO_SERVER_BIND: `127.0.0.1:${port}`,
+    TODO_SERVER_DATA_DIR: data,
+    TODO_SERVER_PUBLIC_ORIGIN: `http://localhost:${port}`,
     TODO_SERVER_WEB_DIR: dist,
     RUST_LOG: process.env.RUST_LOG ?? "warn",
   },

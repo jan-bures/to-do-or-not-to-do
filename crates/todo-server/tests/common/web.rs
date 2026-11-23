@@ -436,7 +436,7 @@ impl Browser {
         let token = attr_after(&p.body, SECRET_VALUE).unwrap().to_owned();
         assert!(token.starts_with("tda_"), "{token}");
         let list = self.get("/admin/agents").await;
-        let row = &list.body[list.body.find(&format!("<code>{name}</code>")).unwrap()..];
+        let row = &list.body[list.body.find(&format!("<h3>{name}</h3>")).unwrap()..];
         let id = attr_after(row, r#"href="/admin/agents/"#).unwrap();
         (id.parse().unwrap(), token)
     }

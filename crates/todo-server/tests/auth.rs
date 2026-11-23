@@ -615,7 +615,7 @@ async fn email_allowlist_inbox_and_list_keys_need_step_up_and_are_audited() {
         assert_eq!(p.status, StatusCode::UNPROCESSABLE_ENTITY, "{key} {list}");
     }
     let page = b.get("/admin/ingest").await.body;
-    assert!(page.contains("<td>you@example.com</td>"), "{page}");
+    assert!(page.contains("<h3>you@example.com</h3>"), "{page}");
     assert!(
         page.contains("The Inbox is <strong>Inbox</strong>."),
         "{page}"
@@ -626,10 +626,8 @@ async fn email_allowlist_inbox_and_list_keys_need_step_up_and_are_audited() {
         ),
         "{page}"
     );
-    assert!(
-        page.contains("<td><code>shop</code></td><td>Errands</td>"),
-        "{page}"
-    );
+    assert!(page.contains("<h3>shop</h3>"), "{page}");
+    assert!(page.contains("<span>Errands</span>"), "{page}");
     let (s, r) = ingest("you@example.com", Some("shop")).await;
     assert_eq!(s, StatusCode::CREATED, "{r}");
     assert_eq!(list_of(r).await, errands);
@@ -1025,11 +1023,32 @@ async fn a_device_pairs_end_to_end_and_its_token_works_until_revoked() {
 
     // The admin page lists it, with a last-used time; revoking it is immediate.
     let devices = owner.get("/admin/devices").await;
-    assert!(devices.body.contains(&device));
+    assert!(!devices.body.contains(&device));
     assert!(!devices.body.contains(&token));
+    assert!(devices.body.contains("Device ID"));
+    assert!(devices.body.contains(&device[..8]));
+    assert!(devices.body.contains("Last active <time datetime="));
+    assert!(
+        devices
+            .body
+            .contains(r#"href="/admin/devices" aria-current="page""#)
+    );
+    assert!(devices.body.contains("Used to sign in here"));
+    let (path, form) = devices
+        .body
+        .split_once(r#"action="/admin/devices/"#)
+        .unwrap()
+        .1
+        .split_once('"')
+        .unwrap();
+    assert!(form.split_once("</form>").unwrap().0.contains(&format!(
+        r#"name="csrf" value="{}""#,
+        owner.csrf.as_deref().unwrap()
+    )));
     owner.step_up().await;
+    // Use the exact encoded path emitted by the HTML form.
     let p = owner
-        .post_form(&format!("/admin/devices/{device}/revoke"), &[])
+        .post_form(&format!("/admin/devices/{path}"), &[])
         .await;
     assert_eq!(p.status, StatusCode::SEE_OTHER, "{}", p.body);
     let r = env.api(Method::GET, "/api/v1/lists", &token, None).await;
@@ -1040,6 +1059,7 @@ async fn a_device_pairs_end_to_end_and_its_token_works_until_revoked() {
         assert!(audit.contains(kind), "{kind}");
     }
     assert!(!audit.contains(&token));
+    assert!(!audit.contains(&device));
 }
 
 #[tokio::test]
