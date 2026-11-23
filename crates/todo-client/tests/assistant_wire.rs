@@ -153,7 +153,7 @@ fn tool_delta(index: usize, id: String) -> Value {
 }
 
 #[test]
-fn rejects_body_and_tool_count_overflow_and_duplicate_usage() {
+fn rejects_body_and_tool_count_overflow_and_coalesces_usage() {
     for mut decoder in [RoundDecoder::json(), RoundDecoder::sse()] {
         // A body of exactly 256 KiB, fragmented well below the per-frame cap.
         let comments = b":..\n\n".repeat(52_428);
@@ -171,16 +171,25 @@ fn rejects_body_and_tool_count_overflow_and_duplicate_usage() {
         ProviderError::Limit
     );
 
-    let usage = sse(json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":7}}));
     let mut decoder = RoundDecoder::sse();
+    for frame in [
+        sse(
+            json!({"choices":[{"index":0,"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":7}}),
+        ),
+        sse(json!({"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":8}})),
+    ] {
+        assert!(decoder.push(frame.as_bytes()).unwrap().is_empty());
+    }
     assert!(matches!(
-        decoder.push(usage.as_bytes()).unwrap().as_slice(),
-        [StreamEvent::Usage(_)]
+        decoder.finish().unwrap().as_slice(),
+        [
+            StreamEvent::Usage(Usage {
+                input_tokens: 10,
+                output_tokens: 8
+            }),
+            StreamEvent::Finished
+        ]
     ));
-    assert_eq!(
-        decoder.push(usage.as_bytes()).unwrap_err(),
-        ProviderError::InvalidResponse
-    );
 }
 
 fn decode(json_mode: bool, bytes: &[u8], widths: &[usize]) -> (Vec<Value>, Option<ProviderError>) {

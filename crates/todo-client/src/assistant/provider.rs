@@ -56,6 +56,8 @@ pub enum ProviderError {
     Unavailable,
     #[error("the model provider took too long to respond")]
     Timeout,
+    #[error("the model provider's TLS connection could not be verified")]
+    Tls,
     #[error("the model provider rejected sign-in")]
     Unauthorized,
     #[error("the model provider's limit was reached")]

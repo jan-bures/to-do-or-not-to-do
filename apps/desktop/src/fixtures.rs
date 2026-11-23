@@ -101,6 +101,19 @@ pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
+        "ai-empty" | "ai-proposal" | "ai-batch" | "ai-settings" | "ai-error" => {
+            let mut f = my_day();
+            f.ui.task = None;
+            if let Some(task) = f
+                .state
+                .tasks
+                .values_mut()
+                .find(|task| task.title == "Koupit rohlíky a mléko")
+            {
+                task.updated.by = agent(todo_core::actor::ASSISTANT_AGENT_ID);
+            }
+            Some(f)
+        }
         "multi-select" => {
             let mut f = my_day();
             f.ui.task = None;

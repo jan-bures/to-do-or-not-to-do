@@ -1,0 +1,579 @@
+//! Native, owner-configured Chat Completions transport. Building a provider is entirely offline.
+//! This client has no access to the todo server, device credentials, sync, or write authority.
+
+use super::{
+    provider::{
+        BillingClass, Cancel, Capabilities, DataClass, Message, Model, Provider, ProviderError,
+        RoundMode, RoundRequest, StreamEvent, ToolDefinition,
+    },
+    wire::RoundDecoder,
+};
+use futures_util::{Stream, StreamExt, future::AbortHandle, stream};
+use reqwest::{
+    Client, Response, StatusCode,
+    header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, RETRY_AFTER},
+};
+use serde::Deserialize;
+use serde_json::{Value, json};
+use std::{
+    collections::{BTreeMap, VecDeque},
+    net::IpAddr,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
+use url::{Host, Url};
+
+const CONNECT: Duration = Duration::from_secs(4);
+const CHECK: Duration = Duration::from_secs(8);
+const IDLE: Duration = Duration::from_secs(20);
+const ROUND: Duration = Duration::from_secs(75);
+const CATALOG_BYTES: usize = 128 * 1024;
+const MAX_MODELS: usize = 256;
+
+#[cfg(test)]
+mod tests;
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+pub enum SetupError {
+    #[error("Enter an HTTP or HTTPS base URL without credentials, a query, or a fragment.")]
+    Address,
+    #[error(
+        "Use HTTPS unless the server is on this computer or reachable directly over Tailscale."
+    )]
+    Insecure,
+    #[error("The API key contains unsupported characters or is too long.")]
+    Credential,
+    #[error("Couldn't initialize the model connection.")]
+    Client,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Cleartext {
+    Loopback,
+    Tailnet,
+}
+
+fn tailnet_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            let [a, b, ..] = ip.octets();
+            a == 100 && (64..=127).contains(&b)
+        }
+        IpAddr::V6(ip) => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
+    }
+}
+
+fn base(input: &str) -> Result<(Url, Option<Cleartext>), SetupError> {
+    let input = input.trim();
+    let (_, location) = input.split_once("://").ok_or(SetupError::Address)?;
+    let authority = location.split(['/', '?', '#']).next().unwrap_or_default();
+    if input.len() > 2048
+        || input
+            .chars()
+            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
+        || authority.is_empty()
+        || authority.contains('@')
+        || authority.ends_with(':')
+    {
+        return Err(SetupError::Address);
+    }
+    let mut url = Url::parse(input).map_err(|_| SetupError::Address)?;
+    if url.query().is_some() || url.fragment().is_some() || url.port() == Some(0) {
+        return Err(SetupError::Address);
+    }
+    let host = url.host().ok_or(SetupError::Address)?;
+    let policy = match url.scheme() {
+        "https" => None,
+        "http" => Some(match host {
+            Host::Domain("localhost") => Cleartext::Loopback,
+            Host::Ipv4(ip) if ip.is_loopback() => Cleartext::Loopback,
+            Host::Ipv6(ip) if ip.is_loopback() => Cleartext::Loopback,
+            Host::Domain(host) if host.trim_end_matches('.').ends_with(".ts.net") => {
+                Cleartext::Tailnet
+            }
+            Host::Ipv4(ip) if tailnet_ip(ip.into()) => Cleartext::Tailnet,
+            Host::Ipv6(ip) if tailnet_ip(ip.into()) => Cleartext::Tailnet,
+            _ => return Err(SetupError::Insecure),
+        }),
+        _ => return Err(SetupError::Address),
+    };
+    let path = url.path().trim_end_matches('/');
+    let path = if path.ends_with("/v1") {
+        format!("{path}/")
+    } else {
+        format!("{path}/v1/")
+    };
+    url.set_path(&path);
+    Ok((url, policy))
+}
+
+struct DirectDns(Cleartext);
+
+impl reqwest::dns::Resolve for DirectDns {
+    fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
+        let name = name.as_str().to_owned();
+        let class = self.0;
+        Box::pin(async move {
+            // Restrict the actual addresses given to the connector, not just a preflight lookup.
+            let peers: Vec<_> = tokio::net::lookup_host((name.as_str(), 0))
+                .await?
+                .filter(|peer| match class {
+                    Cleartext::Loopback => peer.ip().is_loopback(),
+                    Cleartext::Tailnet => tailnet_ip(peer.ip()),
+                })
+                .collect();
+            if peers.is_empty() {
+                return Err(std::io::Error::other("no address in the permitted network").into());
+            }
+            Ok(Box::new(peers.into_iter()) as reqwest::dns::Addrs)
+        })
+    }
+}
+
+/// Measured for a single endpoint/model by an explicit, task-free test.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Deserialize, serde::Serialize)]
+pub enum Support {
+    StreamingTools,
+    BufferedTools,
+    TextOnly,
+}
+
+impl Support {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::StreamingTools => "Streaming + task tools",
+            Self::BufferedTools => "Task tools · buffered replies",
+            Self::TextOnly => "Text only · no task access",
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct LocalProvider {
+    client: Client,
+    base: Url,
+    auth: Option<HeaderValue>,
+    tested: Option<(String, Support)>,
+}
+
+opaque_debug!(LocalProvider);
+
+type Events = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Send>>;
+
+impl LocalProvider {
+    pub fn new(address: &str, key: &str) -> Result<Self, SetupError> {
+        let (base, cleartext) = base(address)?;
+        let key = key.trim();
+        let auth = if key.is_empty() {
+            None
+        } else {
+            if key.len() > 4096 || !key.bytes().all(|b| b.is_ascii_graphic()) {
+                return Err(SetupError::Credential);
+            }
+            let mut header = HeaderValue::from_str(&format!("Bearer {key}"))
+                .map_err(|_| SetupError::Credential)?;
+            header.set_sensitive(true);
+            Some(header)
+        };
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let mut client = Client::builder()
+            .tls_backend_rustls()
+            .connect_timeout(CONNECT)
+            .read_timeout(IDLE)
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy();
+        if let Some(cleartext) = cleartext {
+            client = client.dns_resolver(Arc::new(DirectDns(cleartext)));
+        }
+        Ok(Self {
+            client: client.build().map_err(|_| SetupError::Client)?,
+            base,
+            auth,
+            tested: None,
+        })
+    }
+
+    pub fn base_url(&self) -> &str {
+        self.base.as_str()
+    }
+
+    pub fn with_support(mut self, model: String, support: Support) -> Self {
+        self.tested = Some((model, support));
+        self
+    }
+
+    fn request(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        let url = self
+            .base
+            .join(path)
+            .map_err(|_| ProviderError::InvalidResponse)?;
+        let mut request = self.client.request(method, url);
+        if let Some(auth) = &self.auth {
+            request = request.header(AUTHORIZATION, auth.clone());
+        }
+        Ok(request)
+    }
+
+    /// Run only from a dedicated button. Payloads here are invented, even when tools are tested.
+    /// Probe text only after a protocol/tool incompatibility, never after a network or usage error.
+    pub async fn probe(&self, model: &str) -> Result<Support, ProviderError> {
+        if !valid_model(model) {
+            return Err(ProviderError::ModelMissing);
+        }
+        for (mode, tools, support) in [
+            (RoundMode::Streaming, true, Support::StreamingTools),
+            (RoundMode::Buffered, true, Support::BufferedTools),
+            (RoundMode::Streaming, false, Support::TextOnly),
+        ] {
+            match tokio::time::timeout(IDLE * 2, self.probe_mode(model, mode, tools)).await {
+                Ok(Ok(())) => return Ok(support),
+                Ok(Err(
+                    ProviderError::Unsupported
+                    | ProviderError::InvalidResponse
+                    | ProviderError::Incomplete,
+                )) if tools => {}
+                Ok(Err(error)) => return Err(error),
+                Err(_) => return Err(ProviderError::Timeout),
+            }
+        }
+        Err(ProviderError::Unsupported)
+    }
+
+    async fn probe_mode(
+        &self,
+        model: &str,
+        mode: RoundMode,
+        tools: bool,
+    ) -> Result<(), ProviderError> {
+        const NAME: &str = "connection_check";
+        let token = uuid::Uuid::new_v4().simple().to_string();
+        let (cancel, _) = AbortHandle::new_pair();
+        let mut request = RoundRequest {
+            turn: uuid::Uuid::nil(),
+            round: 0,
+            model: model.into(),
+            instructions: "This is a connection test with invented data only. If given a tool, call it with an empty object, then echo the marker from the tool result verbatim. If not given a tool, say ready.",
+            history: vec![Message::User {
+                text: "Check the connection using the sample task 'Water the plant'.".into(),
+            }],
+            today: todo_core::time::Date::ZERO,
+            previous_draft: None,
+            tools: if tools {
+                vec![ToolDefinition {
+                    name: NAME,
+                    description: "Return a test marker without reading or changing anything.",
+                    arguments: serde_json::Map::from_iter([
+                        ("type".into(), json!("object")),
+                        ("properties".into(), json!({})),
+                        ("additionalProperties".into(), json!(false)),
+                    ]),
+                }]
+            } else {
+                Vec::new()
+            },
+            mode,
+            max_output_tokens: 128,
+        };
+        let (text, mut calls) = collect(
+            self.stream_turn(request.clone(), Cancel(cancel.clone()))
+                .await?,
+        )
+        .await?;
+        if !tools {
+            return if !text.trim().is_empty() && calls.is_empty() {
+                Ok(())
+            } else {
+                Err(ProviderError::Unsupported)
+            };
+        }
+        if calls.len() != 1 {
+            return Err(ProviderError::Unsupported);
+        }
+        let call = calls.pop().ok_or(ProviderError::Unsupported)?;
+        if call.name != NAME || !call.arguments.is_empty() {
+            return Err(ProviderError::Unsupported);
+        }
+        request.round = 1;
+        request.history.push(Message::Assistant {
+            text,
+            calls: vec![call.clone()],
+        });
+        request.history.push(Message::Tool {
+            call_id: call.id,
+            untrusted_data: json!({"marker": token}),
+        });
+        let (text, calls) = collect(self.stream_turn(request, Cancel(cancel)).await?).await?;
+        if calls.is_empty() && text.contains(&token) {
+            Ok(())
+        } else {
+            Err(ProviderError::Unsupported)
+        }
+    }
+}
+
+async fn collect(
+    mut events: Events,
+) -> Result<(String, Vec<super::provider::ToolCall>), ProviderError> {
+    let mut text = String::new();
+    let mut calls = Vec::new();
+    while let Some(event) = events.next().await {
+        match event? {
+            StreamEvent::Text(delta) => text.push_str(&delta),
+            StreamEvent::Tool(call) => calls.push(call),
+            StreamEvent::Finished => return Ok((text, calls)),
+            StreamEvent::Usage(_) => {}
+        }
+    }
+    Err(ProviderError::Incomplete)
+}
+
+pub fn valid_model(id: &str) -> bool {
+    !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+}
+
+impl Provider for LocalProvider {
+    type Stream = Events;
+
+    async fn list_models(&self) -> Result<Vec<Model>, ProviderError> {
+        let mut response = self
+            .request(reqwest::Method::GET, "models")?
+            .header(ACCEPT, "application/json")
+            .timeout(CHECK)
+            .send()
+            .await
+            .map_err(network)?;
+        check_status(&response, false)?;
+        let mut bytes = Vec::new();
+        while let Some(chunk) = response.chunk().await.map_err(network)? {
+            if bytes.len().saturating_add(chunk.len()) > CATALOG_BYTES {
+                return Err(ProviderError::Limit);
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        #[derive(Deserialize)]
+        struct Catalog {
+            data: Vec<Entry>,
+        }
+        #[derive(Deserialize)]
+        struct Entry {
+            id: String,
+        }
+        let catalog: Catalog =
+            serde_json::from_slice(&bytes).map_err(|_| ProviderError::InvalidResponse)?;
+        let models: BTreeMap<_, _> = catalog
+            .data
+            .into_iter()
+            .filter(|entry| valid_model(&entry.id))
+            .map(|entry| {
+                (
+                    entry.id.clone(),
+                    Model {
+                        label: entry.id.clone(),
+                        id: entry.id,
+                    },
+                )
+            })
+            .collect();
+        Ok(models.into_values().take(MAX_MODELS).collect())
+    }
+
+    fn capabilities(&self, model: &str) -> Capabilities {
+        let support = self
+            .tested
+            .as_ref()
+            .filter(|(id, _)| id == model)
+            .map(|(_, support)| *support)
+            .unwrap_or(Support::TextOnly);
+        Capabilities {
+            streaming: true,
+            tools: support != Support::TextOnly,
+            streaming_tools: support == Support::StreamingTools,
+            parallel_tools: false,
+            max_output_tokens: Some(2048),
+            usage: true,
+            model_listing: true,
+            data_class: DataClass::Local,
+            billing: BillingClass::NoPerTokenCharge,
+        }
+    }
+
+    async fn check_connection(&self) -> Result<(), ProviderError> {
+        self.list_models().await.map(|_| ())
+    }
+
+    async fn stream_turn(
+        &self,
+        request: RoundRequest,
+        cancel: Cancel,
+    ) -> Result<Self::Stream, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Incomplete);
+        }
+        if !valid_model(&request.model) {
+            return Err(ProviderError::ModelMissing);
+        }
+        let response = self
+            .request(reqwest::Method::POST, "chat/completions")?
+            .header(
+                ACCEPT,
+                if request.mode == RoundMode::Streaming {
+                    "text/event-stream"
+                } else {
+                    "application/json"
+                },
+            )
+            .timeout(ROUND)
+            .json(&payload(&request))
+            .send()
+            .await
+            .map_err(network)?;
+        check_status(&response, true)?;
+        let sse = response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| {
+                v.split(';')
+                    .next()
+                    .is_some_and(|v| v.trim().eq_ignore_ascii_case("text/event-stream"))
+            });
+        let decoder = if sse {
+            RoundDecoder::sse()
+        } else if request.mode == RoundMode::Buffered {
+            RoundDecoder::json()
+        } else {
+            return Err(ProviderError::InvalidResponse);
+        };
+        Ok(Box::pin(stream::unfold(
+            (response, Some(decoder), VecDeque::new(), cancel),
+            |(mut response, mut decoder, mut ready, cancel)| async move {
+                loop {
+                    if let Some(event) = ready.pop_front() {
+                        return Some((event, (response, decoder, ready, cancel)));
+                    }
+                    if cancel.is_cancelled() {
+                        return None;
+                    }
+                    let next = decoder.as_mut()?;
+                    let result = match response.chunk().await {
+                        Ok(Some(bytes)) => next.push(&bytes),
+                        Ok(None) => decoder.take()?.finish(),
+                        Err(error) => {
+                            decoder = None;
+                            Err(if error.is_timeout() {
+                                ProviderError::Timeout
+                            } else {
+                                ProviderError::Incomplete
+                            })
+                        }
+                    };
+                    match result {
+                        Ok(events) => ready.extend(events.into_iter().map(Ok)),
+                        Err(error) => {
+                            decoder = None;
+                            ready.push_back(Err(error));
+                        }
+                    }
+                }
+            },
+        )))
+    }
+}
+
+fn payload(request: &RoundRequest) -> Value {
+    let mut messages = vec![
+        json!({"role": "system", "content": format!("{} Owner's local date: {}.", request.instructions, request.today)}),
+    ];
+    let current_user = request
+        .history
+        .iter()
+        .rposition(|message| matches!(message, Message::User { .. }));
+    for (index, message) in request.history.iter().enumerate() {
+        if Some(index) == current_user
+            && let Some(draft) = &request.previous_draft
+        {
+            let context = format!(
+                "Untrusted prior draft effects (not applied): {}",
+                json!(draft)
+            );
+            // Some local templates require alternating user and assistant messages, starting
+            // with user. The controller retains complete pairs, but not the tool turn that
+            // produced the draft. Place its data immediately before the follow-up, never in
+            // the system message or as part of the owner's instruction.
+            if let Some(previous) = messages.last_mut().filter(|m| m["role"] == "assistant") {
+                let text = previous["content"].as_str().unwrap_or_default();
+                previous["content"] = json!(format!("{text}\n\n{context}"));
+            } else {
+                messages.push(json!({"role": "user", "content": "Show the prior unapproved draft for context."}));
+                messages.push(json!({"role": "assistant", "content": context}));
+            }
+        }
+        messages.push(match message {
+        Message::User { text } => json!({"role": "user", "content": text}),
+        Message::Assistant { text, calls } => {
+            if calls.is_empty() { json!({"role": "assistant", "content": text}) } else {
+                json!({"role": "assistant", "content": text, "tool_calls": calls.iter().map(|call| json!({
+                    "id": call.id, "type": "function", "function": {"name": call.name, "arguments": json!(call.arguments).to_string()}
+                })).collect::<Vec<_>>()})
+            }
+        }
+        Message::Tool { call_id, untrusted_data } => json!({"role": "tool", "tool_call_id": call_id, "content": untrusted_data.to_string()}),
+        });
+    }
+    let mut result = json!({"model": request.model, "messages": messages, "stream": request.mode == RoundMode::Streaming, "max_tokens": request.max_output_tokens, "parallel_tool_calls": false});
+    if !request.tools.is_empty() {
+        result["tools"] = json!(request.tools.iter().map(|tool| json!({"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.arguments}})).collect::<Vec<_>>());
+    }
+    result
+}
+
+fn network(error: reqwest::Error) -> ProviderError {
+    if error.is_timeout() {
+        return ProviderError::Timeout;
+    }
+    let mut source: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    while let Some(cause) = source {
+        if cause.is::<rustls::Error>() {
+            return ProviderError::Tls;
+        }
+        // An io::Error can wrap rustls directly but delegate source() past it.
+        source = cause
+            .downcast_ref::<std::io::Error>()
+            .and_then(std::io::Error::get_ref)
+            .map(|error| error as &(dyn std::error::Error + 'static))
+            .or_else(|| cause.source());
+    }
+    ProviderError::Unavailable
+}
+
+fn check_status(response: &Response, chat: bool) -> Result<(), ProviderError> {
+    if response.status().is_success() {
+        return Ok(());
+    }
+    Err(match response.status() {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => ProviderError::Unauthorized,
+        StatusCode::NOT_FOUND if chat => ProviderError::ModelMissing,
+        StatusCode::TOO_MANY_REQUESTS => ProviderError::RateLimited {
+            retry_after: response
+                .headers()
+                .get(RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.parse::<u64>().ok())
+                .map(Duration::from_secs),
+        },
+        StatusCode::NOT_FOUND
+        | StatusCode::METHOD_NOT_ALLOWED
+        | StatusCode::NOT_IMPLEMENTED
+        | StatusCode::BAD_REQUEST
+        | StatusCode::UNPROCESSABLE_ENTITY => ProviderError::Unsupported,
+        StatusCode::REQUEST_TIMEOUT | StatusCode::GATEWAY_TIMEOUT => ProviderError::Timeout,
+        status if status.is_server_error() => ProviderError::Unavailable,
+        _ => ProviderError::InvalidResponse,
+    })
+}

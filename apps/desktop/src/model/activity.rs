@@ -278,7 +278,14 @@ pub fn days(
                         seq: entry.target.seq,
                         event: entry.target.id,
                         what: super::labels::one_line(&entry.what).into(),
-                        mark: Mark::of(&entry.actor),
+                        mark: if entry.approved_by.is_none()
+                            && entry.actor.agent_id().is_some_and(|id| {
+                                id.as_str() == todo_core::actor::ASSISTANT_AGENT_ID
+                            }) {
+                            Mark::Other
+                        } else {
+                            Mark::of(&entry.actor)
+                        },
                         who: entry.actor_name().into(),
                         when: activity::relative_time(entry.at, now.at).into(),
                         clock: super::labels::clock(entry.at, &now.tz).into(),

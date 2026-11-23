@@ -189,7 +189,7 @@ struct Function {
 struct PartialCall {
     id: Option<String>,
     name: Option<String>,
-    arguments: String,
+    arguments: Option<String>,
 }
 
 #[derive(Default)]
@@ -197,7 +197,7 @@ struct Assembly {
     calls: Vec<PartialCall>,
     finish: Option<bool>, // Whether the model explicitly finished with tool calls.
     done_marker: bool,
-    usage_seen: bool,
+    usage: Option<Usage>,
 }
 
 impl Assembly {
@@ -253,17 +253,17 @@ impl Assembly {
                 });
             }
         }
-        if chunk.usage.is_some() && std::mem::replace(&mut self.usage_seen, true) {
-            return Err(bad);
-        }
         if let Some(text) = text {
             out.push(StreamEvent::Text(text));
         }
         if let Some(usage) = chunk.usage {
-            out.push(StreamEvent::Usage(Usage {
-                input_tokens: usage.prompt_tokens,
-                output_tokens: usage.completion_tokens,
-            }));
+            // Some servers send usage both with finish_reason and in a final standalone
+            // chunk. These are cumulative counters, not two separate charges.
+            let previous = self.usage.unwrap_or_default();
+            self.usage = Some(Usage {
+                input_tokens: previous.input_tokens.max(usage.prompt_tokens),
+                output_tokens: previous.output_tokens.max(usage.completion_tokens),
+            });
         }
         Ok(())
     }
@@ -294,10 +294,11 @@ impl Assembly {
         if let Some(function) = delta.function {
             set(&mut call.name, function.name)?;
             if let Some(fragment) = function.arguments {
-                if call.arguments.len().saturating_add(fragment.len()) > super::MAX_ARGUMENT_BYTES {
+                let arguments = call.arguments.get_or_insert_with(String::new);
+                if arguments.len().saturating_add(fragment.len()) > super::MAX_ARGUMENT_BYTES {
                     return Err(ProviderError::Limit);
                 }
-                call.arguments.push_str(&fragment);
+                arguments.push_str(&fragment);
             }
         }
         Ok(())
@@ -316,10 +317,15 @@ impl Assembly {
         let failure = ProviderError::Incomplete;
         let mut calls = Vec::new();
         for partial in self.calls.drain(..) {
+            let arguments = partial.arguments.ok_or(failure)?;
             let call = ToolCall::parse(
                 partial.id.ok_or(failure)?,
                 partial.name.ok_or(failure)?,
-                &partial.arguments,
+                if arguments.is_empty() {
+                    "{}"
+                } else {
+                    &arguments
+                },
             )?;
             if calls
                 .iter()
@@ -328,6 +334,9 @@ impl Assembly {
                 return Err(ProviderError::InvalidResponse);
             }
             calls.push(call);
+        }
+        if let Some(usage) = self.usage {
+            out.push(StreamEvent::Usage(usage));
         }
         out.extend(calls.into_iter().map(StreamEvent::Tool));
         out.push(StreamEvent::Finished);

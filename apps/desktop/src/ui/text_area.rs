@@ -32,6 +32,7 @@ actions!(
         Home,
         End,
         Newline,
+        SoftNewline,
         Paste,
         Cut,
         Copy,
@@ -61,7 +62,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("home", Home, ctx),
         KeyBinding::new("end", End, ctx),
         KeyBinding::new("enter", Newline, ctx),
-        KeyBinding::new("shift-enter", Newline, ctx),
+        KeyBinding::new("shift-enter", SoftNewline, ctx),
         KeyBinding::new("escape", Done, ctx),
         KeyBinding::new("ctrl-enter", Done, ctx),
     ]
@@ -137,6 +138,8 @@ pub struct TextArea {
     pub colors: InputColors,
     /// One paragraph only (a title that wraps): Enter submits and pasted line breaks become spaces.
     pub single: bool,
+    /// Chat sends on Enter but still accepts newlines via Shift+Enter.
+    pub chat: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -158,6 +161,7 @@ impl TextArea {
             placeholder: placeholder.into(),
             colors,
             single: false,
+            chat: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -182,6 +186,14 @@ impl TextArea {
     }
 
     fn newline(&mut self, _: &Newline, window: &mut Window, cx: &mut Context<Self>) {
+        if self.chat {
+            cx.emit(InputEvent::Submit);
+        } else {
+            self.soft_newline(&SoftNewline, window, cx);
+        }
+    }
+
+    fn soft_newline(&mut self, _: &SoftNewline, window: &mut Window, cx: &mut Context<Self>) {
         if self.single {
             cx.emit(InputEvent::Submit);
         } else {
@@ -847,6 +859,7 @@ impl Render for TextArea {
             .cursor(CursorStyle::IBeam)
             .on_action(cx.listener(Self::done))
             .on_action(cx.listener(Self::newline))
+            .on_action(cx.listener(Self::soft_newline))
             .on_action(cx.listener(Self::backspace))
             .on_action(cx.listener(Self::delete))
             .on_action(cx.listener(Self::left))

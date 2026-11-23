@@ -1,0 +1,2099 @@
+//! Desktop assistant presentation. Cards use trusted simulated effects, never model-authored UI.
+
+use super::*;
+use crate::theme::Agent;
+use gpui::Role;
+use todo_client::assistant::{
+    Edit, Effect, ProposalItem, ProposalKind, StepKind, StepStatus, TaskRef, ToolKind,
+};
+use todo_core::{command::Placement, model::WorkflowStatus, time::Date};
+
+#[derive(Clone, Copy)]
+enum Tone {
+    Quiet,
+    Outline,
+    Primary,
+    Danger,
+}
+
+fn text(style: ty::TextStyle, color: Hsla, content: impl Into<SharedString>) -> Div {
+    div()
+        .min_w_0()
+        .style(style)
+        .text_color(color)
+        .child(content.into())
+}
+
+fn one_line(el: Div) -> Div {
+    el.overflow_hidden().text_ellipsis().whitespace_nowrap()
+}
+
+fn dot(color: Hsla) -> Div {
+    div()
+        .flex_none()
+        .size(px(component::PRIVACY_DOT))
+        .rounded_full()
+        .bg(color)
+}
+
+fn box_panel(p: &Palette) -> Div {
+    div()
+        .w_full()
+        .flex()
+        .flex_col()
+        .bg(p.raised)
+        .border_1()
+        .border_color(p.line)
+        .rounded(px(radius::LG))
+        .overflow_hidden()
+}
+
+fn line(p: &Palette) -> Div {
+    div()
+        .h(px(elevation::HAIRLINE))
+        .flex_none()
+        .w_full()
+        .bg(p.line)
+}
+
+fn proposal_kind(kind: ProposalKind, p: &Palette) -> (Icon, &'static str, Hsla) {
+    match kind {
+        ProposalKind::Create => (Icon::Plus, "NEW TASK", p.accent_strong),
+        ProposalKind::Edit => (Icon::Pencil, "EDIT TASK", p.sun_ink),
+        ProposalKind::Complete => (Icon::CircleCheck, "CHANGE COMPLETION", p.sun_ink),
+        ProposalKind::Destructive => (Icon::TrashTwo, "DELETE TASK", p.danger_ink),
+    }
+}
+
+fn step_label(kind: StepKind) -> &'static str {
+    match kind {
+        StepKind::Generate => "Waiting for the model",
+        StepKind::Tool(ToolKind::Lists) => "Checked permitted lists",
+        StepKind::Tool(ToolKind::Search) => "Searched visible tasks",
+        StepKind::Tool(ToolKind::Task) => "Read task details",
+        StepKind::Tool(ToolKind::Create) => "Prepared a new task",
+        StepKind::Tool(ToolKind::Update) => "Prepared task edits",
+        StepKind::Tool(ToolKind::Complete) => "Prepared a completion change",
+    }
+}
+
+fn date(d: Option<Date>) -> String {
+    d.map_or_else(
+        || "No date".into(),
+        |d| d.strftime("%a %d %b %Y").to_string(),
+    )
+}
+fn completion(done: bool) -> String {
+    if done { "Completed" } else { "Open" }.into()
+}
+
+impl ShellView {
+    fn ai_action(
+        &self,
+        id: impl Into<SharedString>,
+        contents: Div,
+        enabled: bool,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let id = id.into();
+        let p = self.palette;
+        let element = contents.id(id.clone()).role(Role::Button);
+        if !enabled {
+            return element;
+        }
+        element
+            .track_focus(&self.ai.focus_handle(&id, cx))
+            .focus_visible(|d| d.border_1().border_color(p.accent_strong))
+            .hover(|d| d.opacity(0.85))
+            .cursor_pointer()
+            // GPUI maps a focused Enter/Space press-release to this same click. Handling
+            // KeyDown separately would toggle controls twice for one gesture.
+            .on_click(cx.listener(move |this, _, window, cx| f(this, window, cx)))
+    }
+
+    fn ai_button(
+        &self,
+        id: impl Into<SharedString>,
+        label: impl Into<SharedString>,
+        tone: Tone,
+        enabled: bool,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let p = self.palette;
+        let label = label.into();
+        let (bg, fg, border) = match tone {
+            Tone::Quiet => (p.raised, p.accent_strong, p.raised),
+            Tone::Outline => (p.raised, p.ink_2, p.line_strong),
+            Tone::Primary if enabled => (p.accent_fill, p.on_accent, p.accent_fill),
+            Tone::Primary => (p.canvas, p.ink_3, p.line),
+            Tone::Danger => (p.danger_bg, p.danger_ink, p.danger),
+        };
+        self.ai_action(
+            id,
+            div()
+                .h(px(component::BUTTON_SMALL))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .rounded(px(radius::MD))
+                .border_color(border)
+                .px(px(space::S2))
+                .bg(bg)
+                .style(ty::BUTTON_SMALL)
+                .text_color(fg)
+                .child(label.clone()),
+            enabled,
+            f,
+            cx,
+        )
+        .aria_label(label)
+    }
+
+    fn ai_icon(
+        &self,
+        id: &'static str,
+        icon: Icon,
+        label: &'static str,
+        enabled: bool,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let p = self.palette;
+        self.ai_action(
+            id,
+            div()
+                .size(px(component::ICON_BUTTON))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .border_1()
+                .border_color(p.pane)
+                .rounded(px(radius::MD))
+                .child(kit::icon(
+                    icon,
+                    component::ICON_SMALL,
+                    if enabled { p.ink_2 } else { p.ink_4 },
+                )),
+            enabled,
+            f,
+            cx,
+        )
+        .aria_label(label)
+        .tooltip(kit::tooltip(p, label))
+    }
+
+    pub(in crate::ui::shell) fn ai_trigger(&self, cx: &mut Context<Self>) -> Stateful<Div> {
+        let p = self.palette;
+        let pending = !self.ai.open && matches!(self.ai.view().composer, Composer::Review { .. });
+        self.ai_action(
+            "assistant-trigger",
+            div()
+                .flex_none()
+                .flex()
+                .items_center()
+                .gap(px(space::S2))
+                .mx(px(space::S3))
+                .px(px(space::S2))
+                .h(px(desktop::TITLEBAR - space::S2 - space::S1 / 2.))
+                .rounded(px(radius::MD))
+                .border_1()
+                .bg(if self.ai.open { p.wash } else { p.pane })
+                .border_color(if self.ai.open {
+                    p.accent
+                } else {
+                    p.line_strong
+                })
+                .child(kit::icon(
+                    Icon::Sparkles,
+                    component::ICON_SMALL,
+                    p.accent_strong,
+                ))
+                .child(text(
+                    ty::BUTTON_SMALL,
+                    if self.ai.open { p.accent_strong } else { p.ink },
+                    "Ask AI",
+                ))
+                .when(self.width == Width::Wide, |b| {
+                    b.child(kit::kbd(&p, "Ctrl J"))
+                })
+                .when(pending, |b| b.child(dot(p.accent))),
+            true,
+            |this, window, cx| this.toggle_ai(window, cx),
+            cx,
+        )
+        .aria_label(if pending {
+            "Ask AI · proposal waiting for review"
+        } else {
+            "Ask AI"
+        })
+        .aria_toggled(toggled(self.ai.open))
+    }
+
+    pub(in crate::ui::shell) fn ai_width_changed(&mut self, window: &Window) {
+        let before = self.ai_shares_detail();
+        self.ai.viewport = f32::from(window.viewport_size().width);
+        if before != self.ai_shares_detail() {
+            self.settle_detail();
+        }
+    }
+
+    pub(in crate::ui::shell) fn ai_pane(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<AnyElement> {
+        if !self.ai.open {
+            return None;
+        }
+        let p = self.palette;
+        let width = self.columns(window).width(Pane::Ai);
+        let pane = self.ai_panel(width, window, cx).into_any_element();
+        Some(if self.ai_docked() {
+            pane
+        } else {
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .left(px(self.columns(window).width(Pane::Sidebar)))
+                .child(
+                    div()
+                        .id("assistant-overlay-scrim")
+                        .absolute()
+                        .inset_0()
+                        .bg(p.scrim)
+                        .occlude()
+                        .on_click(cx.listener(|this, _, window, cx| this.close_ai(window, cx))),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .top_0()
+                        .bottom_0()
+                        .right_0()
+                        .shadow(kit::overlay_shadow(&p))
+                        .child(pane),
+                )
+                .into_any_element()
+        })
+    }
+
+    fn ai_panel(&self, width: f32, window: &Window, cx: &mut Context<Self>) -> Stateful<Div> {
+        let p = self.palette;
+        let view = self.ai.view();
+        let title = view.turns.first().map_or_else(
+            || "New chat".into(),
+            |turn| model::labels::one_line(&turn.prompt),
+        );
+        let is_empty = view.turns.is_empty();
+        let pending = match view.composer {
+            Composer::Review {
+                selected, total, ..
+            } => Some((if self.ai.review.zero { 0 } else { selected }, total)),
+            _ => None,
+        };
+        let header = div()
+            .flex()
+            .flex_none()
+            .items_center()
+            .h(px(desktop::DETAIL_TOP))
+            .px(px(space::S4))
+            .gap(px(space::S2))
+            .border_b_1()
+            .border_color(p.line)
+            .child(kit::agent_mark(
+                self.theme,
+                Agent::Assistant,
+                component::AGENT_MARK,
+            ))
+            .child(one_line(text(ty::NAV_COLLECTION, p.ink, title)).flex_1())
+            .child(self.ai_icon(
+                "assistant-new",
+                Icon::Plus,
+                "New chat",
+                !is_empty,
+                |this, window, cx| this.new_ai_chat(window, cx),
+                cx,
+            ))
+            .child(self.ai_icon(
+                "assistant-settings",
+                Icon::Settings,
+                "AI settings",
+                true,
+                |this, window, cx| this.open_ai_settings(window, cx),
+                cx,
+            ))
+            .child(self.ai_icon(
+                "assistant-close",
+                Icon::X,
+                "Close assistant",
+                true,
+                |this, window, cx| this.close_ai(window, cx),
+                cx,
+            ));
+        let mut feed = div()
+            .id("assistant-feed")
+            .flex_1()
+            .min_h_0()
+            .overflow_y_scroll()
+            .track_scroll(&self.ai.scroll);
+        if is_empty {
+            feed = feed.child(
+                div()
+                    .min_h_full()
+                    .flex()
+                    .flex_col()
+                    .justify_end()
+                    .child(self.ai_empty(&view, cx)),
+            );
+        } else {
+            feed = feed.child(
+                div()
+                    .p(px(space::S4))
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::S4))
+                    .children(
+                        view.turns
+                            .iter()
+                            .enumerate()
+                            .map(|(i, turn)| self.ai_turn(turn, i, i + 1 == view.turns.len(), cx)),
+                    ),
+            );
+        }
+        let banner = pending.map(|(selected, total)| {
+            div()
+                .h(px(component::ICON_BUTTON))
+                .px(px(space::S3))
+                .flex()
+                .items_center()
+                .gap(px(space::S2))
+                .flex_none()
+                .bg(p.wash)
+                .border_y_1()
+                .border_color(p.line)
+                .child(kit::icon(
+                    Icon::CircleAlert,
+                    component::ICON_SMALL,
+                    p.accent_strong,
+                ))
+                .child(
+                    text(
+                        ty::META,
+                        p.ink,
+                        if total == 1 {
+                            "1 proposal waiting for review".into()
+                        } else {
+                            format!("{selected} of {total} changes selected")
+                        },
+                    )
+                    .flex_1(),
+                )
+                .child(self.ai_action(
+                    "assistant-jump",
+                    text(ty::BUTTON_SMALL, p.accent_strong, "Jump up"),
+                    true,
+                    |this, _, cx| {
+                        this.ai.scroll.scroll_to_bottom();
+                        cx.notify();
+                    },
+                    cx,
+                ))
+        });
+        div()
+            .id("assistant-panel")
+            .track_focus(&self.ai.panel)
+            .tab_group()
+            .aria_label("Ask AI")
+            .w(px(width))
+            .h_full()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .min_h_0()
+            .border_l_1()
+            .border_color(p.line)
+            .bg(p.pane)
+            .block_mouse_except_scroll()
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if super::super::navigation_tab(e) {
+                    if e.keystroke.modifiers.shift {
+                        window.focus_prev(cx);
+                    } else {
+                        window.focus_next(cx);
+                    }
+                    cx.stop_propagation();
+                    cx.notify();
+                } else if !e.is_held
+                    && !e.keystroke.modifiers.modified()
+                    && e.keystroke.key == "escape"
+                {
+                    this.escape_ai(window, cx);
+                    cx.stop_propagation();
+                }
+            }))
+            .child(header)
+            .child(feed)
+            .children(self.ai.notice.as_ref().map(|notice| {
+                text(ty::META, p.danger_ink, notice.clone())
+                    .bg(p.danger_bg)
+                    .px(px(space::S3))
+                    .py(px(space::S2))
+            }))
+            .children(banner)
+            .child(self.ai_composer(&view, window, cx))
+    }
+
+    fn ai_empty(&self, view: &AssistantView, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let ready = view.model.is_some();
+        let examples = [
+            (
+                Icon::Calendar,
+                "What’s due this week?",
+                "What's due this week?",
+            ),
+            (
+                Icon::List,
+                "Summarize my open tasks",
+                "Summarize my open tasks.",
+            ),
+            (
+                Icon::Flag,
+                "Review my priorities",
+                "Help me review my priorities: ",
+            ),
+            (
+                Icon::Plus,
+                "Turn a rough note into tasks…",
+                "Turn this note into tasks: ",
+            ),
+        ];
+        let mut result = div().flex().flex_col().gap(px(space::S3)).p(px(space::S4)).pb(px(space::S5))
+            .child(div().size(px(component::BUTTON)).flex().items_center().justify_center().bg(p.wash).rounded(px(radius::LG)).border_1().border_color(p.line)
+                .child(kit::icon(Icon::Sparkles, component::ICON, p.accent_strong)))
+            .child(text(ty::DETAIL_TITLE, p.ink, if ready { "What can I help plan?" } else { "Connect a model" }))
+            .child(text(ty::NOTES, p.ink_2, if ready {
+                "Ask about your tasks, or describe changes to make. Every edit or new task waits for your approval first."
+            } else { "Connect your own model server to ask about tasks and prepare changes. Nothing is sent until you choose to connect or send a message." }));
+        if ready {
+            result =
+                result.child(
+                    div()
+                        .mt(px(space::S3))
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S2))
+                        .children(examples.into_iter().enumerate().map(
+                            |(i, (icon, label, value))| {
+                                self.ai_action(
+                                    format!("assistant-suggestion-{i}"),
+                                    div()
+                                        .w_full()
+                                        .min_h(px(component::BUTTON))
+                                        .px(px(space::S3))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(space::S2))
+                                        .border_1()
+                                        .border_color(p.line)
+                                        .rounded(px(radius::MD))
+                                        .bg(p.raised)
+                                        .child(kit::icon(
+                                            icon,
+                                            component::ICON_SMALL,
+                                            p.accent_strong,
+                                        ))
+                                        .child(text(ty::BODY, p.ink, label).flex_1())
+                                        .child(kit::icon(Icon::ArrowUpRight, space::S3, p.ink_3)),
+                                    true,
+                                    move |this, window, cx| {
+                                        this.ai.composer.update(cx, |a, cx| a.set_text(value, cx));
+                                        this.focus_ai(window, cx);
+                                        cx.notify();
+                                    },
+                                    cx,
+                                )
+                            },
+                        )),
+                );
+        } else {
+            result = result.child(
+                box_panel(&p)
+                    .p(px(space::S3))
+                    .gap(px(space::S2))
+                    .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
+                    .child(text(
+                        ty::META,
+                        p.ink_3,
+                        "OpenAI-compatible · no cloud fallback",
+                    ))
+                    .child(div().flex().child(self.ai_button(
+                        "assistant-connect",
+                        "Open AI settings",
+                        Tone::Primary,
+                        true,
+                        |this, w, cx| this.open_ai_settings(w, cx),
+                        cx,
+                    ))),
+            );
+        }
+        result
+    }
+
+    fn ai_composer(&self, view: &AssistantView, window: &Window, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let streaming = matches!(view.composer, Composer::Streaming { .. });
+        let ready = view.composer != Composer::ChooseModel;
+        let body = self.ai.composer.read(cx);
+        let focused = body.focus_handle.is_focused(window);
+        let can_send =
+            streaming || (ready && !body.content.trim().is_empty() && self.retry_seconds() == 0);
+        let placeholder = match view.composer {
+            Composer::ChooseModel => "Choose a model to start",
+            Composer::Review { .. } => "Approve above, or reply to adjust…",
+            _ => "Ask anything, or propose a change…",
+        };
+        if body.placeholder.as_ref() != placeholder {
+            self.ai.composer.update(cx, |a, cx| {
+                a.placeholder = placeholder.into();
+                cx.notify();
+            });
+        }
+        let send = self
+            .ai_action(
+                "assistant-send",
+                div()
+                    .size(px(component::BUTTON_SMALL))
+                    .flex_none()
+                    .rounded(px(radius::MD))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .border_color(if streaming { p.line_strong } else { p.line })
+                    .bg(if can_send && !streaming {
+                        p.accent_fill
+                    } else if streaming {
+                        p.raised
+                    } else {
+                        p.canvas
+                    })
+                    .child(kit::icon(
+                        if streaming {
+                            Icon::Square
+                        } else {
+                            Icon::ArrowUp
+                        },
+                        component::ICON_SMALL,
+                        if streaming {
+                            p.ink
+                        } else if can_send {
+                            p.on_accent
+                        } else {
+                            p.ink_3
+                        },
+                    )),
+                can_send,
+                |this, _, cx| {
+                    if matches!(this.ai.view().composer, Composer::Streaming { .. }) {
+                        this.ai.controller.cancel();
+                    } else {
+                        this.send_ai_input(cx);
+                    }
+                },
+                cx,
+            )
+            .aria_label(if streaming {
+                "Stop reply"
+            } else {
+                "Send message"
+            });
+        let hidden = if self.ai.fixture.is_some() {
+            view.turns.last().map_or(1, |t| t.summary.private_lists)
+        } else {
+            let state = self.store.view();
+            state
+                .lists
+                .keys()
+                .filter(|&&id| state.is_live(id.into()) && !self.ai.profile.lists.contains_key(&id))
+                .count()
+        };
+        let model = view
+            .model
+            .as_ref()
+            .map_or("No model enabled", |m| m.model.as_str());
+        let failed = view
+            .turns
+            .last()
+            .is_some_and(|t| matches!(t.error, Some(AssistantError::Provider(_))));
+        let route = if ready {
+            "Private network"
+        } else {
+            "Assistant off"
+        };
+        let privacy = self
+            .ai_action(
+                "assistant-route",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S2))
+                    .min_w_0()
+                    .child(dot(if failed {
+                        p.danger
+                    } else if ready {
+                        p.success
+                    } else {
+                        p.ink_3
+                    }))
+                    .child(text(ty::META, p.ink_2, route).flex_none())
+                    .child(one_line(text(ty::COUNT, p.ink_3, format!("· {model}"))))
+                    .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
+                true,
+                |this, w, cx| this.open_ai_settings(w, cx),
+                cx,
+            )
+            .aria_label(format!("{route} · {model} · AI settings"));
+        let visibility = self
+            .ai_action(
+                "assistant-privacy",
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S1))
+                    .flex_none()
+                    .child(kit::icon(Icon::EyeOff, space::S3, p.ink_3))
+                    .child(text(
+                        ty::COUNT,
+                        p.ink_3,
+                        format!(
+                            "{hidden} {} hidden",
+                            if hidden == 1 { "list" } else { "lists" }
+                        ),
+                    )),
+                true,
+                |this, w, cx| this.open_ai_settings(w, cx),
+                cx,
+            )
+            .aria_label(format!("{hidden} lists hidden · Edit list access"));
+        div()
+            .flex_none()
+            .flex()
+            .flex_col()
+            .gap(px(space::S2))
+            .px(px(space::S3))
+            .py(px(space::S2))
+            .border_t_1()
+            .border_color(p.line)
+            .child(
+                div()
+                    .min_h(px(desktop::AI_COMPOSER_MIN))
+                    .max_h(px(desktop::AI_COMPOSER_MAX))
+                    .border_1()
+                    .border_color(if focused { p.accent_strong } else { p.control })
+                    .rounded(px(radius::LG))
+                    .bg(p.raised)
+                    .px(px(space::S3))
+                    .py(px(space::S2))
+                    .flex()
+                    .items_end()
+                    .gap(px(space::S2))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .min_h(px(ty::BODY.line_height))
+                            .max_h(px(desktop::AI_COMPOSER_MAX - space::S5))
+                            .flex()
+                            .items_center()
+                            .child(if ready {
+                                div()
+                                    .id("assistant-compose-field")
+                                    .w_full()
+                                    .max_h(px(desktop::AI_COMPOSER_MAX - space::S5))
+                                    .overflow_y_scroll()
+                                    .style(ty::BODY)
+                                    .child(self.ai.composer.clone())
+                                    .into_any_element()
+                            } else {
+                                text(ty::BODY, p.ink_3, placeholder).into_any_element()
+                            }),
+                    )
+                    .child(send),
+            )
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .items_center()
+                    .gap(px(space::S2))
+                    .child(privacy)
+                    .child(visibility),
+            )
+    }
+
+    fn ai_turn(&self, turn: &TurnView, index: usize, last: bool, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let mut output = div().flex().flex_col().gap(px(space::S3)).child(
+            div()
+                .ml(px(space::S8))
+                .px(px(space::S3))
+                .py(px(space::S2))
+                .rounded(px(radius::LG))
+                .border_1()
+                .border_color(p.line)
+                .bg(p.wash)
+                .child(text(ty::BODY, p.ink, turn.prompt.clone())),
+        );
+        if turn.stale_snapshot || turn.text_only {
+            output = output.child(text(
+                ty::META,
+                p.ink_3,
+                if turn.text_only {
+                    "Text only · no task access for this reply"
+                } else {
+                    "Offline · reading the last synced copy"
+                },
+            ));
+        }
+        if !turn.steps.is_empty() {
+            output = output.child(self.ai_steps(turn, index, cx));
+        }
+        if !turn.prose.is_empty() {
+            output = output.child(text(ty::NOTES, p.ink, turn.prose.clone()));
+        }
+        if !turn.task_links.is_empty() {
+            output = output.child(
+                div().flex().flex_col().gap(px(space::S1)).children(
+                    turn.task_links
+                        .iter()
+                        .map(|task| self.ai_task_link(task, format!("chat-{index}"), cx)),
+                ),
+            );
+        }
+        if let Some(card) = &turn.proposal {
+            output = output.child(self.ai_proposal(turn, card, cx));
+        }
+        if let Some(error) = turn.error {
+            if error == AssistantError::Cancelled {
+                return output.child(text(ty::META, p.ink_3, "Reply stopped"));
+            }
+            let message = match error {
+                AssistantError::Provider(error) => problem(error),
+                error => error.to_string(),
+            };
+            output = output.child(
+                box_panel(&p)
+                    .border_l(px(component::PROPOSAL_BAR))
+                    .border_color(p.danger)
+                    .p(px(space::S3))
+                    .gap(px(space::S2))
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S2))
+                            .child(kit::icon(
+                                Icon::CircleAlert,
+                                component::ICON_SMALL,
+                                p.danger_ink,
+                            ))
+                            .child(text(ty::CAPS_LABEL, p.danger_ink, "REPLY UNAVAILABLE")),
+                    )
+                    .child(text(ty::BODY, p.ink_2, message))
+                    .when(last, |error| {
+                        let seconds = self.retry_seconds();
+                        let prompt = turn.prompt.clone();
+                        error.child(
+                            div()
+                                .flex()
+                                .gap(px(space::S2))
+                                .child(self.ai_button(
+                                    "assistant-retry",
+                                    if seconds > 0 {
+                                        format!("Retry in {seconds}s")
+                                    } else {
+                                        "Retry".into()
+                                    },
+                                    Tone::Outline,
+                                    seconds == 0 && self.ai.view().composer == Composer::Ready,
+                                    move |this, w, cx| {
+                                        this.focus_ai(w, cx);
+                                        this.send_ai(prompt.clone(), cx);
+                                    },
+                                    cx,
+                                ))
+                                .child(self.ai_button(
+                                    "assistant-error-settings",
+                                    "Settings",
+                                    Tone::Quiet,
+                                    true,
+                                    |this, w, cx| this.open_ai_settings(w, cx),
+                                    cx,
+                                )),
+                        )
+                    }),
+            );
+        }
+        output
+    }
+
+    fn retry_seconds(&self) -> u64 {
+        self.ai.rate_until.map_or(0, |end| {
+            let left = end.saturating_duration_since(Instant::now());
+            left.as_secs() + u64::from(left.subsec_nanos() > 0)
+        })
+    }
+
+    fn ai_steps(&self, turn: &TurnView, index: usize, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let running =
+            matches!(self.ai.view().composer, Composer::Streaming { turn: id } if id == turn.id);
+        let expanded = self.ai.step_details.contains(&turn.id);
+        let id = turn.id;
+        let summary = turn.summary;
+        let rows = if running {
+            &turn.steps[turn.steps.len().saturating_sub(3)..]
+        } else {
+            &turn.steps[..]
+        };
+        div()
+            .flex()
+            .flex_col()
+            .gap(px(space::S1))
+            .when(!running, |card| {
+                card.child(
+                    self.ai_action(
+                        format!("assistant-steps-{index}"),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(space::S1))
+                            .child(kit::icon(
+                                if expanded {
+                                    Icon::ChevronDown
+                                } else {
+                                    Icon::ChevronRight
+                                },
+                                space::S3,
+                                p.ink_3,
+                            ))
+                            .child(text(
+                                ty::META,
+                                p.ink_3,
+                                format!(
+                                    "Checked {} lists · Read {} tasks · {} hidden",
+                                    summary.lists_checked,
+                                    summary.tasks_read,
+                                    summary.private_lists
+                                ),
+                            )),
+                        true,
+                        move |this, _, cx| {
+                            if !this.ai.step_details.remove(&id) {
+                                this.ai.step_details.insert(id);
+                            }
+                            cx.notify();
+                        },
+                        cx,
+                    )
+                    .aria_expanded(expanded),
+                )
+            })
+            .when(running || expanded, |card| {
+                card.child(
+                    div()
+                        .pl(px(space::S2))
+                        .border_l_1()
+                        .border_color(p.line)
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S1))
+                        .children(rows.iter().map(|step| {
+                            let (icon, ink, duration) = match step.status {
+                                StepStatus::Running => {
+                                    (Icon::Search, p.accent_strong, String::new())
+                                }
+                                StepStatus::Done { elapsed, .. } => (
+                                    Icon::Check,
+                                    p.success,
+                                    format!("{} ms", elapsed.as_millis()),
+                                ),
+                                StepStatus::Failed => {
+                                    (Icon::CircleAlert, p.danger_ink, String::new())
+                                }
+                            };
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .child(kit::icon(icon, space::S3, ink))
+                                .child(text(ty::META, p.ink_2, step_label(step.kind)).flex_1())
+                                .child(text(ty::COUNT, p.ink_3, duration))
+                        })),
+                )
+            })
+    }
+
+    fn ai_task_link(
+        &self,
+        task: &TaskRef,
+        prefix: String,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        let p = self.palette;
+        let state = self.store.view();
+        let hue = state
+            .lists
+            .get(&task.list.id)
+            .map_or(self.shell.room.hue, |list| {
+                model::lists::hue(list.color.as_deref(), list.id.as_uuid().as_bytes())
+            });
+        let colors = theme::list_colors(self.theme, hue);
+        let id = task.id;
+        self.ai_action(
+            format!("assistant-task-{prefix}-{id}"),
+            div()
+                .min_h(px(component::BUTTON_SMALL))
+                .flex()
+                .items_center()
+                .gap(px(space::S2))
+                .px(px(space::S2))
+                .rounded(px(radius::MD))
+                .border_1()
+                .border_color(p.line)
+                .bg(p.pane)
+                .child(dot(colors.dot))
+                .child(
+                    one_line(text(ty::BODY, p.ink, model::labels::one_line(&task.title))).flex_1(),
+                )
+                .child(kit::icon(Icon::ArrowUpRight, space::S3, p.ink_3)),
+            state.is_live(id.into()),
+            move |this, window, cx| this.open_ai_task(id, window, cx),
+            cx,
+        )
+        .aria_label(format!(
+            "Open task {}",
+            model::labels::one_line(&task.title)
+        ))
+    }
+
+    fn ai_proposal(&self, turn: &TurnView, card: &ProposalCard, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let id = card.preview.id;
+        let digest = card.preview.digest;
+        match card.status {
+            ProposalStatus::Submitted => return self.ai_receipt(card, cx),
+            ProposalStatus::Declined | ProposalStatus::Superseded => {
+                return box_panel(&p).p(px(space::S2)).child(text(
+                    ty::META,
+                    p.ink_3,
+                    if card.status == ProposalStatus::Declined {
+                        "Proposal declined"
+                    } else {
+                        "Superseded by your follow-up"
+                    },
+                ));
+            }
+            _ => {}
+        }
+        let stale = card.status == ProposalStatus::Stale;
+        let selected = self.ai.review.indices(card);
+        let batch = card.available.len() > 1;
+        let kind = card.preview.kind().unwrap_or(ProposalKind::Create);
+        let (icon, label, ink) = proposal_kind(kind, &p);
+        let band = if kind == ProposalKind::Destructive {
+            p.danger_bg
+        } else {
+            p.raised
+        };
+        let tone = if kind == ProposalKind::Destructive {
+            Tone::Danger
+        } else {
+            Tone::Primary
+        };
+        let each = if stale { None } else { self.ai.review.each };
+        let mut label = if batch {
+            format!(
+                "{} {}",
+                card.available.len(),
+                if card
+                    .available
+                    .iter()
+                    .flat_map(|i| &i.effects)
+                    .all(|e| e.kind() == ProposalKind::Create)
+                {
+                    "NEW TASKS"
+                } else {
+                    "CHANGES"
+                }
+            )
+        } else {
+            label.into()
+        };
+        if let Some(i) = each {
+            label = format!("{} OF {}", i + 1, card.available.len());
+        }
+        let mut top = div()
+            .flex()
+            .items_center()
+            .justify_between()
+            .gap(px(space::S2))
+            .px(px(space::S3))
+            .py(px(space::S2))
+            .bg(band)
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S2))
+                    .child(kit::icon(icon, component::ICON_SMALL, ink))
+                    .child(text(ty::CAPS_LABEL, ink, label)),
+            );
+        if batch && !stale {
+            top = top.child(self.ai_button(
+                "assistant-review-each",
+                if each.is_some() {
+                    "Summary"
+                } else {
+                    "Review each"
+                },
+                Tone::Outline,
+                true,
+                |this, _, cx| {
+                    this.ai.review.each = if this.ai.review.each.is_some() {
+                        None
+                    } else {
+                        Some(0)
+                    };
+                    cx.notify();
+                },
+                cx,
+            ));
+        } else if let Some(list) = card
+            .preview
+            .items
+            .first()
+            .and_then(|i| i.effects.first())
+            .map(effect_task)
+            .map(|t| &t.list)
+        {
+            top = top.child(self.ai_list_chip(list));
+        }
+        let mut result = box_panel(&p)
+            .border_color(if kind == ProposalKind::Destructive {
+                p.danger
+            } else {
+                p.line_strong
+            })
+            .child(
+                div()
+                    .flex()
+                    .w_full()
+                    .child(div().flex_none().w(px(component::PROPOSAL_BAR)).bg(ink))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .flex_col()
+                            .child(top)
+                            .child(line(&p))
+                            .children(if !batch {
+                                card.preview
+                                    .items
+                                    .first()
+                                    .map(|item| self.ai_effects(item, &id.to_string(), cx))
+                                    .into_iter()
+                                    .collect::<Vec<_>>()
+                            } else if let Some(i) = each {
+                                card.available
+                                    .get(i)
+                                    .map(|item| {
+                                        self.ai_review_item(turn.id, card, item, i, &selected, cx)
+                                    })
+                                    .into_iter()
+                                    .collect()
+                            } else {
+                                card.available
+                                    .iter()
+                                    .take(
+                                        if card.available.len() <= 10 || self.ai.review.show_all {
+                                            usize::MAX
+                                        } else {
+                                            5
+                                        },
+                                    )
+                                    .map(|item| {
+                                        self.ai_batch_row(
+                                            turn.id, card, item, &selected, !stale, cx,
+                                        )
+                                    })
+                                    .collect()
+                            })
+                            .when(
+                                batch && each.is_none() && !stale && card.available.len() > 10,
+                                |c| {
+                                    c.child(self.ai_button(
+                                        "assistant-show-batch",
+                                        if self.ai.review.show_all {
+                                            "Show fewer".into()
+                                        } else {
+                                            format!("Show all {} changes", card.available.len())
+                                        },
+                                        Tone::Quiet,
+                                        true,
+                                        |this, _, cx| {
+                                            this.ai.review.show_all = !this.ai.review.show_all;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ))
+                                },
+                            )
+                            .child(line(&p))
+                            .child({
+                                let ready = self.ai.fixture.is_some()
+                                    || self.store.session().is_some_and(|s| {
+                                        s.client()
+                                            .assistant_snapshot()
+                                            .is_some_and(|snapshot| !snapshot.stale)
+                                            && s.client().status().pending == 0
+                                    });
+                                let confirm = self
+                                    .ai_button(
+                                        "assistant-approve",
+                                        if batch {
+                                            if selected.len() == card.available.len() {
+                                                format!("Approve all ({})", selected.len())
+                                            } else {
+                                                format!("Approve {}", selected.len())
+                                            }
+                                        } else {
+                                            match kind {
+                                                ProposalKind::Edit => "Approve edit",
+                                                ProposalKind::Destructive => "Delete",
+                                                _ => "Approve",
+                                            }
+                                            .into()
+                                        },
+                                        tone,
+                                        ready && !selected.is_empty() && !stale,
+                                        move |this, _, cx| this.approve_ai(id, digest, cx),
+                                        cx,
+                                    )
+                                    .into_any_element();
+                                let decline = self
+                                    .ai_button(
+                                        "assistant-decline",
+                                        if batch { "Decline all" } else { "Decline" },
+                                        Tone::Outline,
+                                        true,
+                                        move |this, _, cx| this.decline_ai(id, digest, cx),
+                                        cx,
+                                    )
+                                    .into_any_element();
+                                let mut buttons = div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S2))
+                                    .px(px(space::S3))
+                                    .py(px(space::S2));
+                                if stale {
+                                    let prompt = turn.prompt.clone();
+                                    buttons = buttons
+                                        .child(self.ai_button(
+                                            "assistant-refresh-proposal",
+                                            "Refresh proposal",
+                                            Tone::Primary,
+                                            self.retry_seconds() == 0,
+                                            move |this, _, cx| this.send_ai(prompt.clone(), cx),
+                                            cx,
+                                        ))
+                                        .child(decline);
+                                } else if kind == ProposalKind::Destructive {
+                                    buttons = buttons.child(decline).child(confirm);
+                                } else {
+                                    buttons = buttons.child(confirm).child(decline);
+                                }
+                                buttons
+                            }),
+                    ),
+            );
+        if stale {
+            result = result.child(text(ty::META, p.danger_ink, "Tasks changed since this proposal was prepared. Review a new proposal before approving.").bg(p.danger_bg).px(px(space::S3)).py(px(space::S2)));
+        }
+        result
+    }
+
+    fn ai_batch_row(
+        &self,
+        turn: Uuid,
+        card: &ProposalCard,
+        original: &ProposalItem,
+        selected: &BTreeSet<usize>,
+        live: bool,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let p = self.palette;
+        let index = original.index;
+        let id = card.preview.id;
+        let digest = card.preview.digest;
+        let on = selected.contains(&index);
+        let item = card
+            .preview
+            .items
+            .iter()
+            .find(|i| i.index == index)
+            .unwrap_or(original);
+        let task = item.effects.first().map(effect_task);
+        let expanded = self.ai.review.expanded.contains(&index);
+        let toggle = self
+            .ai_action(
+                format!("assistant-include-{index}"),
+                div()
+                    .size(px(space::S4))
+                    .flex_none()
+                    .rounded_full()
+                    .border_1()
+                    .border_color(if on { p.accent_fill } else { p.control })
+                    .bg(if on { p.accent_fill } else { p.raised })
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(on, |b| {
+                        b.child(kit::icon(Icon::Check, space::S3, p.on_accent))
+                    }),
+                live,
+                move |this, _, cx| this.select_ai_item(turn, id, digest, index, cx),
+                cx,
+            )
+            .aria_label(format!(
+                "{} change {}",
+                if on { "Exclude" } else { "Include" },
+                index + 1
+            ))
+            .aria_toggled(toggled(on));
+        let detail = self
+            .ai_action(
+                format!("assistant-expand-{index}"),
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .justify_between()
+                    .items_start()
+                    .gap(px(space::S2))
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .min_w_0()
+                            .gap(px(space::S1))
+                            .child(one_line(text(
+                                ty::TASK_TITLE,
+                                if on { p.ink } else { p.ink_3 },
+                                task.map_or_else(
+                                    || "Change".into(),
+                                    |t| model::labels::one_line(&t.title),
+                                ),
+                            )))
+                            .children(task.map(|t| {
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S2))
+                                    .child(self.ai_list_chip(&t.list))
+                                    .child(one_line(text(ty::COUNT, p.ink_3, date(t.due))))
+                            })),
+                    )
+                    .child(kit::icon(
+                        if expanded {
+                            Icon::ChevronDown
+                        } else {
+                            Icon::ChevronRight
+                        },
+                        space::S3,
+                        p.ink_3,
+                    )),
+                live,
+                move |this, _, cx| {
+                    if !this.ai.review.expanded.remove(&index) {
+                        this.ai.review.expanded.insert(index);
+                    }
+                    cx.notify();
+                },
+                cx,
+            )
+            .aria_expanded(expanded);
+        div()
+            .flex()
+            .flex_col()
+            .border_b_1()
+            .border_color(p.line)
+            .child(
+                div()
+                    .flex()
+                    .items_start()
+                    .gap(px(space::S2))
+                    .px(px(space::S3))
+                    .py(px(space::S2))
+                    .child(toggle)
+                    .child(detail),
+            )
+            .when(expanded, |d| {
+                d.child(
+                    div()
+                        .mx(px(space::S3))
+                        .mb(px(space::S2))
+                        .bg(p.canvas)
+                        .rounded(px(radius::MD))
+                        .child(self.ai_batch_effects(item, index, cx)),
+                )
+            })
+    }
+
+    fn ai_review_item(
+        &self,
+        turn: Uuid,
+        card: &ProposalCard,
+        original: &ProposalItem,
+        page: usize,
+        selected: &BTreeSet<usize>,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let p = self.palette;
+        let index = original.index;
+        let id = card.preview.id;
+        let digest = card.preview.digest;
+        let on = selected.contains(&index);
+        let item = card
+            .preview
+            .items
+            .iter()
+            .find(|i| i.index == index)
+            .unwrap_or(original);
+        div()
+            .flex()
+            .flex_col()
+            .child(self.ai_effects(item, &format!("review-{index}"), cx))
+            .child(
+                div()
+                    .px(px(space::S3))
+                    .py(px(space::S2))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S2))
+                    .child(self.ai_button(
+                        "assistant-review-prev",
+                        "Prev",
+                        Tone::Outline,
+                        page > 0,
+                        move |this, _, cx| {
+                            this.ai.review.each = Some(page.saturating_sub(1));
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(self.ai_button(
+                        "assistant-review-next",
+                        "Next",
+                        Tone::Outline,
+                        page + 1 < card.available.len(),
+                        move |this, _, cx| {
+                            this.ai.review.each = Some(page + 1);
+                            cx.notify();
+                        },
+                        cx,
+                    ))
+                    .child(self.ai_button(
+                        "assistant-review-select",
+                        if on { "Skip change" } else { "Include change" },
+                        Tone::Quiet,
+                        true,
+                        move |this, _, cx| this.select_ai_item(turn, id, digest, index, cx),
+                        cx,
+                    ))
+                    .child(text(
+                        ty::COUNT,
+                        p.ink_3,
+                        if on { "Included" } else { "Skipped" },
+                    )),
+            )
+    }
+
+    fn ai_list_chip(&self, list: &todo_client::assistant::ListRef) -> Div {
+        let hue = self
+            .store
+            .view()
+            .lists
+            .get(&list.id)
+            .map_or(self.shell.room.hue, |l| {
+                model::lists::hue(l.color.as_deref(), l.id.as_uuid().as_bytes())
+            });
+        let c = theme::list_colors(self.theme, hue);
+        div()
+            .h(px(component::CHIP))
+            .max_w(px(desktop::CHIP_MAX))
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(component::CHIP_GAP))
+            .px(px(component::CHIP_PAD_X))
+            .rounded(px(radius::CHIP))
+            .bg(c.tint)
+            .child(dot(c.dot))
+            .child(one_line(text(
+                ty::META,
+                c.ink,
+                model::labels::one_line(&list.name),
+            )))
+    }
+
+    fn ai_batch_effects(&self, item: &ProposalItem, index: usize, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        if let [
+            Effect::Created {
+                task,
+                priority,
+                status,
+                placement,
+            },
+        ] = item.effects.as_slice()
+        {
+            return div()
+                .p(px(space::S2))
+                .flex()
+                .flex_col()
+                .gap(px(space::S1))
+                .child(self.ai_field("Due", text(ty::COUNT, p.ink, date(task.due))))
+                .child(self.ai_field("Priority", text(ty::COUNT, p.ink, priority.name())))
+                .child(self.ai_field(
+                    "Placement",
+                    text(
+                        ty::META,
+                        p.ink_2,
+                        format!("{} · {}", stage(*status), position(*placement)),
+                    ),
+                ));
+        }
+        self.ai_effects(item, &format!("batch-{index}"), cx)
+    }
+
+    fn ai_effects(&self, item: &ProposalItem, context: &str, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let mut panel = div().p(px(space::S3)).flex().flex_col().gap(px(space::S2));
+        for (i, effect) in item.effects.iter().enumerate() {
+            panel = match effect {
+                Effect::Created {
+                    task,
+                    priority,
+                    status,
+                    placement,
+                } => panel
+                    .child(text(
+                        ty::TASK_TITLE,
+                        p.ink,
+                        model::labels::one_line(&task.title),
+                    ))
+                    .child(self.ai_field("List", self.ai_list_chip(&task.list)))
+                    .child(self.ai_field("Due", text(ty::COUNT, p.ink, date(task.due))))
+                    .child(self.ai_field("Priority", text(ty::COUNT, p.ink, priority.name())))
+                    .child(self.ai_field(
+                        "Status",
+                        text(
+                            ty::META,
+                            p.ink,
+                            match status {
+                                WorkflowStatus::Backlog => "Backlog",
+                                WorkflowStatus::Todo => "To do",
+                                WorkflowStatus::InProgress => "In progress",
+                            },
+                        ),
+                    ))
+                    .child(self.ai_field(
+                        "Position",
+                        text(
+                            ty::META,
+                            p.ink,
+                            match placement {
+                                Placement::First => "Top of the list",
+                                Placement::Last => "End of the list",
+                                _ => "Relative to another task",
+                            },
+                        ),
+                    )),
+                Effect::Edited { task, changes } => panel
+                    .child(self.ai_task_link(task, format!("{context}-{i}"), cx))
+                    .children(changes.iter().map(|change| self.ai_diff(change))),
+                Effect::Deleted { task } => panel
+                    .child(self.ai_task_link(task, format!("{context}-{i}"), cx))
+                    .child(text(
+                        ty::META,
+                        p.danger_ink,
+                        "Moves to Trash. You can undo this change from Activity.",
+                    )),
+            };
+        }
+        panel
+    }
+
+    fn ai_field(&self, label: &'static str, value: Div) -> Div {
+        div()
+            .flex()
+            .items_start()
+            .gap(px(space::S2))
+            .child(
+                text(ty::META, self.palette.ink_3, label)
+                    .w(px(space::S10 + space::S5))
+                    .flex_none(),
+            )
+            .child(value)
+    }
+
+    fn ai_diff(&self, change: &Edit) -> Div {
+        let p = self.palette;
+        let (field, before, after) = match change {
+            Edit::Title(c) => (
+                "Title",
+                model::labels::one_line(&c.old),
+                model::labels::one_line(&c.new),
+            ),
+            Edit::Due(c) => ("Due", date(c.old), date(c.new)),
+            Edit::StartDate(c) => ("Starts", date(c.old), date(c.new)),
+            Edit::Priority(c) => ("Priority", c.old.name().into(), c.new.name().into()),
+            Edit::Completed(c) => ("Status", completion(c.old), completion(c.new)),
+        };
+        let mut old = text(ty::META, p.ink_3, before);
+        old.text_style().strikethrough = Some(StrikethroughStyle {
+            thickness: px(elevation::HAIRLINE),
+            color: Some(p.ink_3),
+        });
+        self.ai_field(
+            field,
+            div()
+                .min_w_0()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .gap(px(space::S1))
+                .child(old)
+                .child(text(ty::META, p.ink_3, "→"))
+                .child(text(ty::NAV_SUB, p.ink, after)),
+        )
+    }
+
+    fn ai_receipt(&self, card: &ProposalCard, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let id = card.preview.id;
+        let receipt = self.ai.receipts.get(&id);
+        let sync = self.store.session().map(|s| s.client());
+        let mut undo = false;
+        let message = match receipt.zip(sync).map(|(r, sync)| {
+            (
+                sync.approval_outcome(&r.approval),
+                r.undo.map(|id| sync.undo_result(id)),
+            )
+        }) {
+            Some((ApprovalOutcome::Saving, _)) => "Saving approved changes…".into(),
+            Some((ApprovalOutcome::Pending, _)) => "Approved · waiting for sync".into(),
+            Some((ApprovalOutcome::Confirmed { .. }, Some(None))) => {
+                "Undoing approved changes…".into()
+            }
+            Some((ApprovalOutcome::Confirmed { .. }, Some(Some(Ok(()))))) => {
+                "Approved changes undone".into()
+            }
+            Some((ApprovalOutcome::Confirmed { .. }, Some(Some(Err(error))))) => {
+                undo = true;
+                error.into()
+            }
+            Some((ApprovalOutcome::Confirmed { .. }, None)) => {
+                undo = true;
+                format!(
+                    "{} confirmed · In-app assistant",
+                    change_count(card.preview.items.len())
+                )
+            }
+            Some((ApprovalOutcome::Rejected(rejection), _)) => {
+                todo_client::failure::approval_message(&rejection.code).into()
+            }
+            _ if self.ai.fixture.is_some() => {
+                undo = true;
+                "Added Pick up oat milk to Errands · Just now".into()
+            }
+            _ => "Receipt unavailable · check Activity".into(),
+        };
+        box_panel(&p).bg(p.canvas).p(px(space::S2)).child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(space::S2))
+                .child(kit::agent_mark(
+                    self.theme,
+                    Agent::Assistant,
+                    component::AGENT_MARK,
+                ))
+                .child(text(ty::META, p.ink_2, message).flex_1())
+                .when(undo, |r| {
+                    r.child(self.ai_button(
+                        format!("assistant-undo-{id}"),
+                        "Undo",
+                        Tone::Quiet,
+                        true,
+                        move |this, _, cx| this.undo_ai(id, cx),
+                        cx,
+                    ))
+                }),
+        )
+    }
+
+    pub(in crate::ui::shell) fn ai_settings_overlay(
+        &self,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Option<Stateful<Div>> {
+        let setup = self.ai.settings.as_ref()?;
+        let p = self.palette;
+        let running = matches!(setup.check, Check::Running(_));
+        let allowed = !running && self.retry_seconds() == 0;
+        let (indicator, connection) = match &setup.check {
+            Check::NotTested => (p.ink_3, "Connection not tested".into()),
+            Check::Running(label) => (p.accent, (*label).into()),
+            Check::Catalog { count, elapsed } => (
+                p.success,
+                format!("Connected · {count} models · {} ms", elapsed.as_millis()),
+            ),
+            Check::NoCatalog => (
+                p.ink_3,
+                "Model listing not supported. Enter a model ID manually.".into(),
+            ),
+            Check::Capable(support) => (p.success, support.label().into()),
+            Check::Failed(message) => (p.danger, message.clone()),
+        };
+        let picker = if setup.pick_model {
+            Some(
+                box_panel(&p).max_h(px(desktop::AI_COMPOSER_MAX)).child(
+                    div()
+                        .id("assistant-model-catalog")
+                        .overflow_y_scroll()
+                        .max_h(px(desktop::AI_COMPOSER_MAX))
+                        .flex()
+                        .flex_col()
+                        .children(setup.models.iter().enumerate().map(|(index, model)| {
+                            let id = model.id.clone();
+                            self.ai_action(
+                                format!("assistant-model-option-{index}"),
+                                one_line(text(ty::COUNT, p.ink, model.label.clone()))
+                                    .px(px(space::S2))
+                                    .py(px(space::S1))
+                                    .bg(if setup.draft.model == model.id {
+                                        p.wash
+                                    } else {
+                                        p.raised
+                                    }),
+                                true,
+                                move |this, _, cx| {
+                                    this.ai.model.update(cx, |i, cx| i.set_text(id.clone(), cx));
+                                    this.ai_setting_changed(Field::Model, cx);
+                                    if let Some(setup) = this.ai.settings.as_mut() {
+                                        setup.pick_model = false;
+                                    }
+                                },
+                                cx,
+                            )
+                            .aria_label(model.label.clone())
+                        })),
+                ),
+            )
+        } else {
+            None
+        };
+        let provider = box_panel(&p).flex_none().border_color(p.accent).child(
+            div()
+                .flex()
+                .w_full()
+                .child(
+                    div()
+                        .w(px(component::PROPOSAL_BAR))
+                        .flex_none()
+                        .bg(p.accent),
+                )
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .p(px(space::S3))
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S2))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(space::S2))
+                                .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
+                                .child(
+                                    div()
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(space::S1))
+                                        .child(dot(p.success))
+                                        .child(text(ty::CAPS_LABEL, p.ink_2, "PRIVATE NETWORK")),
+                                ),
+                        )
+                        .child(self.ai_setting_field("Base URL", self.ai.url.clone(), window, cx))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .child(
+                                    self.ai_setting_field(
+                                        "API key",
+                                        self.ai.key.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                    .flex_1(),
+                                )
+                                .when(!setup.draft.key.is_empty(), |r| {
+                                    r.child(self.ai_button(
+                                        "assistant-remove-key",
+                                        "Remove",
+                                        Tone::Quiet,
+                                        true,
+                                        |this, _, cx| {
+                                            this.ai.key.update(cx, |i, cx| {
+                                                i.set_text("", cx);
+                                                i.placeholder = "Optional bearer key".into();
+                                            });
+                                            this.ai_setting_changed(Field::Key, cx);
+                                        },
+                                        cx,
+                                    ))
+                                }),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .child(
+                                    self.ai_setting_field(
+                                        "Model",
+                                        self.ai.model.clone(),
+                                        window,
+                                        cx,
+                                    )
+                                    .flex_1(),
+                                )
+                                .child(self.ai_icon(
+                                    "assistant-catalog-toggle",
+                                    Icon::ChevronDown,
+                                    "Show discovered models",
+                                    !setup.models.is_empty(),
+                                    |this, _, cx| {
+                                        if let Some(setup) = this.ai.settings.as_mut() {
+                                            setup.pick_model = !setup.pick_model;
+                                            cx.notify();
+                                        }
+                                    },
+                                    cx,
+                                ))
+                                .child(self.ai_button(
+                                    "assistant-test",
+                                    "Test connection",
+                                    Tone::Outline,
+                                    allowed,
+                                    |this, _, cx| this.test_ai(false, cx),
+                                    cx,
+                                )),
+                        )
+                        .children(picker)
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .child(dot(indicator))
+                                .child(text(ty::META, p.ink_2, connection)),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_between()
+                                .gap(px(space::S2))
+                                .child(
+                                    text(
+                                        ty::META,
+                                        p.ink_3,
+                                        "Tests model replies and tools with invented data only.",
+                                    )
+                                    .flex_1(),
+                                )
+                                .child(self.ai_button(
+                                    "assistant-test-tools",
+                                    "Test model",
+                                    Tone::Outline,
+                                    allowed && valid_model(&setup.draft.model),
+                                    |this, _, cx| this.test_ai(true, cx),
+                                    cx,
+                                )),
+                        )
+                        .child(line(&p))
+                        .child(
+                            self.ai_action(
+                                "assistant-enabled",
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S2))
+                                    .p(px(space::S1))
+                                    .rounded(px(radius::MD))
+                                    .bg(if setup.draft.enabled {
+                                        p.wash
+                                    } else {
+                                        p.raised
+                                    })
+                                    .child(kit::icon(
+                                        if setup.draft.enabled {
+                                            Icon::CircleCheck
+                                        } else {
+                                            Icon::Circle
+                                        },
+                                        component::ICON_SMALL,
+                                        if setup.draft.enabled {
+                                            p.accent_strong
+                                        } else {
+                                            p.ink_3
+                                        },
+                                    ))
+                                    .child(text(
+                                        ty::BUTTON_SMALL,
+                                        p.ink,
+                                        "Enable assistant on this device",
+                                    )),
+                                true,
+                                |this, _, cx| {
+                                    if let Some(setup) = this.ai.settings.as_mut() {
+                                        setup.draft.enabled = !setup.draft.enabled;
+                                        cx.notify();
+                                    }
+                                },
+                                cx,
+                            )
+                            .aria_toggled(toggled(setup.draft.enabled)),
+                        ),
+                ),
+        );
+        let state = self.store.view();
+        let mut lists: Vec<_> = state
+            .lists
+            .values()
+            .filter(|l| state.is_live(l.id.into()))
+            .collect();
+        lists.sort_by_key(|l| {
+            (
+                l.collection
+                    .and_then(|id| state.collections.get(&id))
+                    .map(|c| c.name.as_str()),
+                l.name.as_str(),
+                l.id,
+            )
+        });
+        let list_controls = box_panel(&p)
+            .flex_none()
+            .children(lists.into_iter().map(|list| {
+                let list_id = list.id;
+                let color = theme::list_colors(
+                    self.theme,
+                    model::lists::hue(list.color.as_deref(), list_id.as_uuid().as_bytes()),
+                );
+                let name = model::labels::one_line(&list.name);
+                let group = list
+                    .collection
+                    .and_then(|id| state.collections.get(&id))
+                    .map(|c| model::labels::one_line(&c.name));
+                let title = group.map_or_else(|| name.clone(), |group| format!("{group} · {name}"));
+                let access = setup.draft.lists.get(&list_id).copied();
+                self.ai_action(
+                    format!("assistant-access-{list_id}"),
+                    div()
+                        .w_full()
+                        .h(px(component::BUTTON))
+                        .flex_none()
+                        .flex()
+                        .items_center()
+                        .gap(px(space::S2))
+                        .px(px(space::S3))
+                        .border_b_1()
+                        .border_color(p.line)
+                        .child(
+                            kit::glyph(model::lists::list_glyph(&list.name), color.glyph)
+                                .size(px(component::ICON_SMALL)),
+                        )
+                        .child(one_line(text(ty::BODY, p.ink, title.clone())).flex_1())
+                        .child(kit::icon(
+                            if access.is_none() {
+                                Icon::EyeOff
+                            } else {
+                                Icon::Eye
+                            },
+                            component::ICON_SMALL,
+                            if access == Some(Access::Private) {
+                                p.sun_ink
+                            } else {
+                                p.ink_3
+                            },
+                        ))
+                        .child(text(ty::META, p.ink_2, Access::name(access)))
+                        .child(kit::icon(Icon::ChevronDown, space::S3, p.ink_3)),
+                    true,
+                    move |this, _, cx| {
+                        if let Some(setup) = this.ai.settings.as_mut() {
+                            if let Some(access) =
+                                Access::next(setup.draft.lists.get(&list_id).copied())
+                            {
+                                if setup.draft.lists.contains_key(&list_id)
+                                    || setup.draft.lists.len() < 64
+                                {
+                                    setup.draft.lists.insert(list_id, access);
+                                } else {
+                                    setup.check = Check::Failed(
+                                        "You can share up to 64 lists on this device.".into(),
+                                    );
+                                }
+                            } else {
+                                setup.draft.lists.remove(&list_id);
+                            }
+                            cx.notify();
+                        }
+                    },
+                    cx,
+                )
+                .aria_label(format!(
+                    "{title}: {}. Activate to change access.",
+                    Access::name(access)
+                ))
+            }));
+        let settings = div().id("assistant-settings-dialog").track_focus(&self.ai.dialog).tab_group().role(Role::Dialog).aria_label("AI Assistant settings")
+            .w(px(desktop::AI_SETTINGS_WIDTH)).max_w_full().max_h_full().rounded(px(radius::XL)).bg(p.pane).shadow(kit::overlay_shadow(&p)).border_1().border_color(p.line_strong)
+            .flex().flex_col().occlude().overflow_hidden()
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if super::super::navigation_tab(e) {
+                    if e.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
+                    if !this.ai.dialog.contains_focused(window, cx) { window.focus(&this.ai.url.read(cx).focus_handle.clone(), cx); }
+                    cx.stop_propagation(); cx.notify();
+                } else if !e.is_held && !e.keystroke.modifiers.modified() && e.keystroke.key == "escape" { this.escape_ai(window, cx); cx.stop_propagation(); }
+            }))
+            .child(div().flex_none().px(px(space::S5)).py(px(space::S3)).flex().items_center().gap(px(space::S3)).border_b_1().border_color(p.line)
+                .child(kit::agent_mark(self.theme, Agent::Assistant, component::ICON_BUTTON)).child(text(ty::DETAIL_TITLE, p.ink, "AI Assistant").flex_1())
+                .child(self.ai_icon("assistant-settings-close", Icon::X, "Close AI settings without saving", true, |this, w, cx| this.close_ai_settings(w, cx), cx)))
+            .child(div().id("assistant-settings-scroll").min_h_0().overflow_y_scroll().px(px(space::S5)).py(px(space::S4)).flex().flex_col().gap(px(space::S3))
+                .child(kit::label(&p, "Model provider").flex_none()).child(provider)
+                .child(div().flex_none().flex().items_start().gap(px(space::S2)).p(px(space::S3)).rounded(px(radius::LG)).bg(p.canvas)
+                    .child(kit::icon(Icon::CloudOff, component::ICON_SMALL, p.ink_3))
+                    .child(text(ty::META, p.ink_2, "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights.")))
+                .child(kit::label(&p, "Lists the assistant can see").flex_none())
+                .child(text(ty::META, p.ink_3, "New lists are hidden. Changes apply to this device only. Select a row to change its access.").flex_none())
+                .child(list_controls))
+            .child(div().flex_none().flex().justify_between().items_center().gap(px(space::S2)).bg(p.canvas).border_t_1().border_color(p.line).px(px(space::S5)).py(px(space::S3))
+                .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, !self.ai.profile.url.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
+                .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
+        Some(
+            div()
+                .id("assistant-settings-overlay")
+                .absolute()
+                .inset_0()
+                .bg(p.scrim)
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(px(space::S5))
+                .occlude()
+                .child(settings),
+        )
+    }
+
+    fn ai_setting_field(
+        &self,
+        label: &'static str,
+        input: Entity<TextInput>,
+        window: &Window,
+        cx: &App,
+    ) -> Div {
+        let p = self.palette;
+        let focused = input.read(cx).focus_handle.is_focused(window);
+        div()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .gap(px(space::S2))
+            .child(
+                text(ty::META, p.ink_2, label)
+                    .w(px(space::S10 + space::S5))
+                    .flex_none(),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .h(px(component::ICON_BUTTON))
+                    .px(px(space::S2))
+                    .flex()
+                    .items_center()
+                    .overflow_hidden()
+                    .border_1()
+                    .border_color(if focused { p.accent_strong } else { p.control })
+                    .rounded(px(radius::MD))
+                    .bg(p.pane)
+                    .style(ty::COUNT)
+                    .child(input),
+            )
+    }
+}
+
+fn stage(status: WorkflowStatus) -> &'static str {
+    match status {
+        WorkflowStatus::Backlog => "Backlog",
+        WorkflowStatus::Todo => "To do",
+        WorkflowStatus::InProgress => "In progress",
+    }
+}
+
+fn position(placement: Placement) -> &'static str {
+    match placement {
+        Placement::First => "Top of the list",
+        Placement::Last => "End of the list",
+        _ => "Relative to another task",
+    }
+}
+
+fn toggled(on: bool) -> accesskit::Toggled {
+    if on {
+        accesskit::Toggled::True
+    } else {
+        accesskit::Toggled::False
+    }
+}
+
+fn change_count(count: usize) -> String {
+    format!("{count} {}", if count == 1 { "change" } else { "changes" })
+}
+
+fn effect_task(effect: &Effect) -> &TaskRef {
+    match effect {
+        Effect::Created { task, .. } | Effect::Edited { task, .. } | Effect::Deleted { task } => {
+            task
+        }
+    }
+}

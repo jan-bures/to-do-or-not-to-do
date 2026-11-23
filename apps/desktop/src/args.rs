@@ -39,6 +39,7 @@ Options:
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
                     quick-add-calendar, quick-add-priority, detail-due-calendar, pairing, pairing-code, open-failed or open-failed-confirm.
+                    Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-error.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -51,6 +52,11 @@ Options:
 /// The fixtures `--screenshot` can render. Invented sample data only.
 pub const FIXTURES: &[&str] = &[
     "my-day",
+    "ai-empty",
+    "ai-proposal",
+    "ai-batch",
+    "ai-settings",
+    "ai-error",
     "multi-select",
     "drag-reorder",
     "drag-destination",

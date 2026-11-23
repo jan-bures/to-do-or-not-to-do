@@ -29,7 +29,7 @@ accesskit = "0.24.1"
 todo-design = { path = "../../crates/todo-design", features = ["embed-fonts"] }
 # The domain model and the sync engine (tokio + reqwest transport, SQLite cache), also by path.
 todo-core = { path = "../../crates/todo-core" }
-todo-client = { path = "../../crates/todo-client", features = ["sqlite"] }
+todo-client = { path = "../../crates/todo-client", features = ["sqlite", "assistant"] }
 # Owner-only files and directories, reparse-point checks and durable replacement.
 todo-fs = { path = "../../crates/todo-fs" }
 # Local times for labels: the system time zone, with the tz database bundled on Windows.
@@ -47,6 +47,7 @@ thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 unicode-segmentation = "1"
+zeroize = "1"
 # Parses link targets and server addresses (only http and https links open).
 url = "2"
 

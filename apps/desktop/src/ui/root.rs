@@ -423,7 +423,10 @@ impl RootView {
             popouts.close_all(cx);
         }
         // The pairing's reminder toasts go with it.
-        shell.update(cx, |s, _| s.stop_reminders());
+        shell.update(cx, |s, cx| {
+            s.stop_reminders();
+            s.stop_assistant(cx);
+        });
         let stopped = session.shutdown();
         let server = session.server().to_string();
         let data = session.data().clone();
@@ -511,7 +514,10 @@ impl RootView {
             popouts.close_all(cx);
         }
         if let Screen::Shell(shell) = &self.screen {
-            shell.update(cx, |s, _| s.stop_reminders());
+            shell.update(cx, |s, cx| {
+                s.stop_reminders();
+                s.stop_assistant(cx);
+            });
         }
     }
 

@@ -82,6 +82,8 @@ pub struct TextInput {
     pub content: SharedString,
     pub placeholder: SharedString,
     pub colors: InputColors,
+    /// Secret fields never paint their contents or copy them out through clipboard or IME.
+    pub secret: bool,
     selected_range: Range<usize>,
     selection_reversed: bool,
     marked_range: Option<Range<usize>>,
@@ -101,6 +103,7 @@ impl TextInput {
             content: "".into(),
             placeholder: placeholder.into(),
             colors,
+            secret: false,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
@@ -243,7 +246,7 @@ impl TextInput {
     }
 
     fn copy(&mut self, _: &Copy, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.selected_range.is_empty() {
+        if !self.secret && !self.selected_range.is_empty() {
             cx.write_to_clipboard(ClipboardItem::new_string(
                 self.content[self.selected_range.clone()].to_string(),
             ));
@@ -251,10 +254,20 @@ impl TextInput {
     }
     fn cut(&mut self, _: &Cut, window: &mut Window, cx: &mut Context<Self>) {
         if !self.selected_range.is_empty() {
-            cx.write_to_clipboard(ClipboardItem::new_string(
-                self.content[self.selected_range.clone()].to_string(),
-            ));
+            if !self.secret {
+                cx.write_to_clipboard(ClipboardItem::new_string(
+                    self.content[self.selected_range.clone()].to_string(),
+                ));
+            }
             self.replace_text_in_range(None, "", window, cx)
+        }
+    }
+
+    fn paint_text(&self) -> SharedString {
+        if self.secret {
+            "*".repeat(self.content.len()).into()
+        } else {
+            self.content.clone()
         }
     }
 
@@ -288,7 +301,8 @@ impl TextInput {
         if position.y > bounds.bottom() {
             return self.content.len();
         }
-        line.closest_index_for_x(position.x - bounds.left())
+        self.content
+            .floor_char_boundary(line.closest_index_for_x(position.x - bounds.left()))
     }
 
     fn select_to(&mut self, offset: usize, window: &Window, cx: &mut Context<Self>) {
@@ -381,7 +395,11 @@ impl EntityInputHandler for TextInput {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        Some(if self.secret {
+            "*".repeat(self.content[range].encode_utf16().count())
+        } else {
+            self.content[range].to_string()
+        })
     }
 
     fn selected_text_range(
@@ -506,7 +524,7 @@ impl EntityInputHandler for TextInput {
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
         let last_layout = self.last_layout.as_ref()?;
-        if last_layout.text != self.content {
+        if last_layout.text != self.paint_text() {
             return None;
         }
         let range = self.range_from_utf16(&range_utf16);
@@ -543,10 +561,12 @@ impl EntityInputHandler for TextInput {
         let line_point = self.last_bounds?.localize(&point)?;
         let last_layout = self.last_layout.as_ref()?;
 
-        if last_layout.text != self.content {
+        if last_layout.text != self.paint_text() {
             return None;
         }
-        let utf8_index = last_layout.closest_index_for_x(line_point.x);
+        let utf8_index = self
+            .content
+            .floor_char_boundary(last_layout.closest_index_for_x(line_point.x));
         Some(self.offset_to_utf16(utf8_index))
     }
 }
@@ -596,7 +616,7 @@ impl Element for TextElement {
         cx: &mut App,
     ) -> Self::PrepaintState {
         let input = self.input.read(cx);
-        let content = input.content.clone();
+        let content = input.paint_text();
         let selected_range = input.selected_range.clone();
         let cursor = input.cursor_offset();
         let style = window.text_style();

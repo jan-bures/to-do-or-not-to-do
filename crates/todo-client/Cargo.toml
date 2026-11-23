@@ -10,7 +10,7 @@ publish.workspace = true
 
 [features]
 default = []
-# In-memory assistant controller and owner approval action; no provider adapter.
+# In-memory assistant controller and owner approval action; combine with `native` for Chat Completions.
 assistant = []
 # tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
 native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "uuid/v4"]

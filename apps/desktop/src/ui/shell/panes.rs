@@ -42,6 +42,7 @@ struct Drag {
 pub(super) struct Splitters {
     sidebar: Grip,
     detail: Grip,
+    ai: Grip,
     drag: Option<Drag>,
     viewport: f32,
     preview_hover: bool,
@@ -52,11 +53,12 @@ impl Splitters {
         let this = Self {
             sidebar: Grip::new(cx),
             detail: Grip::new(cx),
+            ai: Grip::new(cx),
             drag: None,
             viewport: f32::from(window.viewport_size().width),
             preview_hover: false,
         };
-        for pane in [Pane::Sidebar, Pane::Detail] {
+        for pane in [Pane::Sidebar, Pane::Detail, Pane::Ai] {
             let handle = this.focus(pane);
             cx.on_focus(handle, window, |_, _, cx| cx.notify()).detach();
             cx.on_blur(handle, window, move |this, _, cx| {
@@ -69,6 +71,7 @@ impl Splitters {
             if !window.is_window_active() {
                 this.finish_key_resize(Pane::Sidebar);
                 this.finish_key_resize(Pane::Detail);
+                this.finish_key_resize(Pane::Ai);
                 this.finish_pane_drag(cx);
             }
         })
@@ -77,13 +80,16 @@ impl Splitters {
     }
 
     pub(super) fn has_focus(&self, window: &Window) -> bool {
-        self.sidebar.focus.is_focused(window) || self.detail.focus.is_focused(window)
+        self.sidebar.focus.is_focused(window)
+            || self.detail.focus.is_focused(window)
+            || self.ai.focus.is_focused(window)
     }
 
     pub(super) fn focus(&self, pane: Pane) -> &FocusHandle {
         match pane {
             Pane::Sidebar => &self.sidebar.focus,
             Pane::Detail => &self.detail.focus,
+            Pane::Ai => &self.ai.focus,
         }
     }
 
@@ -91,6 +97,7 @@ impl Splitters {
         match pane {
             Pane::Sidebar => &mut self.sidebar,
             Pane::Detail => &mut self.detail,
+            Pane::Ai => &mut self.ai,
         }
     }
 }
@@ -123,6 +130,7 @@ impl ShellView {
         for (pane, grip) in [
             (Pane::Sidebar, &self.splitters.sidebar),
             (Pane::Detail, &self.splitters.detail),
+            (Pane::Ai, &self.splitters.ai),
         ] {
             if let Some(reset) = grip.reset {
                 prefs = prefs.with(pane, reset.at(self.frame));
@@ -136,7 +144,11 @@ impl ShellView {
         } else {
             DetailPane::Hidden // For width purposes, an overlay is the same as hidden.
         };
-        prefs.at(f32::from(window.viewport_size().width), detail)
+        prefs.with_assistant(
+            f32::from(window.viewport_size().width),
+            detail,
+            self.ai_docked(),
+        )
     }
 
     pub(super) fn show_detail_splitter(&self) -> bool {
@@ -151,6 +163,18 @@ impl ShellView {
             self.splitters.viewport = viewport;
             self.splitters.sidebar.reset = None;
             self.splitters.detail.reset = None;
+            self.splitters.ai.reset = None;
+        }
+        if !self.ai_docked() {
+            if self
+                .splitters
+                .drag
+                .is_some_and(|drag| drag.grab.pane == Pane::Ai)
+            {
+                self.finish_pane_drag(cx);
+            }
+            self.splitters.ai.reset = None;
+            self.splitters.ai.hovered = false;
         }
         if !show_detail {
             if self
@@ -178,6 +202,7 @@ impl ShellView {
         for (pane, grip) in [
             (Pane::Sidebar, &mut self.splitters.sidebar),
             (Pane::Detail, &mut self.splitters.detail),
+            (Pane::Ai, &mut self.splitters.ai),
         ] {
             grip.highlight.aim(
                 f32::from(grip.hovered || dragged == Some(pane)),
@@ -340,6 +365,11 @@ impl ShellView {
                 "Task detail width",
                 &self.splitters.detail,
             ),
+            Pane::Ai => (
+                "assistant-splitter",
+                "Resize AI assistant",
+                &self.splitters.ai,
+            ),
         };
         let highlight = if pane == Pane::Sidebar && self.splitters.preview_hover {
             1.
@@ -363,7 +393,7 @@ impl ShellView {
             .bottom_0()
             .w(px(desktop::PANE_HANDLE_HIT))
             .when(pane == Pane::Sidebar, |d| d.left(px(columns.handle_inset(pane))))
-            .when(pane == Pane::Detail, |d| d.right(px(columns.handle_inset(pane))))
+            .when(pane != Pane::Sidebar, |d| d.right(px(columns.handle_inset(pane))))
             .cursor(CursorStyle::ResizeLeftRight)
             .block_mouse_except_scroll()
             .on_hover(cx.listener(move |this, hovered: &bool, _, cx| {

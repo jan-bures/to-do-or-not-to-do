@@ -72,6 +72,7 @@ pub enum MenuAction {
     /// Open the server's admin pages in the browser.
     OpenAdmin,
     /// Open the device settings dialog.
+    AssistantSettings,
     DeviceSettings,
     OpenUpdates,
     CloseUpdates,
@@ -167,6 +168,7 @@ impl MenuAction {
                 | Self::AddLink(_)
                 | Self::SignOut
                 | Self::DeviceSettings
+                | Self::AssistantSettings
         )
     }
 }
@@ -1191,6 +1193,12 @@ pub fn account_menu(server: Option<&str>, confirming: bool) -> Vec<MenuEntry> {
             Icon::RefreshCw,
             "Sync now",
             MenuAction::SyncNow,
+        ));
+        entries.push(item(
+            "assistant-settings",
+            Icon::Sparkles,
+            "AI assistant…",
+            MenuAction::AssistantSettings,
         ));
         entries.push(item(
             "device-settings",
@@ -2491,6 +2499,7 @@ second line"
             [
                 MenuAction::OpenAdmin,
                 MenuAction::SyncNow,
+                MenuAction::AssistantSettings,
                 MenuAction::DeviceSettings,
                 MenuAction::OpenUpdates,
                 MenuAction::AskSignOut

@@ -384,6 +384,10 @@ impl Session {
     }
 
     /// This pairing's data directory.
+    pub(crate) fn assistant_runtime(&self) -> Runtime {
+        self.rt.clone()
+    }
+
     pub fn data(&self) -> &DataDir {
         &self.data
     }

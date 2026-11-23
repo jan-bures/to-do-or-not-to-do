@@ -21,6 +21,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if (-not $PSBoundParameters.ContainsKey('Fixtures')) {
+    $Fixtures += @('ai-empty', 'ai-proposal', 'ai-batch', 'ai-settings', 'ai-error')
+}
 $app = Resolve-Path (Join-Path $PSScriptRoot '..')
 if (-not $OutDir) { $OutDir = Join-Path $app 'target/gallery' }
 $OutDir = (New-Item -ItemType Directory -Force -Path $OutDir).FullName

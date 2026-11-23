@@ -174,6 +174,13 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Group or filter changes by agent | `updated_by:` in the query language; `GET /activity?agent=` for events | wired: sidebar agent rows open Activity filtered to that agent; Clear filter or the room menu's All changes removes it, and the room menu switches agents (`D/ui/shell/sidebar.rs`, `D/model/menus.rs::activity_menu`); also has the Agent activity smart list | wired: sidebar agent links open filtered Activity; also has the Agent activity smart list | wired: drawer agent summaries open Activity with the exact agent ID; Agent activity smart list remains separate |
 | Agent marks on rows | `updated.by` | shown | shown | shown `A/ui/Rows.kt:91` |
 
+### In-app assistant
+
+| Feature | Core / server | Desktop | Web | Android |
+|---|---|---|---|---|
+| Ask AI with a private OpenAI-compatible endpoint | Shared in-memory controller, scoped read tools and native transport (`T/assistant`) | wired: Ctrl+J, cancellable chat, explicit server/model tests, device-local DPAPI profile, opt-in per list; no cloud fallback (`D/ui/shell/assistant.rs`) | planned | planned |
+| Review, approve and undo assistant proposals | Owner-only atomic approval and grouped undo, reserved `assistant` attribution | wired: exact effects, batch subset review, receipts and grouped Undo; Activity shows confirmed approvals | Activity only; no chat or approval UI | no chat or approval UI |
+
 ### Server-side only (admin pages)
 
 The owner manages these on the server's own pages (`S/web/mod.rs`) or through the local admin API

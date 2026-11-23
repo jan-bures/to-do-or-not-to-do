@@ -47,8 +47,12 @@ fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
 
 /// Encrypts `plain` for the current user.
 pub fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
+    seal(plain, ENTROPY)
+}
+
+pub fn seal(plain: &[u8], purpose: &[u8]) -> std::io::Result<Vec<u8>> {
     let input = blob(plain);
-    let entropy = blob(ENTROPY);
+    let entropy = blob(purpose);
     let mut out = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),
@@ -74,8 +78,12 @@ pub fn protect(plain: &[u8]) -> std::io::Result<Vec<u8>> {
 
 /// Decrypts a blob from [`protect`]. Fails for another user, another machine, or tampered data.
 pub fn unprotect(sealed: &[u8]) -> std::io::Result<Vec<u8>> {
+    open(sealed, ENTROPY)
+}
+
+pub fn open(sealed: &[u8], purpose: &[u8]) -> std::io::Result<Vec<u8>> {
     let input = blob(sealed);
-    let entropy = blob(ENTROPY);
+    let entropy = blob(purpose);
     let mut out = CRYPT_INTEGER_BLOB {
         cbData: 0,
         pbData: std::ptr::null_mut(),

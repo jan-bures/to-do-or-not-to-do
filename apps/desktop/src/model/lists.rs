@@ -79,7 +79,9 @@ pub fn collection_glyph(name: &str) -> Glyph {
 /// The letter mark for an actor, if it is an agent.
 pub fn agent(actor: &Actor) -> Option<Agent> {
     let id = actor.agent_id()?.as_str();
-    Some(if id.starts_with("claude") {
+    Some(if id == todo_core::actor::ASSISTANT_AGENT_ID {
+        Agent::Assistant
+    } else if id.starts_with("claude") {
         Agent::Claude
     } else if id.starts_with("codex") {
         Agent::Codex
@@ -103,6 +105,7 @@ pub fn agent_name(actor: &Actor) -> Option<String> {
         Agent::Claude => "Claude".into(),
         Agent::Codex => "Codex".into(),
         Agent::Pi => "Pi".into(),
+        Agent::Assistant => "Assistant".into(),
         Agent::Other { .. } => {
             let mut c = id.chars();
             c.next()

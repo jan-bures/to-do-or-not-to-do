@@ -3,6 +3,7 @@
 //! state changes, and turns clicks and keys into commands for the store.
 
 mod activity;
+mod assistant;
 mod attachments;
 mod board;
 mod bulk;
@@ -87,6 +88,7 @@ actions!(
         AddLinkKey,
         UndoTask,
         OpenActivity,
+        ToggleAiPanel,
         Escape
     ]
 );
@@ -100,6 +102,7 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     vec![
         KeyBinding::new("ctrl-n", FocusQuickAdd, Some("Shell")),
         KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
+        KeyBinding::new("ctrl-j", ToggleAiPanel, Some("Shell")),
         KeyBinding::new("ctrl-z", UndoTask, Some("Shell")),
         // Activity, from anywhere but a text field (the handler leaves typing alone).
         KeyBinding::new("ctrl-h", OpenActivity, Some("Shell")),
@@ -322,6 +325,7 @@ pub struct ShellView {
     update_focus: FocusHandle,
     dismiss_update_focus: FocusHandle,
     pairing_panel: Option<Entity<device_pairing::Panel>>,
+    ai: assistant::Ai,
     invite_panel: Option<Entity<device_pairing::Panel>>,
     inline: Option<Inline>,
     /// The filter typed into the title bar.
@@ -476,6 +480,7 @@ impl ShellView {
         .detach();
         let edit = Editors::new(&palette, window, cx);
         let painted_hue = shell.room.hue;
+        let ai = assistant::Ai::new(&store, &palette, window, cx);
         let mut this = Self {
             store,
             ui,
@@ -534,6 +539,7 @@ impl ShellView {
             update_focus: cx.focus_handle(),
             dismiss_update_focus: cx.focus_handle(),
             pairing_panel: None,
+            ai,
             invite_panel: None,
             inline: None,
             filter,
@@ -629,6 +635,7 @@ impl ShellView {
     }
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
+        self.refresh_ai(cx);
         self.drain_reminder_actions();
         let state = self.undo_state();
         // Capture the painted rows before releasing the old room's holds and deriving new counts.
@@ -1601,10 +1608,13 @@ impl ShellView {
         if self.ui.compact {
             return;
         }
+        let placement = self.detail_placement();
         self.motion.detail.aim(
-            self.ui.task,
-            self.detail_placement() == DetailPane::Docked,
-            self.width == Width::Narrow,
+            self.ui
+                .task
+                .filter(|_| !self.ai.open || placement != DetailPane::Hidden),
+            placement == DetailPane::Docked,
+            self.width == Width::Narrow || (self.ai.open && !self.ai_shares_detail()),
             self.now(),
             self.pace(),
         );
@@ -1614,9 +1624,14 @@ impl ShellView {
         if self.ui.compact {
             return;
         }
+        let placement = self.detail_placement();
         self.motion.detail = DetailMotion::rest(
-            self.shell.detail.as_ref().map(|d| d.task),
-            self.detail_placement() == DetailPane::Docked,
+            self.shell
+                .detail
+                .as_ref()
+                .map(|d| d.task)
+                .filter(|_| !self.ai.open || placement != DetailPane::Hidden),
+            placement == DetailPane::Docked,
         );
         self.closing = None;
     }
@@ -1628,6 +1643,7 @@ impl ShellView {
         }
         self.painted_hue = hue;
         self.palette = theme::palette(self.theme, hue);
+        self.ai.set_colors(&self.palette, cx);
         let colors = quick_add_colors(&self.palette);
         for input in [
             &self.quick_add,
@@ -1912,6 +1928,9 @@ impl ShellView {
         }
         self.multi.clear();
         self.ui.task = id;
+        if self.ai_docked() {
+            self.ai.detail_over_room = id.is_some();
+        }
         self.refresh(cx);
         if self.on_board() {
             if let Some(id) = id {
@@ -2224,7 +2243,10 @@ impl ShellView {
         let p = &self.palette;
         let filtering = !self.ui.filter.is_empty();
         let focused = self.filter.read(cx).focus_handle.is_focused(window);
+        let filter_width = 440.;
+        let filter_height = desktop::TITLEBAR - space::S2 - space::S1 / 2.;
         div()
+            .relative()
             .h(px(desktop::TITLEBAR))
             .flex_none()
             .flex()
@@ -2254,9 +2276,11 @@ impl ShellView {
             .when(self.shell.room.key != RoomKey::Trash, |bar| {
                 bar.child(
                     div()
-                        // The search field is centred in the title bar at the mockup width.
-                        .w(px(440.))
-                        .h(px(desktop::TITLEBAR - space::S2 - space::S1 / 2.))
+                        .absolute()
+                        .left((window.viewport_size().width - px(filter_width)) / 2.)
+                        .top(px((desktop::TITLEBAR - filter_height) / 2.))
+                        .w(px(filter_width))
+                        .h(px(filter_height))
                         .flex_none()
                         .flex()
                         .items_center()
@@ -2305,7 +2329,8 @@ impl ShellView {
                         }),
                 )
             })
-            .child(kit::window_controls(p, window, self.caption_preview))
+            .child(self.ai_trigger(cx))
+            .child(kit::window_controls(p, window, self.caption_preview).flex_none())
     }
 
     fn eyebrow(&self, eyebrow: &Eyebrow) -> Div {
@@ -2757,6 +2782,13 @@ impl ShellView {
     /// Where the detail pane goes: docked beside the room, over it (a narrow window), or nowhere (see
     /// `DetailPane::at`).
     fn detail_placement(&self) -> DetailPane {
+        if self.ai.open && (self.width == Width::Narrow || !self.ai_shares_detail()) {
+            return if self.ai_docked() && self.ai.detail_over_room && self.shell.detail.is_some() {
+                DetailPane::Overlay
+            } else {
+                DetailPane::Hidden
+            };
+        }
         DetailPane::at(
             self.width,
             self.shell.detail.is_some(),
@@ -2767,7 +2799,9 @@ impl ShellView {
     }
 
     fn docked(&self) -> bool {
-        self.width == Width::Wide && self.motion.detail.look(self.frame).docked
+        self.width == Width::Wide
+            && (!self.ai.open || self.ai_shares_detail())
+            && self.motion.detail.look(self.frame).docked
     }
 
     /// The room pane's width (and so a row's): the window less the sidebar and a docked detail pane.
@@ -2787,7 +2821,13 @@ impl ShellView {
     /// task, and the scrim still keeps clicks off the rows underneath.
     fn detail_overlay(&self, window: &Window, cx: &mut Context<Self>) -> Option<Vec<AnyElement>> {
         let look = self.motion.detail.look(self.frame);
-        if self.width != Width::Narrow || look.task == 0. {
+        let beside_ai = self.ai_docked()
+            && !self.ai_shares_detail()
+            && (self.ai.detail_over_room || self.closing.is_some());
+        if (self.width != Width::Narrow && !beside_ai)
+            || (self.width == Width::Narrow && self.ai.open)
+            || look.task == 0.
+        {
             return None;
         }
         let p = self.palette;
@@ -3191,16 +3231,19 @@ impl ShellView {
             row.hover(move |s| s.bg(hover))
                 .when(menu_target, |row| row.bg(hover))
         })
-        .when_some(room.and_then(|_| self.task_settle_alpha(id)), |row, a| {
-            let base = if bulk_selected {
-                p.selection_wash
-            } else if selected {
-                p.wash
-            } else {
-                p.pane
-            };
-            row.bg(theme::mix(base, p.wash, a))
-        })
+        .when_some(
+            room.and_then(|_| self.task_settle_alpha(id).or_else(|| self.ai_flash(id))),
+            |row, a| {
+                let base = if bulk_selected {
+                    p.selection_wash
+                } else if selected {
+                    p.wash
+                } else {
+                    p.pane
+                };
+                row.bg(theme::mix(base, p.wash, a))
+            },
+        )
         .when(room.is_some() && self.row_lifted(id), |row| {
             row.opacity(1. - elevation::DROP_WASH_ALPHA)
         })
@@ -3610,6 +3653,8 @@ impl ShellView {
                         } else if this.shell.room.key == RoomKey::Trash {
                             this.trash_selected = None;
                             cx.notify();
+                        } else if this.ai.open {
+                            this.escape_ai(window, cx);
                         } else {
                             this.select_task(None, cx);
                         }
@@ -4082,6 +4127,8 @@ impl ShellView {
             Focus::List
         } else if self.splitters.has_focus(window) {
             Focus::Splitter
+        } else if self.ai.focus_in(window, cx) {
+            Focus::Notes
         } else if on(&self.quick_add.read(cx).focus_handle) {
             Focus::QuickAdd
         } else if on(&self.filter.read(cx).focus_handle) {
@@ -4239,6 +4286,9 @@ impl ShellView {
                 }
             }
         }
+        if self.width == Width::Wide && !self.ai.modal() {
+            keys.insert(0, ("Ctrl J", "Ask AI"));
+        }
         let hint = |key: &'static str, what: &'static str| {
             div()
                 .flex()
@@ -4255,11 +4305,14 @@ impl ShellView {
         };
         let error = self.notice.as_ref().is_some_and(|n| n.error);
         let folder = self.notice.as_ref().and_then(|n| n.folder.clone());
-        let right: SharedString = self
-            .notice
-            .as_ref()
-            .map(|n| n.text.clone())
-            .unwrap_or_else(|| "Ctrl N adds a task".into());
+        let right: SharedString =
+            self.notice
+                .as_ref()
+                .map(|n| n.text.clone())
+                .unwrap_or_else(|| {
+                    self.ai_destination()
+                        .unwrap_or_else(|| "Ctrl N adds a task".into())
+                });
         // The hints take what the counts and the notice leave, and give way when there isn't enough.
         let figures = ty::COUNT.with_weight(500);
         let left = counts
@@ -4398,6 +4451,7 @@ impl ShellView {
                 .get(&control)
                 .unwrap_or(&self.attachment_ui.add),
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
+            Stop::AssistantSplitter => self.splitters.focus(Pane::Ai),
             Stop::UpdateIndicator => &self.update_focus,
             Stop::DismissUpdate => &self.dismiss_update_focus,
             Stop::New => &self.new_focus,
@@ -4471,6 +4525,7 @@ impl ShellView {
             | Stop::Attachment(FileControl::Add) => self.repeat_target().is_some(),
             Stop::Attachment(control) => self.attachment_ui.rows.contains_key(&control),
             Stop::DetailSplitter => self.show_detail_splitter(),
+            Stop::AssistantSplitter => self.ai_docked(),
             Stop::SyncFailures => self.store.sync().failed > 0,
             Stop::UpdateIndicator | Stop::DismissUpdate => {
                 self.update_snapshot().indicator_version().is_some()
@@ -4517,7 +4572,11 @@ impl ShellView {
     /// Held or modified Tab is left alone, and so is Tab off the stops: a text field keeps it, and an
     /// open menu has already taken it (it closes).
     fn tab_key(&mut self, e: &gpui::KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
-        if self.pairing_panel.is_some() || !navigation_tab(e) {
+        if self.pairing_panel.is_some()
+            || self.ai.modal()
+            || self.ai.focus_in(window, cx)
+            || !navigation_tab(e)
+        {
             return;
         }
         let forward = !e.keystroke.modifiers.shift;
@@ -4556,9 +4615,11 @@ impl ShellView {
 
 impl Render for ShellView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.ai_width_changed(window);
         self.resize(Width::of(f32::from(window.viewport_size().width)));
         self.activity_read_ahead(cx);
         self.drive_motion(window, cx);
+        self.drive_ai_flash(window);
         self.drive_email_drop(window, cx);
         self.drive_task_drag(window);
         self.drive_board(window);
@@ -4604,10 +4665,14 @@ impl Render for ShellView {
         };
         div()
             .id("shell")
-            .when(self.pairing_panel.is_none(), |shell| {
+            .when(self.pairing_panel.is_none() && !self.ai.modal(), |shell| {
                 shell.key_context("Shell")
             })
+            .on_key_down(cx.listener(|this, e, window, cx| this.shell_ai_key(e, window, cx)))
             .on_key_down(cx.listener(|this, e, window, cx| this.tab_key(e, window, cx)))
+            .on_action(
+                cx.listener(|this, _: &ToggleAiPanel, window, cx| this.toggle_ai(window, cx)),
+            )
             .on_action(cx.listener(|this, _: &UndoTask, window, cx| {
                 let focus = this.focus_now(window, cx);
                 if focus.allows_task_undo() {
@@ -4658,7 +4723,10 @@ impl Render for ShellView {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _, window, cx| {
-                    if this.pairing_panel.is_none() && !window.default_prevented() {
+                    if this.pairing_panel.is_none()
+                        && !this.ai.modal()
+                        && !window.default_prevented()
+                    {
                         window.focus(&this.list_focus, cx);
                     }
                 }),
@@ -4707,6 +4775,10 @@ impl Render for ShellView {
                     .child(self.pane_handle(Pane::Sidebar, window, cx))
                     .when(self.show_detail_splitter(), |body| {
                         body.child(self.pane_handle(Pane::Detail, window, cx))
+                    })
+                    .children(self.ai_pane(window, cx))
+                    .when(self.ai_docked(), |body| {
+                        body.child(self.pane_handle(Pane::Ai, window, cx))
                     }),
             )
             .child(self.status_bar(window, cx))
@@ -4723,6 +4795,7 @@ impl Render for ShellView {
             .children(self.board_preview(window, cx))
             .children(self.confirmation_scrim())
             .children(self.pairing_overlay())
+            .children(self.ai_settings_overlay(window, cx))
             // Context menus open at the pointer; the others hang from their buttons.
             .children(self.popover(
                 |k| {

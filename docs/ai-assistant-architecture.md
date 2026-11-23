@@ -164,12 +164,16 @@ restored epoch must never accept a previously approved batch again.
 ### A local Mac on the tailnet: first release
 
 Use OpenAI-compatible `GET /v1/models` and `POST /v1/chat/completions` with function calls and SSE.
-Support one explicitly configured API base including `/v1`, e.g. `https://<node>.<tailnet>.ts.net/v1`;
-append relative `models`/`chat/completions` without losing the base path. No discovery, hard-coded host,
-model downloads, redirects or model-selected URL. Validate the scheme, authority and path; reject
-embedded credentials, query/fragment and invalid ports. The selected model is a discovered ID (or an
-explicitly entered ID if listing is unsupported). A setup probe lists models with a short deadline
-and sends no task content; an optional separate synthetic capability test may load the selected model.
+Support one explicitly configured API base, e.g. `https://mac.tailnet.example/v1`. Add `/v1` if absent;
+append relative `models` and `chat/completions` without losing a gateway path. No discovery, hard-coded
+host, model downloads, redirects, system HTTP proxies or model-selected URLs. Reject embedded
+credentials, queries, fragments and invalid ports. A separate optional endpoint key is sent as
+`Authorization: Bearer …`; a 401 or 403 means the key is required or invalid and never affects todo
+sign-in. Pick a discovered model ID or enter it manually if listing is unavailable. The explicit
+**Test connection** fetches only the catalog with a short deadline. A separate explicit **Test model**
+uses invented data and a no-effect function to check the selected model's streaming tool/result round
+trip, then buffered tools or text only on protocol incompatibility. It does not retry after a network,
+authentication, or usage-limit error. An untested model is text only; listing does not grant task access.
 Don't confuse a warm HTTP listener with a valid model or a functioning stream. Distinguish observed
 failures (network/timeout, TLS, unauthorized, missing model, incompatible tools; on web, possibly only
 a generic network failure). If the Mac sleeps or disconnects, keep the unsent draft, show **Local
@@ -185,16 +189,19 @@ change destination, resend the transcript or fall back to a cloud model automati
   needs; no model pull/manage/admin endpoints via the web gateway. Use a dedicated endpoint token if
   the host/proxy needs additional admission; validate it there, never send a todo credential. No cloud
   fallback on the Mac: use local weights and disable Ollama cloud features if applicable.
-- **Windows GPUI:** Resolve the tailnet name and connect directly with normal TLS verification. A raw
-  URL such as `http://mac.tailnet.example:11434/v1` describes a possible WireGuard-only deployment,
-  not a supported remote URL in the first release. Ship HTTPS-only for remote providers; at most a
-  later explicit no-secret loopback HTTP option. Leave the existing todo-server transport/pairing
-  cleartext rules unchanged.
+- **Windows GPUI:** Connect directly with normal TLS verification for HTTPS. The native provider also
+  accepts explicitly entered HTTP endpoints on loopback or Tailscale: `.ts.net` MagicDNS names,
+  `100.64.0.0/10`, and `fd7a:115c:a1e0::/48`. For HTTP names the client filters the actual DNS results
+  supplied to the connector: loopback stays on loopback and MagicDNS must resolve into those ranges.
+  An address in those ranges is not proof of a WireGuard route. Use this option only with Tailscale
+  active and routing to the intended private peer; HTTPS is recommended, especially if that cannot be
+  guaranteed. Never expose an HTTP inference listener to an untrusted network. Other remote URLs
+  require HTTPS. The todo-server transport and pairing policy are unchanged.
 - **Android Compose/FFI:** The device needs the Tailscale VPN active and the app routed through it,
   including on mobile data or when LAN routing is unavailable. Use the same Serve HTTPS URL. Android
-  release policy [denies general cleartext](../apps/android/app/src/main/res/xml/network_security_config.xml)
-  and Rust transport must enforce HTTPS too, not bypass Android's restrictions. Do not add a broad
-  manifest exception or trust all certificates. The app already targets SDK 37; test real Android
+  release policy [denies general cleartext](../apps/android/app/src/main/res/xml/network_security_config.xml).
+  The first Android UI should retain HTTPS; do not bypass Android's restrictions with the native
+  resolver or add a broad manifest exception. Do not trust all certificates. The app already targets SDK 37; test real Android
   17 with a routed tailnet address and with a LAN address. Where
   [local network protection](https://developer.android.com/privacy-and-security/local-network-permission)
   applies, request `ACCESS_LOCAL_NETWORK` only on explicit setup/connect and handle denial; don't

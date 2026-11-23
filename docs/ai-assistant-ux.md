@@ -4,6 +4,11 @@ This specification designs the built-in **AI Assistant** ("Ask AI") across all t
 
 Every layout number, colour, radius, type style, icon, and motion duration comes from `todo-design` (`crates/todo-design`). Auth plumbing (ChatGPT sign-in flow, token storage mechanics, server proxy details) is researched separately; this document specifies the **UI, interaction model, states, privacy cues, provider settings, tokens, motion, accessibility, and phased implementation checklists**.
 
+> The first Windows release implements **Your own server** only. It has no cloud fallback,
+> destructive tools or persistent history. Device-local list access defaults to **Hidden**.
+> Suggestion chips prepare a draft, and the owner sends it. For supported URLs and transport
+> restrictions, see the [provider architecture](ai-assistant-architecture.md#3-provider-choices).
+
 ---
 
 ## 1. Concept & identity: a calm agent that asks first

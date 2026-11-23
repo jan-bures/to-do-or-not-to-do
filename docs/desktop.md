@@ -29,7 +29,7 @@ pwsh scripts/gallery.ps1               # screenshot gallery, see below
 - **The Linux CI jobs stay as they were**: `cargo … --workspace` at the root doesn't see the desktop app. A
   separate Windows job builds, lints and tests it.
 
-It depends on `todo-design` (with `embed-fonts`), `todo-core` and `todo-client` (with `sqlite`) by path. The
+It depends on `todo-design` (with `embed-fonts`), `todo-core` and `todo-client` (with `sqlite` and `assistant`) by path. The
 shared crates stay portable, so that works from this workspace too. Its tests also use `todo-server` by
 path, as an in-process server.
 
@@ -225,6 +225,7 @@ into the app**: it is learnt here and saved in the user's config. Alternatively,
 | `pairings\<pairing ID>\cache.sqlite.revoked` | same | empty marker: the server replied 401 to an authenticated request |
 | `pairings\<pairing ID>\ui.json` | same | collapsed collections, preferred pane widths, explicit Done rail choices and Timeline zoom, rail and tray preferences (never synced) |
 | `pairings\<pairing ID>\popouts.json` | same | list-window placement, pin and open state by room ID (never synced) |
+| `pairings\<pairing ID>\assistant-profile.bin` | same | owner-only, separately DPAPI-sealed AI server URL, model, optional API key, capability test result, enable switch, and list access |
 | `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
 | `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
@@ -312,6 +313,41 @@ corrected. Adding a link can be undone like removing one. A link's remove button
 | Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). The "more" button opens the room's menu with only what applies there (`model::menus`): in a list, Rename list (in place in the sidebar), Colour…, Move to… (where there is somewhere to go), Show or Hide completed and Delete list (after asking, with Undo); in a collection, Rename collection, Colour…, the Completed toggle and Delete collection (after asking, with Undo); in My Day, Important, Planned and All, the Completed toggle. All six smart lists and user lists also offer **Pop out**, in the header and on right-click in the sidebar. There is no view options button until there are sort or view options. In a narrow window the counts go on a line of their own under the title, which keeps its full size. My Day all done turns the sky to dusk (once the last row has left) and hands over to tomorrow. Its tasks open in the detail pane, by click or with **J/K**, and their boxes (or Space) complete them with the row's choreography, in place (the first one's card too: it dims, is struck through, fades and closes), and the hand-over scrolls when it's taller than the pane; with none selected, the pane is left out rather than shown empty. With nothing due tomorrow there is no hand-over, but planning is still offered: "Nothing is due on Sunday yet." and **Plan Sunday**, which opens Planned (as on Android). While a filter narrows the finished day, neither shows, and the room says nothing matches. |
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
+
+### Ask AI
+
+**Ask AI** (**Ctrl+J**) opens a right-hand panel. In wide windows, drag its left divider, or use
+**←/→** (with **Shift** for larger steps) once the divider has focus. **Home** resets its width.
+In narrower windows it opens over the list. Space for Detail is shared at 1600 px and wider; in the
+middle range opening a task from chat brings Detail over the room, beside chat. **Enter** sends;
+**Shift+Enter** inserts a line break. Suggestions fill the composer without sending. Chats are in
+memory only. **New chat**, a profile change, a change to list access, or sign-out clears chat history
+and any unapproved proposal.
+
+1. Open **AI assistant…** in Settings. Enter your OpenAI-compatible server's base URL (for example
+   `https://mac.tailnet.example/v1`) and its optional API key. This is not your To-do key or password.
+2. Choose **Test connection** to fetch the models. Pick a listed model or enter its ID. **Test model**
+   sends an invented prompt to check streaming and tool calls; without this test, or if only text
+   works, the model has no task tools.
+3. Choose which lists the assistant can read. Lists are hidden by default, including new lists.
+   **Private only** and **All models** both allow the configured private provider; no cloud provider
+   is available. Select **Enable assistant on this device**, then **Done** to save. No tests or
+   inference run in the background. **Forget server** removes the protected profile from this device.
+
+The desktop provider accepts HTTPS with normal certificate verification. Plain HTTP works only on
+loopback or for Tailscale MagicDNS names and Tailscale IP ranges. Use the latter only with Tailscale
+active and routing to your private peer. Prefer HTTPS if you cannot verify the route. No redirects,
+HTTP proxies or alternate providers are used. A missing or rejected key, missing model, server
+unavailability (including sleep), or usage limit needs your attention; nothing is sent again until
+you choose **Retry** or send a new message. See [provider architecture](ai-assistant-architecture.md#3-provider-choices).
+
+Prompts and allowed task summaries go directly to the server you entered, not through the To-do
+server. Task notes and attachments are not shared. A model can prepare new tasks, title/due/priority
+edits, and non-repeating completion changes, but cannot apply them. Destructive tools aren't offered.
+Review the exact changes, optionally pick a subset of a batch, then **Approve**. Approval waits until
+sync has caught up; an outdated review needs a new proposal. Confirmed changes display the `A`
+mark and appear in **Activity** under **In-app assistant**. **Undo** on the chat receipt or in Activity
+reverses the whole approved group. Chat drafts and API keys never enter the To-do sync log.
 
 ### Workflow lists, Board and Timeline
 

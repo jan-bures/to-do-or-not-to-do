@@ -63,6 +63,7 @@ impl DetailPane {
 pub enum Pane {
     Sidebar,
     Detail,
+    Ai,
 }
 
 impl Pane {
@@ -70,6 +71,7 @@ impl Pane {
         match self {
             Self::Sidebar => desktop::SIDEBAR,
             Self::Detail => desktop::DETAIL,
+            Self::Ai => desktop::AI_PANEL,
         }
     }
 
@@ -77,6 +79,7 @@ impl Pane {
         match self {
             Self::Sidebar => desktop::SIDEBAR_MIN,
             Self::Detail => desktop::DETAIL_MIN,
+            Self::Ai => desktop::AI_PANEL_MIN,
         }
     }
 
@@ -84,7 +87,7 @@ impl Pane {
     fn signed(self, delta: f32) -> f32 {
         match self {
             Self::Sidebar => delta,
-            Self::Detail => -delta,
+            Self::Detail | Self::Ai => -delta,
         }
     }
 }
@@ -95,6 +98,7 @@ impl Pane {
 pub struct PaneWidths {
     sidebar: f32,
     detail: f32,
+    ai: f32,
 }
 
 impl Default for PaneWidths {
@@ -102,6 +106,7 @@ impl Default for PaneWidths {
         Self {
             sidebar: Pane::Sidebar.default_width(),
             detail: Pane::Detail.default_width(),
+            ai: Pane::Ai.default_width(),
         }
     }
 }
@@ -117,6 +122,7 @@ impl PaneWidths {
             Pane::Sidebar => self.sidebar = width.min(desktop::SIDEBAR_MAX),
             // A finite preference can outlast a smaller window. `at` bounds the displayed width.
             Pane::Detail => self.detail = width,
+            Pane::Ai => self.ai = width.min(desktop::AI_PANEL_MAX),
         }
         self
     }
@@ -124,30 +130,50 @@ impl PaneWidths {
     pub fn clamped(self) -> Self {
         self.with(Pane::Sidebar, self.sidebar)
             .with(Pane::Detail, self.detail)
+            .with(Pane::Ai, self.ai)
     }
 
     /// On window shrink, temporarily give docked detail less space, without changing either
     /// preference. At the fixed breakpoint even the widest sidebar fits with minimum detail and list.
     /// The overlay keeps its original width; a hidden detail takes no space.
+    #[cfg(test)]
     pub fn at(self, window: f32, detail: DetailPane) -> Columns {
+        self.with_assistant(window, detail, false)
+    }
+
+    pub fn with_assistant(self, window: f32, detail: DetailPane, ai_docked: bool) -> Columns {
         let docked = detail == DetailPane::Docked;
-        let budget = if docked {
-            window - desktop::LIST_MIN_BESIDE_DETAIL - 2. * elevation::HAIRLINE
+        let line = elevation::HAIRLINE;
+        let room_min = if docked || ai_docked {
+            desktop::LIST_MIN_BESIDE_DETAIL
         } else {
-            window - desktop::LIST_MIN - elevation::HAIRLINE
+            desktop::LIST_MIN
         };
-        let sidebar = self.sidebar.min(
-            (budget - if docked { desktop::DETAIL_MIN } else { 0. }).max(desktop::SIDEBAR_MIN),
-        );
+        let budget = window - room_min - line * (1. + f32::from(docked) + f32::from(ai_docked));
+        let min_detail = if docked { desktop::DETAIL_MIN } else { 0. };
+        let min_ai = if ai_docked { desktop::AI_PANEL_MIN } else { 0. };
+        let sidebar = self
+            .sidebar
+            .min((budget - min_detail - min_ai).max(desktop::SIDEBAR_MIN));
+        // Assistant yields first; detail then gives way if there still isn't room for both.
+        let detail = if docked {
+            self.detail.min((budget - sidebar - min_ai).max(min_detail))
+        } else {
+            desktop::DETAIL
+        };
+        let ai = if ai_docked {
+            self.ai
+                .min((budget - sidebar - if docked { detail } else { 0. }).max(min_ai))
+        } else {
+            desktop::AI_PANEL.min(window - desktop::DETAIL_TOP)
+        };
         Columns {
             window,
             sidebar,
-            detail: if docked {
-                self.detail.min((budget - sidebar).max(desktop::DETAIL_MIN))
-            } else {
-                desktop::DETAIL
-            },
+            detail,
+            ai,
             docked,
+            ai_docked,
             budget,
         }
     }
@@ -166,7 +192,9 @@ impl PaneWidths {
         } else {
             DetailPane::Hidden
         };
-        let width = prefs.at(visible.window, detail).width(pane);
+        let width = prefs
+            .with_assistant(visible.window, detail, visible.ai_docked)
+            .width(pane);
         let duration = if reduced {
             motion::reduced(motion::OVERLAY_IN, false)
         } else {
@@ -191,7 +219,9 @@ pub struct Columns {
     window: f32,
     sidebar: f32,
     detail: f32,
+    ai: f32,
     docked: bool,
+    ai_docked: bool,
     budget: f32,
 }
 
@@ -200,16 +230,35 @@ impl Columns {
         match pane {
             Pane::Sidebar => self.sidebar,
             Pane::Detail => self.detail,
+            Pane::Ai => self.ai,
         }
     }
 
     pub fn max(self, pane: Pane) -> f32 {
         match pane {
             Pane::Sidebar => {
-                let other = if self.docked { desktop::DETAIL_MIN } else { 0. };
+                let other = if self.docked { desktop::DETAIL_MIN } else { 0. } + self.ai_min();
                 (self.budget - other).clamp(desktop::SIDEBAR_MIN, desktop::SIDEBAR_MAX)
             }
-            Pane::Detail => (self.budget - self.sidebar).max(desktop::DETAIL_MIN),
+            Pane::Detail => (self.budget - self.sidebar - self.ai_min()).max(desktop::DETAIL_MIN),
+            Pane::Ai => (self.budget - self.sidebar - if self.docked { self.detail } else { 0. })
+                .clamp(desktop::AI_PANEL_MIN, desktop::AI_PANEL_MAX),
+        }
+    }
+
+    fn ai_min(self) -> f32 {
+        if self.ai_docked {
+            desktop::AI_PANEL_MIN
+        } else {
+            0.
+        }
+    }
+
+    fn ai_taken(self) -> f32 {
+        if self.ai_docked {
+            self.ai + elevation::HAIRLINE
+        } else {
+            0.
         }
     }
 
@@ -219,13 +268,15 @@ impl Columns {
         let line = elevation::HAIRLINE;
         match pane {
             Pane::Sidebar => self.sidebar - 2. * line,
-            Pane::Detail => self.detail + line - desktop::PANE_HANDLE_HIT,
+            Pane::Detail => self.detail + line - desktop::PANE_HANDLE_HIT + self.ai_taken(),
+            Pane::Ai => self.ai + line - desktop::PANE_HANDLE_HIT,
         }
     }
 
     /// The readable room budget, excluding its side divider hairlines. An overlay takes none of it.
     pub fn room_width(self) -> f32 {
         self.window
+            - self.ai_taken()
             - self.sidebar
             - elevation::HAIRLINE
             - if self.docked {
@@ -336,6 +387,27 @@ pub fn reveal_offset(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn assistant_docking_prefers_room_budget_and_keeps_the_saved_width() {
+        use super::*;
+        let prefs = PaneWidths::default()
+            .with(Pane::Sidebar, desktop::SIDEBAR_MAX)
+            .with(Pane::Detail, 600.)
+            .with(Pane::Ai, desktop::AI_PANEL_MAX);
+        let tight = prefs.with_assistant(desktop::FOUR_PANE_MIN, DetailPane::Docked, true);
+        assert_eq!(tight.room_width(), desktop::LIST_MIN_BESIDE_DETAIL);
+        assert_eq!(tight.width(Pane::Ai), desktop::AI_PANEL_MIN);
+        assert!(tight.width(Pane::Detail) >= desktop::DETAIL_MIN);
+        let roomy = prefs.with_assistant(2000., DetailPane::Docked, true);
+        assert_eq!(roomy.width(Pane::Ai), desktop::AI_PANEL_MAX);
+        assert_eq!(roomy.width(Pane::Detail), 600.);
+        let overlay = prefs.with_assistant(960., DetailPane::Hidden, false);
+        assert_eq!(overlay.width(Pane::Ai), desktop::AI_PANEL);
+        assert_eq!(
+            overlay.room_width(),
+            prefs.at(960., DetailPane::Hidden).room_width()
+        );
+    }
     #[test]
     fn focus_scrolls_what_it_lands_on_into_view() {
         use super::reveal_offset;

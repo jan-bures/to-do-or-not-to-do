@@ -204,6 +204,7 @@ pub enum Agent {
     Claude,
     Codex,
     Pi,
+    Assistant,
     Other { letter: char, hue: u16 },
 }
 
@@ -213,6 +214,7 @@ impl Agent {
             Self::Claude => "C".into(),
             Self::Codex => "X".into(),
             Self::Pi => "π".into(),
+            Self::Assistant => "A".into(),
             Self::Other { letter, .. } => letter.to_uppercase().collect::<String>().into(),
         }
     }
@@ -222,6 +224,7 @@ impl Agent {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Assistant => "assistant",
             Self::Other { .. } => "",
         }
     }

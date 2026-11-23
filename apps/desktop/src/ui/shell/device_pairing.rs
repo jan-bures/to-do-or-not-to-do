@@ -729,7 +729,8 @@ mod tests {
     fn open_from_settings(window: &mut TestAppWindow<ShellView>, mode: Mode) {
         window.update(|shell, window, cx| window.focus(&shell.account_focus, cx));
         press(window, "enter");
-        // Open admin pages, Sync now, Devices…, Sign out…
+        // Open admin pages, Sync now, AI assistant…, Devices…, Sign out…
+        press(window, "down");
         press(window, "down");
         press(window, "down");
         press(window, "space");

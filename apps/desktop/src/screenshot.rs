@@ -267,6 +267,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                             shell.open_updates(window, cx);
                         }
                     }
+                    shell.preview_assistant(&opts.fixture, window, cx);
                     shell
                 });
                 // GPUI's own focus, inside the window: nothing is activated or shown.

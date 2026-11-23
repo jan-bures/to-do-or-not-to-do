@@ -995,6 +995,10 @@ impl ShellView {
             MenuAction::NewCollection => self.new_collection(window, cx),
             MenuAction::NewListIn(id) => self.new_list(Some(id), window, cx),
             MenuAction::OpenAdmin => self.open_admin(cx),
+            MenuAction::AssistantSettings => {
+                window.focus(&self.account_focus, cx);
+                self.open_ai_settings(window, cx);
+            }
             MenuAction::DeviceSettings => {
                 self.open_pairing_panel(super::device_pairing::Mode::Settings, window, cx);
             }
