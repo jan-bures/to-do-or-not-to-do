@@ -3,6 +3,7 @@ package app.todoornot
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.unit.dp
+import app.todoornot.design.CircularSunArc
 import app.todoornot.model.UiState
 import app.todoornot.model.headerClockChanged
 import app.todoornot.model.isoDay
@@ -17,6 +18,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
+import kotlin.math.hypot
 
 class HeaderCollapseTest {
     private fun header(cover: Boolean = true) = HeaderCollapse().apply {
@@ -115,6 +117,25 @@ class HeaderCollapseTest {
         assertEquals(1f, visual.reachFade(1f), 0f)
         assertTrue(visual.parallax(0.5f, 0.35f, false) < visual.parallax(0.5f, 0.65f, false))
         assertEquals(1f, visual.parallax(1f, 0.35f, false), 0f)
+    }
+
+    @Test fun the_sun_and_both_strokes_follow_the_same_circle_as_reach_grows() {
+        val arc = CircularSunArc()
+        for (step in 0..10) {
+            val p = step / 10f
+            val base = 42f + 105f * p
+            val peak = 12f + 32f * p
+            arc.fit(412f, 36f, base, peak)
+            assertEquals(Offset(36f, base), arc.point(0f))
+            assertEquals(Offset(206f, peak), arc.point(0.5f))
+            assertEquals(Offset(376f, base), arc.point(1f))
+            assertEquals(arc.diameter.width, arc.diameter.height, 0f)
+            assertEquals(-90f, arc.startDegrees + arc.sweepDegrees / 2f, 0.001f)
+            for (i in 0..40) {
+                val point = arc.point(i / 40f)
+                assertEquals(arc.radius, hypot(point.x - 206f, point.y - peak - arc.radius), 0.001f)
+            }
+        }
     }
 
     @Test fun opening_a_sheet_disables_reach_without_jumping_the_visible_height() = runBlocking {

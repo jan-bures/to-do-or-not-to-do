@@ -13,11 +13,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.MotionDurationScale
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
-import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
@@ -38,6 +38,7 @@ import app.todoornot.ui.HeaderCollapse
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
+import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.sin
 
@@ -123,14 +124,12 @@ internal fun Modifier.headerSky(
     }
 }
 
-private const val ARC_STEPS = 64
-private val arcSines = FloatArray(ARC_STEPS + 1) { sin(PI * it / ARC_STEPS).toFloat() }
 private val rayX = FloatArray(8) { sin(PI * it / 4).toFloat() }
 private val rayY = FloatArray(8) { -cos(PI * it / 4).toFloat() }
 private val layerLag = floatArrayOf(0.35f, 0.65f, 1f)
-private val arcLine = Stroke(L.ARC_STROKE, cap = StrokeCap.Round, join = StrokeJoin.Round)
-private val travelledLine = Stroke(L.TRAVELLED_STROKE_PHONE, cap = StrokeCap.Round, join = StrokeJoin.Round)
-private val duskLine = Stroke(L.TRAVELLED_STROKE_FINISHED, cap = StrokeCap.Round, join = StrokeJoin.Round)
+private val arcLine = Stroke(L.ARC_STROKE, cap = StrokeCap.Round)
+private val travelledLine = Stroke(L.TRAVELLED_STROKE_PHONE, cap = StrokeCap.Round)
+private val duskLine = Stroke(L.TRAVELLED_STROKE_FINISHED, cap = StrokeCap.Round)
 private val ringLine = Stroke(L.RING_STROKE)
 private val reachRing = Stroke(L.ARC_STROKE)
 private val duskRadii = floatArrayOf(44f, 64f, 86f)
@@ -138,14 +137,46 @@ private val duskOpacities = floatArrayOf(0.32f, 0.18f, 0.09f)
 
 private fun pathOf(svg: String): Path = PathParser().parsePathString(svg).toPath()
 
+/** Circle fitted to the baseline and zenith. Keep in step with `todo_design::landscape::phone::Arc`. */
+internal class CircularSunArc {
+    private var mid = 0f
+    private var halfChord = 0f
+    private var base = 0f
+    private var peak = 0f
+    private var halfAngle = 0f
+    var radius = 0f
+        private set
+
+    val topLeft: Offset get() = Offset(mid - radius, peak)
+    val diameter: Size get() = Size(radius * 2f, radius * 2f)
+    val sweepDegrees: Float get() = (halfAngle * 360.0 / PI).toFloat()
+    val startDegrees: Float get() = -90f - sweepDegrees / 2f
+
+    fun fit(width: Float, pad: Float, base: Float, peak: Float) {
+        mid = width / 2f
+        halfChord = mid - minOf(pad, width * 0.25f)
+        this.base = base
+        this.peak = peak
+        val rise = base - peak
+        radius = if (rise > 0f && halfChord > 0f) (halfChord * halfChord + rise * rise) / (2f * rise) else 0f
+        halfAngle = if (radius == 0f) 0f else 2f * atan2(rise, halfChord)
+    }
+
+    fun point(progress: Float): Offset {
+        val t = 2f * progress.coerceIn(0f, 1f) - 1f
+        if (t == -1f || t == 1f || radius == 0f) return Offset(mid + t * halfChord, base)
+        val angle = t * halfAngle
+        return Offset(mid + radius * sin(angle), peak + radius * (1f - cos(angle)))
+    }
+}
+
 /** The only mutable geometry. Size changes within a drag don't invalidate either set of endpoints. */
 private class PanoramaPaths(inner: Boolean) {
     private var width = -1f
     private var scene: PhoneLandscape? = null
     private val innerPane = inner
     private val hills = Array(3) { Path() }
-    private val travelled = Path()
-    private val remaining = Path()
+    private val sunArc = CircularSunArc()
     private var cloud: Path? = null
     private var ambientMoon: Path? = null
     private var duskMoon: Path? = null
@@ -185,27 +216,24 @@ private class PanoramaPaths(inner: Boolean) {
         }
     }
 
-    /** Sample the arc from a fixed sine table, with the exact animated endpoint for the sun. */
+    /** Both strokes and the sun use exactly the same circle. There are no per-frame arc paths. */
     fun DrawScope.arc(pad: Float, w: Float, base: Float, peak: Float, progress: Float,
         track: Color, ink: Color, dusk: Boolean,
     ): Offset {
-        val inset = minOf(pad, w * 0.25f)
-        val span = w - 2f * inset
-        val rise = base - peak
-        val center = Offset(inset + span * progress, base - rise * sin(PI * progress).toFloat())
-        val split = (progress * ARC_STEPS).toInt()
-        if (!dusk && progress < 1f) {
-            remaining.rewind()
-            remaining.moveTo(center.x, center.y)
-            for (i in split + 1..ARC_STEPS) remaining.lineTo(inset + span * i / ARC_STEPS, base - rise * arcSines[i])
-            drawPath(remaining, track, style = arcLine)
-        }
-        if (progress > 0f) {
-            travelled.rewind()
-            travelled.moveTo(inset, base)
-            for (i in 1..split) travelled.lineTo(inset + span * i / ARC_STEPS, base - rise * arcSines[i])
-            travelled.lineTo(center.x, center.y)
-            drawPath(travelled, ink, style = if (dusk) duskLine else travelledLine)
+        sunArc.fit(w, pad, base, peak)
+        val center = sunArc.point(progress)
+        val style = if (dusk) duskLine else travelledLine
+        if (sunArc.radius == 0f) {
+            if (!dusk && progress < 1f) drawLine(track, center, sunArc.point(1f), arcLine.width, StrokeCap.Round)
+            if (progress > 0f) drawLine(ink, sunArc.point(0f), center, style.width, StrokeCap.Round)
+        } else {
+            val start = sunArc.startDegrees
+            val sweep = sunArc.sweepDegrees
+            val split = sweep * progress
+            val bounds = sunArc.topLeft
+            val diameter = sunArc.diameter
+            if (!dusk && progress < 1f) drawArc(track, start + split, sweep - split, false, bounds, diameter, style = arcLine)
+            if (progress > 0f) drawArc(ink, start, split, false, bounds, diameter, style = style)
         }
         return center
     }
@@ -300,8 +328,9 @@ internal fun HeaderPanorama(
                     moon(w * 0.16f, mix(56f, 76f, p), dc.star.fade(L.MOON_OPACITY * night * look.night), true)
                     val a = g.dusk; val b = g.duskReach
                     val base = h - mix(a.baseDepth, b.baseDepth, p)
-                    val peak = mix(a.peak, b.peak, p)
-                    // Keep the gold arc pinned to the same endpoint as the day travels into it.
+                    val fullHeight = L.HEIGHT_FINISHED + collapse.reachToScene / density
+                    val peak = mix(a.peak, b.peak, p) - maxOf(0f, fullHeight - h)
+                    // Keep the whole setting arc anchored at the bottom while the scene grows.
                     val end = arc(a.pad, w, base, peak, 1f, Color.Transparent, dc.sun.fade(night * 0.5f), true)
                     // The setting sun's size belongs to the resting dusk scene, not to reach motion.
                     drawSun(end + Offset(-6f, 10f), dc.sun.fade(night), 2.2f, true, 0f)

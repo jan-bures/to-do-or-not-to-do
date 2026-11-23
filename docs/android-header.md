@@ -19,7 +19,7 @@ Real-device testing on a Galaxy Z Fold7 cover screen (`~412 × 910–960 dp`, da
 
 - **Non-interactive top sky:** Zero buttons, filters, search icons, or overflow menus in the header. Every interactive control remains in the bottom thumb dock.
 - **No duplication with the bottom dock:** Never repeat room pills, filter controls, quick-add hints, or Trash's bottom-bar deletion count in the header.
-- **Pure Compose `Canvas` geometry:** Single-colour paths, stroked polylines, circles, and one vertical linear gradient per header. **Zero bitmaps beyond what exists, zero blur shaders, zero idle animations.**
+- **Pure Compose `Canvas` geometry:** Single-colour paths, stroked circular arcs, circles, and one vertical linear gradient per header. **Zero bitmaps beyond what exists, zero blur shaders, zero idle animations.**
 - **Strict WCAG contrast:** Every text token sits over `canvas` / `sky` (or `dusk.top` in finished dusk) at **≥ 4.5:1** across all 360° room hues in both themes; the remaining arc and travelled stroke keep **≥ 3:1**.
 
 ---
@@ -64,8 +64,9 @@ When a room has `0 of 15 done`, the sun should read as **daybreak just clearing 
 - **Arc vertical bounds (within scene height `h`):**
   - Cover at rest (`h = 72 dp`): `arcBase = h − 30 = 42 dp`, `arcPeak = 12 dp` → **`30 dp` of vertical rise** (more than 2.3× the old `13 dp`).
   - Inner at rest (`h = 80 dp`): `arcBase = h − 34 = 46 dp`, `arcPeak = 12 dp` → **`34 dp` of vertical rise**.
-  - Latched reach (`h = 207 dp`): `arcBase = h − 60 = 147 dp`, `arcPeak = 44 dp` → **`103 dp` sweeping semicircle**.
+  - Latched reach (`h = 207 dp`): `arcBase = h − 60 = 147 dp`, `arcPeak = 44 dp` → **`103 dp` of rise**.
   - Finished dusk (`h = 164 dp`): unchanged `arcBase = h − 64 = 100 dp`, `arcPeak = 46 dp`, setting at `(x1 − 6, arcBase + 10)` behind the hills.
+- **True circular segment:** Fit one circle through the two endpoints and the peak. With half chord `a = w/2 − pad` and rise `s = arcBase − arcPeak`, the radius is `(a² + s²)/(2s)`. Progress is a fraction of the angular sweep. The travelled stroke, remaining stroke, and sun all use the same circle, so the curve stays round at every reach height.
 - **Why `arcBase = h − 30` (`h − 34` inner) works at `0%`:** At `x = 36 dp`, `far_hill` crests around `h − 28 dp`. Placing `arcBase` at `h − 30 dp` lets the sun disc (`r = 7.0 dp`) and its upper rays shine cleanly just above the eastern ridge crest—reading unmistakably as daybreak while the full `arc` curve sweeps overhead to the right.
 - **Sun layers (back to front, all pure circles/lines):**
   1. **Outer atmospheric glow:** `r = 24 dp × scale`, `sun` at `OUTER_GLOW_OPACITY` (`0.08`). Pure `drawCircle`, no blur.
@@ -214,7 +215,7 @@ Releasing midway settles to `0.0` or `1.0` over `PANEL` (`200 ms`, `STANDARD`).
 1. **Zero bitmaps & zero blur shaders:** Every layer (gradient, circles, lines, 3 hill paths, clouds, moon) is drawn with Compose `DrawScope` primitives (`drawRect` with `Brush.verticalGradient`, `drawCircle`, `drawLine`, `drawPath`).
 2. **Zero per-frame `Path` allocations during 1:1 drag/scroll:**
    - Pre-build and cache (`remember(width, isDusk, dark)`) **two endpoint `Geometry` snapshots** per width: `restGeo` (`h = 72` or `80 dp`) and `reachGeo` (`h = 207 dp`), plus `duskGeo` (`h = 164 dp`) when finished/transitioning.
-   - During a live pull-down drag (`0 < p < 1`), interpolate the 3 hill `Path`s by reusing a single pre-allocated mutable `Path` object (`path.rewind()` + cubic control point lerp between `restGeo` and `reachGeo` — zero GC allocations!) or drawing `restGeo` scaled/translated cleanly; sample the sun position from the interpolated half-sine formula directly in `drawScope` (only 1 `sin(πt)` call + 8 `drawLine` calls!).
+   - During a live pull-down drag (`0 < p < 1`), interpolate the 3 hill paths by rewinding their pre-allocated `Path` objects and lerping their cubic control points. Fit the circle to the interpolated baseline and peak, draw both strokes using `drawArc`, and sample the sun's position from the same angular sweep. No new paths are needed.
    - Read `collapse.reach`, `collapse.fraction`, `sun()`, and `dusk()` **inside layout and draw lambdas only** so dragging or animating the sun never triggers recomposition of `HeaderBody` or the task list!
 3. **Cache invalidation key:** Rebuild static paths only when `(widthDp, sceneKind, dark)` changes (window resize, fold/unfold, or theme toggle). Changing task progress (`done`/`total`) never rebuilds hill or cloud paths.
 

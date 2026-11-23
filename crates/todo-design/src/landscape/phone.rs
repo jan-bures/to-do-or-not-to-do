@@ -2,7 +2,6 @@
 
 use super::{PathEl, Point, STARS, Star, pt};
 use crate::layout::phone::{HEADER_SCENE_COVER, HEADER_SCENE_INNER};
-use std::f32::consts::PI;
 
 pub(super) const FAR_POINTS: [(f32, f32); 9] = [
     (0.12, -6.0),
@@ -47,7 +46,7 @@ pub struct Hill {
     pub amplitude: f32,
 }
 
-/// Dimensions of a phone arc at a scene endpoint. Sampled as a half sine.
+/// Dimensions of a circular segment at a phone scene endpoint.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Arc {
     /// Horizontal inset (dp).
@@ -59,16 +58,22 @@ pub struct Arc {
 }
 
 impl Arc {
-    /// Sample the scene's arc at progress `t`, clamped to 0–1.
+    /// Sample `t` of the segment's angular sweep (and thus of its length). The radius follows from
+    /// the half chord and the sagitta, the distance between the baseline and the top of the segment.
     #[must_use]
     pub fn point(self, width: f32, height: f32, t: f32) -> Point {
-        let t = t.clamp(0.0, 1.0);
-        let pad = self.pad.min(width * 0.25);
+        let mid = width * 0.5;
+        let half_chord = mid - self.pad.min(width * 0.25);
         let base = height - self.base_depth;
-        pt(
-            pad + (width - 2.0 * pad) * t,
-            base - (base - self.peak) * (PI * t).sin(),
-        )
+        let rise = base - self.peak;
+        let t = t.clamp(0.0, 1.0);
+        if t == 0.0 || t == 1.0 || rise <= 0.0 || half_chord <= 0.0 {
+            return pt(mid + (2.0 * t - 1.0) * half_chord, base);
+        }
+        let radius = (half_chord * half_chord + rise * rise) / (2.0 * rise);
+        let half_angle = 2.0 * rise.atan2(half_chord);
+        let (sin, cos) = ((2.0 * t - 1.0) * half_angle).sin_cos();
+        pt(mid + radius * sin, self.peak + radius * (1.0 - cos))
     }
 }
 
@@ -221,5 +226,24 @@ mod tests {
         assert_eq!(expanded.arc.point(412.0, tall, 0.0), pt(36.0, 147.0));
         assert_eq!(expanded.arc.point(412.0, tall, 0.5), pt(206.0, 44.0));
         assert_eq!(expanded.hills.map(|h| h.depth), [84.0, 58.0, 28.0]);
+    }
+
+    #[test]
+    fn the_entire_sun_path_has_a_constant_radius() {
+        for (w, h, panorama) in [
+            (412.0, HEADER_SCENE_COVER, rest(412.0, false)),
+            (437.5, HEADER_SCENE_INNER, rest(437.5, true)),
+            (412.0, 207.0, reach(412.0)),
+            (412.0, super::super::HEIGHT_FINISHED, dusk(false)),
+        ] {
+            let arc = panorama.arc;
+            let half_chord = w * 0.5 - arc.pad;
+            let rise = h - arc.base_depth - arc.peak;
+            let radius = (half_chord * half_chord + rise * rise) / (2.0 * rise);
+            for i in 0..=40 {
+                let p = arc.point(w, h, i as f32 / 40.0);
+                assert!(((p.x - w * 0.5).hypot(p.y - arc.peak - radius) - radius).abs() < 1e-4);
+            }
+        }
     }
 }

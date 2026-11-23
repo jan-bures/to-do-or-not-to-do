@@ -243,20 +243,20 @@
       ? sceneTop + 46.0
       : (isReach ? sceneTop + 44.0 : sceneTop + 12.0);
 
+    // Constant curvature: fit a circle to the chord and its rise, just as the Android header does.
+    const halfChord = (x1 - x0) * 0.5;
+    const rise = arcBase - arcPeak;
+    const radius = (halfChord ** 2 + rise ** 2) / (2 * rise);
+    const halfAngle = 2 * Math.atan2(rise, halfChord);
     function arcPt(t) {
-      const tc = Math.max(0, Math.min(1, t));
-      return [
-        x0 + (x1 - x0) * tc,
-        arcBase - (arcBase - arcPeak) * Math.sin(Math.PI * tc),
-      ];
+      const angle = (2 * t - 1) * halfAngle;
+      return [width * 0.5 + radius * Math.sin(angle), arcPeak + radius * (1 - Math.cos(angle))];
     }
-    function arcPoly(from, to, segs) {
-      const pts = [];
-      for (let i = 0; i <= segs; i++) {
-        const [px, py] = arcPt(from + ((to - from) * i) / segs);
-        pts.push(`${px.toFixed(1)},${py.toFixed(1)}`);
-      }
-      return pts.join(" ");
+    function arcPath(from, to) {
+      const [ax, ay] = arcPt(from);
+      const [bx, by] = arcPt(to);
+      const large = Number((to - from) * 2 * halfAngle > Math.PI);
+      return `M${ax} ${ay}A${radius} ${radius} 0 ${large} 1 ${bx} ${by}`;
     }
 
     if (total > 0 || isDusk) {
@@ -270,14 +270,16 @@
       const sunFill = isDusk ? "var(--dusk-sun)" : "var(--color-sun)";
 
       if (isDusk) {
-        parts.push(`<polyline points="${arcPoly(0.0, 1.0, 56)}" fill="none" stroke="var(--dusk-sun)" opacity="0.5" stroke-width="1.2" stroke-linecap="round"/>`);
+        parts.push(`<path d="${arcPath(0, 1)}" fill="none" stroke="var(--dusk-sun)" opacity="0.5" stroke-width="1.2" stroke-linecap="round"/>`);
         for (const [rr, ro] of [[44, 0.32], [64, 0.18], [86, 0.09]]) {
           parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${rr}" fill="none" stroke="var(--dusk-sun)" stroke-width="1.2" opacity="${ro}"/>`);
         }
       } else {
-        parts.push(`<polyline points="${arcPoly(progress, 1.0, 56)}" fill="none" stroke="var(--color-arc)" stroke-width="1.0" stroke-linecap="round"/>`);
+        if (progress < 1) {
+          parts.push(`<path d="${arcPath(progress, 1)}" fill="none" stroke="var(--color-arc)" stroke-width="1.0" stroke-linecap="round"/>`);
+        }
         if (progress > 0) {
-          parts.push(`<polyline points="${arcPoly(0.0, progress, 44)}" fill="none" stroke="var(--color-sun-ink)" stroke-width="1.75" stroke-linecap="round"/>`);
+          parts.push(`<path d="${arcPath(0, progress)}" fill="none" stroke="var(--color-sun-ink)" stroke-width="1.75" stroke-linecap="round"/>`);
         }
         // Pure-circle atmospheric outer glow (zero blur shader)
         parts.push(`<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${(24 * scale).toFixed(1)}" fill="${sunFill}" opacity="var(--landscape-outer-glow-opacity)"/>`);
