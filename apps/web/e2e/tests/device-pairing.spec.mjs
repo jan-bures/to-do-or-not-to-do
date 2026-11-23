@@ -29,11 +29,15 @@ test("phone drawer yields Tab and Escape to the device settings dialog", async (
   const settings = page.getByRole("button", { name: "Settings", exact: true });
   const menu = page.getByRole("menu", { name: "Settings" });
   const devices = menu.getByRole("menuitem", { name: "Devices…" });
+  const admin = menu.getByRole("menuitem", { name: "Open admin pages" });
   await settings.press("Enter");
-  await expect(devices).toBeFocused();
+  await expect(admin).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(menu).toBeHidden();
   await expect(settings).toBeFocused();
+  await page.keyboard.press("ArrowDown");
+  await expect(admin).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await page.keyboard.press("ArrowDown");
   await expect(devices).toBeFocused();
   await page.keyboard.press("Space");

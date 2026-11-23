@@ -98,6 +98,13 @@ pub fn server_origin_with(base_url: &str, cleartext: Cleartext) -> Result<String
     Ok(url.as_str().trim_end_matches('/').to_owned())
 }
 
+/// The paired server's admin pages. Use the same base URL and cleartext policy as the transport.
+#[must_use]
+pub fn admin_url(base_url: &str, cleartext: Cleartext) -> Option<String> {
+    let base = server_origin_with(base_url, cleartext).ok()?;
+    Some(format!("{base}{}", crate::ADMIN_PATH))
+}
+
 /// HTTP over reqwest (rustls with the *ring* provider), with the bearer token on every request.
 #[derive(Clone)]
 pub struct HttpTransport {
@@ -452,6 +459,50 @@ impl Entropy for OsEntropy {
 
 #[cfg(test)]
 mod tests {
+    use super::{Cleartext, admin_url};
+
+    #[test]
+    fn admin_pages_use_the_paired_base_and_transport_policy() {
+        for (server, expected) in [
+            ("https://todo.example.com", "https://todo.example.com/admin"),
+            (
+                "https://todo.example.com:8443/",
+                "https://todo.example.com:8443/admin",
+            ),
+            (
+                "https://todo.example.com/todo/",
+                "https://todo.example.com/todo/admin",
+            ),
+        ] {
+            assert_eq!(
+                admin_url(server, Cleartext::Refuse).as_deref(),
+                Some(expected)
+            );
+        }
+        for server in [
+            "http://localhost:47390",
+            "http://127.0.0.1:47390",
+            "http://[::1]:47390",
+        ] {
+            assert_eq!(
+                admin_url(server, Cleartext::Loopback),
+                Some(format!("{server}/admin"))
+            );
+            assert_eq!(admin_url(server, Cleartext::Refuse), None);
+        }
+        for invalid in [
+            "todo.example.com",
+            "http://todo.example.com",
+            "file:///etc/hosts",
+            "javascript:alert(1)",
+            "https://user:password@todo.example.com",
+            "https://todo.example.com/?redirect=elsewhere",
+            "https://todo.example.com/#fragment",
+        ] {
+            assert_eq!(admin_url(invalid, Cleartext::Loopback), None, "{invalid}");
+        }
+    }
+
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
     struct Layer(&'static str, #[source] Option<Box<Layer>>);

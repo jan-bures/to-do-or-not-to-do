@@ -227,8 +227,8 @@ and with a roaming profile they travel with it. Each pairing's data lives under 
 pairing never picks up an old cache and cleaning up an old one can't touch the current one.
 
 **The account menu** (the gear in the sidebar footer) names the server the app is paired with, opens its
-admin pages (`<server>/admin`, built from the paired address with the transport's own check, never a
-built-in host), and has **Sync now**, which retries at once instead of waiting out the backoff
+admin pages (`<server>/admin`, built from the paired address by the same `todo-client` helper as Android,
+using the transport's address policy), and has **Sync now**, which retries at once instead of waiting out the backoff
 (`SyncClient::nudge`). **Devices…** opens the pairing dialog with **Pair a new device** and
 **Approve a device**.
 

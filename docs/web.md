@@ -311,8 +311,10 @@ phone drawer. Smart-list and Activity icons keep their own glyph hue regardless 
 headers and lists share the desktop's name-to-glyph rules; a name that doesn't match defaults to layers for
 collections and to a document for lists. Every collection and list shows its open count, even zero.
 **Agent activity** shows a pip for tasks most recently changed by an agent today; it still opens the
-seven-day smart list. The pinned sidebar footer follows the shared design; its settings gear offers
-**Devices…** and **Sign out**.
+seven-day smart list. The settings gear in the pinned sidebar or phone drawer shows the current server.
+**Open admin pages** opens the same origin's `/admin` in a new tab, leaving the app open. **Sync now**
+retries without waiting for the next automatic attempt. It shows **Syncing…** and can't be activated
+while the engine is catching up or sending changes. The menu also offers **Devices…** and **Sign out**.
 
 **+ New → List** creates a sibling of the current list, a child of the current collection, or a top-level
 list from a smart room. **+ New → Collection** creates a collection at the end of the sidebar. Both get a swatch.
@@ -481,7 +483,8 @@ The status bar shows shortcuts only when their actions are available.
   navigation, focus after deletion and moves, reduced motion and Undo. Reminder tests cover keyboard
   navigation and focus return, custom time validation, cancelling a draft, and Undo. The docked splitter
   tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
-  and viewport changes, and wide-detail text and list layout. Set `FIXTURE_PORT` to change the port
+  and viewport changes, and wide-detail text and list layout. Settings tests use the keyboard to open
+  the same-origin admin pages from the desktop sidebar and phone drawer. Set `FIXTURE_PORT` to change the port
   from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
   the detail, wide and narrow docked widths (including 1920 × 1080) and the hovered splitter, due-date editor,
@@ -493,16 +496,20 @@ The status bar shows shortcuts only when their actions are available.
   and its creation, management, rename, colour and delete views,
   the link field and removal, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
-  an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered, empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
-  (desktop and phone), the medium modal, and the phone's list, detail and drawer. The PNGs land in
-  `apps/web/e2e/gallery/`, including `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
+  an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered,
+  empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
+  (desktop and phone), the medium modal, and the phone's list, detail and drawer. Settings menus are
+  captured on desktop (`sidebar-settings-{light,dark}.png`) and phone (`phone-settings-{light,dark}.png`).
+  The PNGs land in `apps/web/e2e/gallery/`, including `sidebar-{light,dark}.png` and
+  `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)
   after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
   the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
-  API is unreachable that survives a reload and is sent afterwards, completing, and a request without the CSRF
+  API is unreachable that survives a reload and is sent afterwards, **Sync now** reconnecting the event
+  stream without waiting for backoff and being disabled while connecting, completing, and a request without the CSRF
   header being refused. Activity reads confirmed edits from another tab and undoes one through the session.
   The suite also uploads, downloads and removes a file with the web session, sets a repeat rule and sees
   the next occurrence on completion, adds and removes tags and links across tabs, checks tag delete confirmation

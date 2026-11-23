@@ -336,6 +336,7 @@ a {
 /* ---- sidebar ------------------------------------------------------------------------------------ */
 
 .sidebar {
+  --sidebar-width: var(--desktop-sidebar);
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -623,9 +624,32 @@ a {
 }
 
 .new-room-menu { inset-inline-start: 0; }
-.settings-menu { inset-inline-end: 0; }
+.settings-menu {
+  inset-inline-end: 0;
+  inline-size: min(var(--desktop-menu), calc(var(--sidebar-width) - 2 * var(--space-2)));
+}
 
-.footer-popup button {
+.settings-server {
+  display: grid;
+  gap: var(--space-1);
+  margin-block-end: var(--space-1);
+  padding: var(--space-2);
+  border-block-end: var(--hairline) solid var(--color-line);
+  color: var(--color-ink-3);
+  font: var(--text-caps-label);
+  letter-spacing: var(--text-caps-label-tracking);
+  text-transform: var(--text-caps-label-transform);
+}
+
+.settings-origin {
+  color: var(--color-ink);
+  font: var(--text-due);
+  letter-spacing: normal;
+  text-transform: none;
+  overflow-wrap: anywhere;
+}
+
+.footer-popup :is(button, a) {
   display: flex;
   align-items: center;
   gap: var(--space-2);
@@ -637,9 +661,10 @@ a {
   font: var(--text-nav-sub);
 }
 
-.footer-new:focus-visible, .footer-popup button:focus-visible { color: var(--color-ink); }
-.footer-new:not(:disabled):hover, .footer-popup button:hover { background: var(--color-hover); }
-.footer-new:disabled { color: var(--color-ink-4); cursor: default; }
+.footer-new:focus-visible, .footer-popup :is(button, a):not([aria-disabled="true"]):focus-visible { color: var(--color-ink); }
+.footer-new:not(:disabled):hover,
+.footer-popup :is(button, a):not([aria-disabled="true"]):hover { background: var(--color-hover); }
+.footer-new:disabled, .footer-popup [aria-disabled="true"] { color: var(--color-ink-4); cursor: default; }
 
 .side-sync {
   display: flex;
@@ -2778,7 +2803,8 @@ a.source:hover {
     top: 0;
     bottom: 0;
     left: 0;
-    width: min(var(--desktop-sidebar) + var(--space-8), 86vw);
+    --sidebar-width: min(var(--desktop-sidebar) + var(--space-8), 86vw);
+    width: var(--sidebar-width);
     z-index: 5;
     transform: translateX(-100%);
     visibility: hidden;
@@ -2797,7 +2823,7 @@ a.source:hover {
   .nav-item,
   .nav-entry > .nav-item,
   .footer-new,
-  .footer-popup button {
+  .footer-popup :is(button, a) {
     height: var(--phone-touch);
   }
 

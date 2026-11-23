@@ -20,7 +20,10 @@ import androidx.compose.ui.res.painterResource
 import kotlin.math.pow
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
@@ -71,6 +74,8 @@ import app.todoornot.ui.Button
 import app.todoornot.ui.DeviceInviteContent
 import app.todoornot.ui.DeviceReviewContent
 import app.todoornot.ui.Label
+import app.todoornot.ui.SettingsMenuContent
+import app.todoornot.ui.overlay
 import app.todoornot.ui.DialogBackdrop
 import app.todoornot.ui.DialogCard
 import app.todoornot.ui.DueDateCard
@@ -535,6 +540,35 @@ class GalleryTest {
         Box(Modifier.fillMaxSize()) {
             MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer)
             TodoTheme(dark, state.room.hue) { overlay() }
+        }
+    }
+
+    @Test
+    fun settings_menu() {
+        val server = "https://todo.example.com:8443"
+        val state = state(fixtureEngine())
+        val s = Tokens.Space
+        val d = Tokens.Metrics.Desktop
+        val touch = Tokens.Metrics.Phone.TOUCH.dp
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val status = if (dark) SyncState.SYNCING else SyncState.ONLINE
+            val ui = state.copy(status = state.status.copy(state = status))
+            shot("settings_menu_$theme", COVER) {
+                Box(Modifier.fillMaxSize()) {
+                    MainScreen(ui, Actions.None, dark, wide = false, server = server, drawerOpen = true)
+                    TodoTheme(dark, ui.room.hue) {
+                        Box(Modifier.width(d.SIDEBAR.dp + s.S10.dp).fillMaxHeight().navigationBarsPadding()) {
+                            Column(Modifier.align(Alignment.BottomEnd).padding(end = s.S2.dp, bottom = touch)
+                                .width(d.MENU.dp).overlay(RoundedCornerShape(Tokens.Radius.LG.dp), LocalDesign.current)
+                                .padding(vertical = s.S2.dp)) {
+                                SettingsMenuContent(server, dark, null, onDismiss = {}, onAdmin = {},
+                                    onSync = {}, onDevices = {}, onUnpair = {})
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 

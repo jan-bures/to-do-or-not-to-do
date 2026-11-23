@@ -82,6 +82,18 @@ fn is_loopback(host: &str) -> bool {
         || bare.parse::<IpAddr>().is_ok_and(|ip| ip.is_loopback())
 }
 
+/// The admin pages on the paired server, with the same HTTP policy as the native client.
+#[uniffi::export]
+pub fn admin_url(server: String, allow_loopback_http: bool) -> Option<String> {
+    use todo_client::native::{self, Cleartext};
+    let policy = if allow_loopback_http {
+        Cleartext::Loopback
+    } else {
+        Cleartext::Refuse
+    };
+    native::admin_url(&server, policy)
+}
+
 /// The approval page for `user_code` on `server` (an origin from [`normalize_server_address`]):
 /// `<server>/pair?code=<code>`, with the code percent-encoded.
 #[uniffi::export]

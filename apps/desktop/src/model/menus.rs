@@ -1419,8 +1419,7 @@ pub fn failures_menu(state: &State, failed: &[FailedEntry]) -> Vec<MenuEntry> {
 /// The server's admin pages, `<server>/admin`, built from the address the app was paired with (checked
 /// like the transport checks it: https, or plain http only for this computer). Never a built-in host.
 pub fn admin_url(server: &str) -> Option<String> {
-    let origin = todo_client::native::server_origin(server).ok()?;
-    Some(format!("{}/admin", origin.trim_end_matches('/')))
+    todo_client::native::admin_url(server, todo_client::native::Cleartext::Loopback)
 }
 
 #[cfg(test)]

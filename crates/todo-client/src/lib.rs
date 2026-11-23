@@ -76,6 +76,9 @@ pub use revocation::Revocation;
 pub use storage::{MemoryStorage, Storage, StorageError};
 pub use todo_core::PROTOCOL_VERSION;
 
+/// The same-origin entry point to the server's admin pages.
+pub const ADMIN_PATH: &str = "/admin";
+
 #[cfg(test)]
 mod tests {
     #[test]

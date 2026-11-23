@@ -4,7 +4,7 @@
 // database upgrades that other tabs block.
 //
 // The sync tests share one browser context (one cookie jar, like the owner's browser) and run in
-// order: the first one sets the server up. The clock test uses a separate replica.
+// order: the first one sets the server up. Tests with fake clocks use separate replicas.
 import { expect, test } from "@playwright/test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -2036,7 +2036,50 @@ test("a tab lets go of the database when a newer version needs it, and reloads",
   await newer.close();
 });
 
-// Run last with a separate replica so the fake clock and its write cannot affect the shared-tab tests.
+// Keep the fake clocks in separate replicas, after the tests that share one browser context.
+test("Sync now wakes an offline retry and is disabled while connecting", async ({ browser }) => {
+  const isolated = await browser.newContext({ baseURL, storageState: await context.storageState() });
+  let release;
+  const hold = new Promise((resolve) => { release = resolve; });
+  try {
+    const page = await isolated.newPage();
+    const w = watch(page);
+    await page.clock.install();
+    await page.clock.pauseAt(new Date(Date.now() + 1_000));
+    let attempts = 0;
+    await page.route("**/api/v1/events**", async (route) => {
+      if (++attempts === 1) {
+        await hold;
+        await route.abort();
+      } else {
+        await route.continue();
+      }
+    });
+    const gear = page.getByRole("button", { name: "Settings", exact: true });
+    const menu = page.getByRole("menu", { name: "Settings" });
+    await page.goto("/app");
+    await expect.poll(() => attempts).toBe(1);
+    await gear.click();
+    await expect(menu.getByRole("menuitem", { name: "Syncing…", exact: true })).toBeDisabled();
+    release();
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Offline/);
+    const sync = menu.getByRole("menuitem", { name: "Sync now", exact: true });
+    await expect(sync).toBeEnabled();
+    // No elapsed time: only the manual nudge can wake the engine's retry timer.
+    expect(attempts).toBe(1);
+    await sync.click();
+    await expect(menu).toBeHidden();
+    await expect(gear).toBeFocused();
+    await expect.poll(() => attempts).toBe(2);
+    await page.clock.resume(); // The retry has started; let normal timers finish catch-up.
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
+    expect(w).toEqual([]);
+  } finally {
+    release();
+    await isolated.close();
+  }
+});
+
 test("quick-add uses the local date at submit and My Day refreshes on wake", async ({ browser }) => {
   const isolated = await browser.newContext({ baseURL, timezoneId: "UTC", storageState: await context.storageState() });
   try {

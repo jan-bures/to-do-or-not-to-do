@@ -63,11 +63,11 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Sign in or pair | `POST /pair/start`, `/pair/poll` (`S/api/mod.rs:134`), passkey session | wired `D/ui/pairing.rs:498` | wired (passkey session, `/login`) | wired `A/ui/PairingScreen.kt` |
 | Sign out, unpair, remove local data | `/auth/logout` | wired: the account menu (`D/ui/shell/menu.rs:410`, asks first) | wired `W/app.rs:862`; the IndexedDB copy is kept on purpose | wired `A/ui/Drawer.kt:201`, `A/ui/Unpair.kt` (asks first, counts unsent changes) |
 | Sync status line | client `status()` | shown `D/model/derive.rs:628` (sidebar footer) | shown `W/app.rs:791` | shown `A/ui/Drawer.kt:165`, chip `A/ui/RoomPane.kt:215` |
-| Sync now | client `nudge()` | wired: the account menu (`D/ui/shell/menu.rs:452`) | missing (runs automatically on wake, `W/app.rs:424`) | wired `A/ui/Drawer.kt:196`; the chip, `A/ui/RoomPane.kt:231` |
+| Sync now | client `nudge()` | wired: the account menu (`D/ui/shell/menu.rs::sync_now`) | wired: Settings retries immediately and shows **Syncing…** while busy (`W/app.rs::SettingsMenu`, `W/backend.rs::nudge`); also runs on wake | wired: Settings retries immediately and shows **Syncing…** while busy (`A/ui/Drawer.kt::DrawerSettings`); also on the room's sync chip |
 | Offline outbox, replay on reconnect | `todo-client` | wired (SQLite) | wired (IndexedDB, `MirrorStorage`) | wired (SQLite) |
 | "Couldn't sync" list: see and dismiss | client `failed()`, `dismiss()` and `dismiss_many()`; plain words in `T/failure.rs` | wired: "N couldn't sync" in the sidebar footer opens the refused changes, each with what it was about and why (never the server's text), with Dismiss and Dismiss all (only what the list shows; one refused since stays) (`D/ui/shell/sidebar.rs:259`, `D/model/menus.rs:671`, `D/ui/shell/menu.rs:513`) | wired: Not synced, Dismiss and Dismiss all for the shown IDs (`W/app/room_actions.rs`, `W/backend.rs`) | wired banner and dismiss, in the shared plain words, never the server's text (`A/ui/RoomPane.kt:145`, `F/engine.rs` `failed`) |
 | Recover a damaged cache, start fresh | client `salvage_all` | wired `D/ui/failed.rs:105` | wired `W/main.rs:111` (Reset local data) | wired `F/recovery.rs`, `A/ui/PairingScreen.kt:106` |
-| Settings: server, admin pages link | admin pages at `/admin` | wired: the account menu shows the server and opens `<server>/admin`, built from the paired address (`D/model/menus.rs:379`, `:463`, `D/ui/shell/menu.rs:407`) | missing | partial: the drawer menu shows the server (`A/ui/Drawer.kt:186`); missing the admin link |
+| Settings: server, admin pages link | admin pages at `/admin` (`T/lib.rs::ADMIN_PATH`, `T/native.rs::admin_url`) | wired: the account menu shows the paired server and opens its admin pages (`D/model/menus.rs::account_menu`, `D/ui/shell/menu.rs::open_admin`) | wired: Settings shows this app's origin and opens its admin pages in a new tab (`W/app.rs::SettingsMenu`) | wired: the drawer's settings menu shows the paired server and opens its admin pages in the browser (`A/ui/Drawer.kt::DrawerSettings`, `F/pairing.rs::admin_url`) |
 
 ### Navigation and filtering
 
@@ -171,14 +171,14 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 ### Server-side only (admin pages)
 
 The owner manages these on the server's own pages (`S/web/mod.rs`) or through the local admin API
-(`S/admin/mod.rs:222`). No client links to them yet.
+(`S/admin/mod.rs:222`). All three clients link to the admin landing page from Settings.
 
-| Feature | Core / server | Desktop | Web | Android |
-|---|---|---|---|---|
-| Share links (create, rotate, revoke) | `/admin/shares` | missing (no link) | missing (no link) | missing (no link) |
-| Agent tokens and their per-list access | `/admin/agents` | missing (no link) | missing (no link) | missing (no link) |
-| Devices (list, revoke) | `/admin/devices` | missing (no link) | missing (no link) | missing (no link) |
-| Email ingest settings, audit log, passkeys | `/admin/ingest`, `/admin/audit` | missing (no link) | missing (no link) | missing (no link) |
+| Feature | Server page |
+|---|---|
+| Share links (create, rotate, revoke) | `/admin/shares` |
+| Agent tokens and their per-list access | `/admin/agents` |
+| Devices (list, revoke) | `/admin/devices` |
+| Email ingest settings, audit log, passkeys | `/admin/ingest`, `/admin/audit` |
 
 ## What the server supports and no client offers
 

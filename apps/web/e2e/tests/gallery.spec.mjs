@@ -109,6 +109,24 @@ for (const scheme of ["light", "dark"]) {
       await shot(page, `toggle-states-off-${scheme}`);
     });
 
+    test(`settings menu on desktop and phone (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      const settings = page.getByRole("button", { name: "Settings", exact: true });
+      const admin = page.getByRole("menuitem", { name: "Open admin pages", exact: true });
+      await settings.press("Enter");
+      await expect(admin).toBeFocused();
+      await page.locator(".sidebar").screenshot({ path: `gallery/sidebar-settings-${scheme}.png`, animations: "disabled" });
+      await page.keyboard.press("Escape");
+      await page.setViewportSize(PHONE);
+      await page.getByRole("button", { name: "Lists", exact: true }).click();
+      await settings.press("Enter");
+      await expect(admin).toBeFocused();
+      await shot(page, `phone-settings-${scheme}`);
+      await w.check();
+    });
+
     test(`device invite and approval settings (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

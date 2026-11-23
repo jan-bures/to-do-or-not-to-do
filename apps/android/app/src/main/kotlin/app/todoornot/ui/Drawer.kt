@@ -1,5 +1,9 @@
 package app.todoornot.ui
 
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -41,6 +45,7 @@ import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.key as keyboardKey
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
@@ -53,11 +58,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import app.todoornot.Cleartext
 import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
+import app.todoornot.core.SyncState
 import app.todoornot.core.SyncTone
+import app.todoornot.core.adminUrl
 import app.todoornot.design.Glyph
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
@@ -77,7 +85,7 @@ private val P = Tokens.Metrics.Phone
  * with Activity and today's agents right after Agent activity, then each collection with its lists,
  * then loose lists. A collection folds with its chevron. A long press on a list or a collection opens
  * its menu, whose choice goes to [onMenu]; the rows in [moving] glide to their new places. The pinned
- * footer holds New, the sync status, and settings (pairing, Sync now and Unpair).
+ * footer holds New, the sync status, and settings (admin pages, Sync now, pairing and Unpair).
  */
 @Composable
 fun RoomDrawer(
@@ -302,22 +310,21 @@ private fun Footer(
             Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
             Label(line.short, Tokens.Type.COUNT, r.ink3)
         }
-        DrawerSettings(server, actions)
+        DrawerSettings(server, state.status.state == SyncState.SYNCING, actions)
     }
 }
 
 @Composable
-internal fun DrawerSettings(server: String?, actions: Actions) {
+internal fun DrawerSettings(server: String?, syncing: Boolean, actions: Actions) {
     val r = LocalDesign.current.room
+    val context = LocalContext.current
+    val admin = remember(server) { server?.let { adminUrl(it, Cleartext.allowLoopbackHttp) } }
     val trigger = remember { FocusRequester() }
     var menu by remember { mutableStateOf(false) }
     var fromLast by remember { mutableStateOf(false) }
     // Only the dialog page is saved. Credentials and scan state stay in the session model.
     var pairing by rememberSaveable { mutableStateOf<DevicePairingPage?>(null) }
     val owner = LocalPairingOwner.current
-    val sync = remember { FocusRequester() }
-    val devices = remember { FocusRequester() }
-    val unpair = remember { FocusRequester() }
     fun dismiss(restoreFocus: Boolean = true) {
         menu = false
         if (restoreFocus) trigger.requestFocus()
@@ -341,53 +348,90 @@ internal fun DrawerSettings(server: String?, actions: Actions) {
                 }
             }) { fromLast = false; menu = true }
         DropdownMenu(menu, { dismiss() }, containerColor = r.raised) {
-            if (menu) LaunchedEffect(Unit) { (if (fromLast) unpair else sync).requestFocus() }
-            DropdownMenuItem(
-                text = {
-                    Column {
-                        Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
-                        Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
+            SettingsMenuContent(
+                server, syncing, fromLast.takeIf { menu },
+                onDismiss = { dismiss() },
+                onAdmin = admin?.let { url ->
+                    {
+                        if (menu) {
+                            dismiss()
+                            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addCategory(Intent.CATEGORY_BROWSABLE)
+                            try {
+                                context.startActivity(intent)
+                            } catch (_: ActivityNotFoundException) {
+                                Toast.makeText(context, "No browser can open the admin pages.", Toast.LENGTH_SHORT).show()
+                            } catch (_: SecurityException) {
+                                Toast.makeText(context, "This phone won't open the admin pages.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
                     }
                 },
-                onClick = {},
-                enabled = false,
+                onSync = {
+                    if (menu && !syncing) {
+                        dismiss()
+                        actions.nudge()
+                    }
+                },
+                onDevices = owner?.let { { dismiss(restoreFocus = false); pairing = DevicePairingPage.SETTINGS } },
+                onUnpair = { dismiss(); actions.unpair() },
             )
-            @Composable
-            fun Item(
-                label: String, icon: String, focus: FocusRequester, up: FocusRequester, down: FocusRequester,
-                danger: Boolean = false, choose: () -> Unit,
-            ) {
-                DropdownMenuItem(
-                    text = { Label(label, Tokens.Type.BODY, if (danger) r.danger else r.ink) },
-                    leadingIcon = { Icon(icon, if (danger) r.danger else r.ink2) },
-                    modifier = Modifier.focusRequester(focus).onPreviewKeyEvent { ev ->
-                        val key = ev.keyboardKey
-                        if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) false else {
-                            if (ev.type == KeyEventType.KeyUp) when (key) {
-                                Key.DirectionUp -> up.requestFocus()
-                                Key.DirectionDown -> down.requestFocus()
-                                Key.Escape -> dismiss()
-                                else -> choose()
-                            }
-                            true
-                        }
-                    },
-                    onClick = choose,
-                )
-            }
-            Item("Sync now", "refresh-cw", sync, unpair, if (owner != null) devices else unpair) {
-                dismiss()
-                actions.nudge()
-            }
-            if (owner != null) Item("Devices…", "link", devices, sync, unpair) {
-                dismiss(restoreFocus = false)
-                pairing = DevicePairingPage.SETTINGS
-            }
-            Item("Unpair this phone", "log-out", unpair, if (owner != null) devices else sync, sync, danger = true) {
-                dismiss()
-                actions.unpair()
-            }
         }
+    }
+}
+
+private data class SettingsItem(
+    val label: String, val icon: String, val enabled: Boolean = true, val danger: Boolean = false, val choose: () -> Unit,
+)
+
+/** Shared by the popup and the in-place Paparazzi gallery (which can't render popup windows). */
+@Composable
+internal fun SettingsMenuContent(
+    server: String?, syncing: Boolean, fromLast: Boolean?, onDismiss: () -> Unit,
+    onAdmin: (() -> Unit)?, onSync: () -> Unit, onDevices: (() -> Unit)?, onUnpair: () -> Unit,
+) {
+    val r = LocalDesign.current.room
+    DropdownMenuItem(
+        text = {
+            Column {
+                Label("Paired with", Tokens.Type.CAPS_LABEL, r.ink3)
+                Label(server?.removePrefix("https://") ?: "No server", Tokens.Type.DUE, r.ink)
+            }
+        },
+        onClick = {},
+        enabled = false,
+    )
+    val items = listOfNotNull(
+        onAdmin?.let { SettingsItem("Open admin pages", "external-link", choose = it) },
+        SettingsItem(if (syncing) "Syncing…" else "Sync now", "refresh-cw", server != null && !syncing, choose = onSync),
+        onDevices?.let { SettingsItem("Devices…", "link", choose = it) },
+        SettingsItem("Unpair this phone", "log-out", danger = true, choose = onUnpair),
+    )
+    val focus = remember(items.size) { List(items.size) { FocusRequester() } }
+    val available = items.indices.filter { items[it].enabled }
+    if (fromLast != null) LaunchedEffect(fromLast, items.size) {
+        focus[if (fromLast) available.last() else available.first()].requestFocus()
+    }
+    items.forEachIndexed { index, item ->
+        val ink = when { !item.enabled -> r.ink4; item.danger -> r.danger; else -> r.ink }
+        val glyph = if (item.enabled && !item.danger) r.ink2 else ink
+        DropdownMenuItem(
+            text = { Label(item.label, Tokens.Type.BODY, ink) },
+            leadingIcon = { Icon(item.icon, glyph) },
+            enabled = item.enabled,
+            modifier = Modifier.focusRequester(focus[index]).onPreviewKeyEvent { ev ->
+                val key = ev.keyboardKey
+                if (key !in listOf(Key.DirectionUp, Key.DirectionDown, Key.Escape, Key.Enter, Key.Spacebar)) false else {
+                    if (ev.type == KeyEventType.KeyUp) when (key) {
+                        Key.DirectionUp -> focus[available.lastOrNull { it < index } ?: available.last()].requestFocus()
+                        Key.DirectionDown -> focus[available.firstOrNull { it > index } ?: available.first()].requestFocus()
+                        Key.Escape -> onDismiss()
+                        else -> if (item.enabled) item.choose() else Unit
+                    }
+                    true
+                }
+            },
+            onClick = item.choose,
+        )
     }
 }
 

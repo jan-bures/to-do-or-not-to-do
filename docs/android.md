@@ -12,7 +12,10 @@ What the first version does:
 - **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer. In the
   drawer, collections fold with their chevron. **+ New → List** adds a list with a swatch and opens it.
   It creates a sibling from a list, a child from a collection, or a top-level list from a smart room.
-  The settings gear shows the paired server and offers **Sync now**, **Devices…**, and **Unpair this phone**.
+  The settings gear shows the paired server. **Open admin pages** opens that server's `/admin` in the
+  browser, where you can sign in with your passkey if asked. **Sync now** retries without waiting for the
+  next automatic attempt; it shows **Syncing…** and is disabled while the engine is busy. The menu also
+  offers **Devices…** and **Unpair this phone**.
 - **Managing lists.** A long press on a list in the drawer opens its menu: **Rename**, **Move up**, **Move
   down**, **Move to…**, **Colour…** and **Delete list…**. The move picker lists the collections and **No collection**.
   A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The drawer's
@@ -343,7 +346,8 @@ menu (`step_actions`, with the toast after deleting one), a list's drawer menu, 
 rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
 Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
-drawer with every collection folded, Activity and its agents after Agent activity (`agent_summary`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
+drawer with every collection folded, Activity and its agents after Agent activity (`agent_summary`), and
+Settings with the admin link and idle/busy sync (`settings_menu_light`, `settings_menu_dark`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes; the date picker also on the cover screen's side (`due_date_picker_sideways_light`). The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon

@@ -248,9 +248,10 @@ bottom:
    existing shortcut. Enter or Space opens the menu, arrows move between choices, and Escape closes it and
    returns focus to **+ New**. Sync shows its coloured dot and a short label (for example, **20:18**,
    **Syncing…**, or **Offline · 3**); a tooltip or accessible description keeps the full wording. At the
-   minimum sidebar width, only the sync label can truncate. **Settings** uses the same menu keys. Its
-   **Devices…** item sits above **Sign out** (Android: **Unpair this phone**), opens the device pairing
-   dialog, and returns focus to the gear when the dialog closes.
+   minimum sidebar width, only the sync label can truncate. **Settings** uses the same menu keys. It
+   shows the server above **Open admin pages** and **Sync now**. Its **Devices…** item sits above
+   **Sign out** (Android: **Unpair this phone**), opens the device pairing dialog, and returns focus
+   to the gear when the dialog closes.
 
 Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
 room rows are not Tab stops.

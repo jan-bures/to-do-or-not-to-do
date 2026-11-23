@@ -1487,11 +1487,15 @@ fn SettingsMenu() -> impl IntoView {
     let menu = FooterMenu::new(
         "open-settings",
         if csrf.is_some() {
-            &["device-settings", "sign-out"]
+            &["open-admin", "sync-now", "device-settings", "sign-out"]
         } else {
-            &["device-settings"]
+            &["open-admin", "sync-now", "device-settings"]
         },
     );
+    let origin = window().location().origin().unwrap_or_default();
+    let sync_unavailable = |s: &Sync| {
+        s.connection == Connection::Syncing || s.read_only || s.signed_out || s.offline_demo
+    };
     let field = NodeRef::<html::Input>::new();
     view! {
         <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
@@ -1500,6 +1504,36 @@ fn SettingsMenu() -> impl IntoView {
                 on:click=move |_| menu.toggle()>{icon(Icon::Settings)}</button>
             <Show when=move || menu.open.get()>
                 <div class="footer-popup settings-menu" id="settings-menu" role="menu" aria-labelledby=menu.trigger>
+                    <div class="settings-server" role="none">
+                        <span>"Signed in to"</span>
+                        <span class="settings-origin" title=origin.clone()>{origin.clone()}</span>
+                    </div>
+                    <a id="open-admin" role="menuitem" tabindex="-1" href=todo_client::ADMIN_PATH
+                        target="_blank" rel="noopener" on:click=move |_| {
+                            // Leave the link mounted until the browser performs its default action.
+                            request_animation_frame(move || {
+                                if menu.open.get_untracked() { menu.close(); }
+                            });
+                        }
+                        on:keydown=move |ev| {
+                            use wasm_bindgen::JsCast;
+                            if ev.key() == " " && !ev.is_composing() {
+                                ev.prevent_default();
+                                if !ev.repeat() && let Some(link) = ev.current_target().and_then(|t| t.dyn_into::<web_sys::HtmlElement>().ok()) {
+                                    link.click();
+                                }
+                            }
+                        }
+                    >{icon(Icon::ExternalLink)}"Open admin pages"</a>
+                    <button type="button" id="sync-now" role="menuitem" tabindex="-1"
+                        aria-disabled=move || c.sync.with(sync_unavailable).to_string()
+                        on:click=move |_| {
+                            if !sync_unavailable(&backend::status()) {
+                                menu.close();
+                                backend::nudge();
+                            }
+                        }
+                    >{icon(Icon::RefreshCw)}{move || if c.sync.with(|s| s.connection == Connection::Syncing) { "Syncing…" } else { "Sync now" }}</button>
                     <button type="button" id="device-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
                         on:click=move |_| { menu.close(); c.device_settings_open.set(true); }
                     >{icon(Icon::Link)}"Devices…"</button>
