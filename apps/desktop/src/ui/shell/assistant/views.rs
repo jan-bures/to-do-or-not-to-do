@@ -2126,7 +2126,14 @@ impl ShellView {
                 );
             }
         }
-        box_panel(&p).flex_none().children(rows)
+        let len = rows.len();
+        let inner = px(radius::LG - elevation::HAIRLINE);
+        box_panel(&p)
+            .flex_none()
+            .children(rows.into_iter().enumerate().map(|(i, row)| {
+                row.when(i == 0, |row| row.rounded_tl(inner).rounded_tr(inner))
+                    .when(i + 1 == len, |row| row.rounded_bl(inner).rounded_br(inner))
+            }))
     }
 
     fn ai_access_row(
