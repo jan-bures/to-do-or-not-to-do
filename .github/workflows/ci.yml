@@ -96,8 +96,15 @@ jobs:
           workspaces: apps/desktop
           key: desktop-package
       - run: ./scripts/test-package-version.ps1
+      - run: ../../scripts/test-github-release.ps1
+      - run: python -B scripts/test_scan_release_desktop.py
       # Keep packages outside the build cache as well as out of release artifacts.
-      - run: ./scripts/package.ps1 -ReleaseDir (Join-Path $env:RUNNER_TEMP 'desktop-release') -AllowUnmerged:('${{ github.event_name }}' -eq 'pull_request')
+      - name: Build and scan the unsigned installer and packages
+        run: |
+          $release = Join-Path $env:RUNNER_TEMP 'desktop-release'
+          ./scripts/package.ps1 -ReleaseDir $release -AllowUnmerged:('${{ github.event_name }}' -eq 'pull_request')
+          python -B scripts/scan-release-desktop.py $release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
   shared-crates-targets:
     name: shared crates build for wasm32 and Android

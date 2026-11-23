@@ -100,18 +100,11 @@ pub struct Session {
     task: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     transfers: Arc<Transfers>,
     uncertain_uploads: Arc<Mutex<UncertainUploads>>,
-    updates: Box<std::sync::Mutex<Updates>>,
 }
 
 /// Only in memory, scoped to the pairing. A retry of the same path on the same task uses the
 /// original ID until either sync or a successful replay confirms what happened.
 type UncertainUploads = BTreeMap<(TaskId, PathBuf), AttachmentId>;
-
-struct Updates {
-    /// Consumed on start so the caller does not keep a second update credential.
-    token: Option<String>,
-    worker: Option<crate::updates::Worker>,
-}
 
 /// The session's attachment transfers, so signing out can stop them and wait for them before the
 /// pairing is removed.
@@ -258,10 +251,6 @@ impl Session {
             task: std::sync::Mutex::new(None),
             transfers: Arc::new(Transfers::new()),
             uncertain_uploads: Arc::default(),
-            updates: Box::new(std::sync::Mutex::new(Updates {
-                token: Some(pairing.token.clone()),
-                worker: None,
-            })),
         })
     }
 
@@ -323,17 +312,6 @@ impl Session {
         }
     }
 
-    pub fn start_updates(&self, controller: &crate::updates::Controller) {
-        let mut updates = self
-            .updates
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(token) = updates.token.take() {
-            updates.worker =
-                controller.start(self.server(), &token, self.client.revocation().clone());
-        }
-    }
-
     /// Stops syncing and transferring files; the returned future resolves once none is running.
     pub fn shutdown(&self) -> impl Future<Output = ()> + use<> {
         self.client.stop();
@@ -343,14 +321,6 @@ impl Session {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
-        {
-            let mut updates = self
-                .updates
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner);
-            updates.token.take();
-            updates.worker.take(); // Drop cancels the install-wide worker without blocking sign-out.
-        }
         async move {
             // A tokio join handle can be awaited from any executor.
             if let Some(task) = task {

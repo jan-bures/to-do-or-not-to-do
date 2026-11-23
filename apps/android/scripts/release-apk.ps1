@@ -9,6 +9,7 @@ param(
 )
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '../../..')).Path
+. (Join-Path $repo 'scripts/github-release.ps1')
 $denylist = $env:TODO_ANDROID_DENYLIST
 if ($denylist) {
     if (-not (Test-Path -LiteralPath $denylist -PathType Leaf) -or
@@ -30,22 +31,10 @@ if ($expectedOld -and ($expectedOld -notmatch '^[0-9a-fA-F]{64}$' -or -not $line
 }
 if ($Publish) {
     if ($UnsignedApk) { throw 'Publishing must build the APK from main; do not pass -UnsignedApk.' }
-    $repositoryLine = Get-Content (Join-Path $repo 'Cargo.toml') | Where-Object { $_ -match '^repository = "https://[^"/]+/[^"/]+/[^"/]+"$' }
-    if ($repositoryLine -notmatch '^repository = "https://([^"/]+)/([^"/]+/[^"/]+)"$') { throw 'No repository URL in Cargo.toml.' }
-    $hostName = $Matches[1]
-    $slug = $Matches[2]
-    $repoTarget = "$hostName/$slug"
-    $repositoryUrl = "https://$repoTarget"
-    $origin = git -C $repo remote get-url origin
-    if ($LASTEXITCODE -ne 0 -or ($origin -replace '\.git$', '') -notin @($repositoryUrl, "git@${hostName}:$slug", "ssh://git@$repoTarget")) {
-        throw 'Origin must be the repository named in Cargo.toml.'
-    }
+    $repository = Get-PublicReleaseRepository $repo
     $head = git -C $repo rev-parse HEAD
     if ($LASTEXITCODE -ne 0) { throw 'Cannot read the build commit.' }
-    $remoteMain = git -C $repo ls-remote --exit-code --refs origin refs/heads/main
-    if ($LASTEXITCODE -ne 0 -or ($remoteMain -split '\s+')[0] -ne $head) { throw 'Publishing requires HEAD to equal origin/main.' }
-    $dirty = git -C $repo status --porcelain
-    if ($LASTEXITCODE -ne 0 -or $dirty) { throw 'Publishing requires a clean worktree.' }
+    Assert-PublicReleaseHead $repository $head
 }
 foreach ($name in @('TODO_ANDROID_KEYSTORE', 'TODO_ANDROID_KEY_ALIAS', 'TODO_ANDROID_STORE_PASSWORD', 'TODO_ANDROID_KEY_PASSWORD')) {
     if (-not [Environment]::GetEnvironmentVariable($name)) { throw "Set $name outside the repository." }
@@ -78,7 +67,7 @@ if ($lineage) {
 if (-not $UnsignedApk) {
     $signingVars = @{}
     $argsForGradle = @(':app:assembleRelease')
-    if ($Publish) { $argsForGradle += "-Ptodo.updateFeed=$repositoryUrl" }
+    if ($Publish) { $argsForGradle += "-Ptodo.updateFeed=$($repository.Url)" }
     Push-Location (Join-Path $PSScriptRoot '..')
     try {
         foreach ($name in @('TODO_ANDROID_KEYSTORE', 'TODO_ANDROID_KEY_ALIAS', 'TODO_ANDROID_STORE_PASSWORD', 'TODO_ANDROID_KEY_PASSWORD', 'TODO_ANDROID_LINEAGE', 'TODO_ANDROID_OLD_CERT_SHA256', 'TODO_ANDROID_DENYLIST')) {
@@ -129,7 +118,7 @@ try {
     }
     # Reading each ZIP entry catches paths in Rust read-only data and DEX strings, not just debug symbols.
     $python = if ($IsWindows) { 'python' } else { 'python3' }
-    $verification | & $python (Join-Path $PSScriptRoot 'scan-release-apk.py') $apk --certificate-stdin
+    $verification | & $python -B (Join-Path $PSScriptRoot 'scan-release-apk.py') $apk --certificate-stdin
     if ($LASTEXITCODE -ne 0) { throw 'APK contains local or denied data, or could not be scanned.' }
     $verification | Write-Output
     $certs = @($verification | ForEach-Object {
@@ -162,20 +151,7 @@ try {
     throw
 }
 if ($Publish) {
-    $tag = "v$version"
-    # The API creates the tag while creating the release. Never reuse or push a local tag.
-    $null = git -C $repo ls-remote --exit-code --refs origin "refs/tags/$tag"
-    if ($LASTEXITCODE -eq 0) { throw 'Release tag already exists.' }
-    if ($LASTEXITCODE -ne 2) { throw 'Could not check that the release tag is unused.' }
-    $nowHead = git -C $repo rev-parse HEAD
-    if ($LASTEXITCODE -ne 0 -or $nowHead -ne $head) { throw 'HEAD changed during the build.' }
-    & gh release create $tag --repo $repoTarget --target $head $apk $index --title "Android $version" --notes $Notes --latest
-    if ($LASTEXITCODE -ne 0) { throw 'GitHub did not publish the release.' }
-    # `gh release view` does not expose isLatest on every CLI version. Ask GitHub's Latest endpoint.
-    $latestTag = & gh api --hostname $hostName "repos/$slug/releases/latest" --jq '.tag_name'
-    if ($LASTEXITCODE -ne 0 -or $latestTag -cne $tag) {
-        Write-Warning 'RELEASE PUBLISHED BUT NOT CONFIRMED AS LATEST. Android clients may not see it. Check GitHub before retrying.'
-    }
+    Publish-GitHubAssets $repository $head "v$version" $version $Notes @($apk) $index
 } else {
     Write-Output "Dry run: $version ($($manifest.size) bytes). Nothing published."
 }

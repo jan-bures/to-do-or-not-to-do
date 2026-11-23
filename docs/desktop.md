@@ -50,12 +50,12 @@ pwsh -NoProfile -File apps/desktop/scripts/package.ps1
 The script builds the locked desktop workspace and installs the matching `vpk` .NET tool under
 `apps/desktop/target/desktop-tools/` without admin privileges. It packages the app with the Daybreak icon.
 The result in `apps/desktop/target/desktop-release/` contains `todo-desktop-win-Setup.exe`,
-`releases.win.json` and the full `.nupkg`. After the first release, keep that directory (or seed
-`-ReleaseDir` with the previously published feed and packages) so `vpk` can also make a delta `.nupkg`
-against the latest full package. Keep the full package even when a delta exists: installs that cannot
-apply a delta fall back to it. No command here runs Setup.exe. Packaging requires `HEAD` to be on the
-history of `origin/main`. For local test builds and pull-request CI, `-AllowUnmerged` skips that check.
-Use a separate `-ReleaseDir` for test builds and never publish them. CI does not upload or publish installers.
+`releases.win.json` and the full `.nupkg`. To make a local delta, seed `-ReleaseDir` with the previous
+feed and its full package. The GitHub publishing script does that automatically. Keep the full package
+even when a delta exists: installs that cannot apply a delta fall back to it. No command here runs Setup.exe.
+Packaging requires `HEAD` to be on the history of `origin/main`. For local test builds and pull-request CI,
+`-AllowUnmerged` skips that check. Use a separate `-ReleaseDir` for test builds and never publish them.
+CI builds and scans the unsigned installer and packages without uploading them.
 
 The Velopack version is **`<desktop Cargo.toml version>-build.<Git first-parent commit count>`**. For
 example, `0.1.0-build.10` follows `0.1.0-build.9`: the final component is numeric, not a string or SemVer
@@ -65,79 +65,76 @@ commit is not a new release. Never replace the bytes of a published package; to 
 revert it on `main` and publish that as a new version. Use the filename or `releases.win.json` for the
 packaged version; the executable's `--version` still reports the Cargo version.
 
-### Enable and publish the private feed
+### Publish on GitHub Releases
 
-Once, deploy a server that supports `/releases`. On the Linux host, create a dedicated directory that the
-server can read but only the publisher can write. In `/etc/todo/server.toml`, add the following, then restart
-`todo-server` and check `/health`:
-
-```sh
-sudo install -d -m 0755 -o root -g root /opt/todo/desktop-releases
-```
-
-```toml
-[releases]
-dir = "/opt/todo/desktop-releases"
-```
-
-If that section is absent, the feed is disabled. Standalone server runs may also configure it via
-`TODO_SERVER_RELEASES_DIR`; use only TOML for the Linux service. The server exposes only the feed, its
-Windows packages and Setup.exe; no directory listing, links, or unrelated files. All require a paired device's
-bearer token (static owner tokens work only when the development fallback is explicitly enabled). Browser
-sessions and agent tokens do not grant access. Keep any proxy or CDN from caching `/releases/*`;
-`todo-server` sends `Cache-Control: no-store, no-transform`. It supports HEAD and single byte ranges for
-operators; the current Velopack client uses complete GETs, not ranged downloads.
-
-To publish, transfer the manifest, Setup.exe, packages and the publisher over the same SSH transport as
-[`deploy/deploy-linux.ps1`](hosting-linux.md#deploying). For Google Cloud, use the `$gcloud`, `$g` and
-`$instance` variables from [Hosting on Linux](hosting-linux.md#google-cloud-create-the-vm), from the
-repository root:
+With Python 3 and an authenticated `gh` CLI, run the publisher first without `-Publish`:
 
 ```powershell
-$upload = 'todo-desktop-' + [guid]::NewGuid().ToString('N')
-& $gcloud compute ssh $instance @g --command "mkdir -m 0700 $upload"
-if ($LASTEXITCODE -ne 0) { throw 'Could not create the upload directory.' }
-& $gcloud compute scp @g deploy/linux/publish-desktop-release.py "${instance}:$upload/"
-if ($LASTEXITCODE -ne 0) { throw 'Could not copy the publisher.' }
-Push-Location apps/desktop/target/desktop-release
-try {
-    $setupHash = (Get-FileHash -Algorithm SHA256 -LiteralPath 'todo-desktop-win-Setup.exe').Hash
-    $files = @('releases.win.json', 'todo-desktop-win-Setup.exe') + @(Get-ChildItem -File *.nupkg -Name)
-    & $gcloud compute scp @g @files "${instance}:$upload/"
-    if ($LASTEXITCODE -ne 0) { throw 'Could not copy the desktop release.' }
-} finally { Pop-Location }
-& $gcloud compute ssh $instance @g --command "sudo python3 $upload/publish-desktop-release.py $upload /opt/todo/desktop-releases --setup-sha256 $setupHash"
-if ($LASTEXITCODE -ne 0) { throw 'Desktop publish failed.' }
-& $gcloud compute ssh $instance @g --command "rm -rf $upload"
+pwsh apps/desktop/scripts/publish-github.ps1 -OutputDir apps/desktop/target/release-dry-run
 ```
 
-With plain SSH, use the same `mkdir`, `scp`, `sudo python3` and cleanup steps via the SSH target used for
-server deployment. The publisher uses Python 3 (included when Python is installed on Debian 13). It verifies
-package sizes and SHA-256 hashes from the feed. Pass `--setup-sha256` with the hash from the trusted build
-output to verify the staged Setup.exe too. The publisher refuses version rollback or overwriting existing
-package bytes and publishes the manifest last by atomic rename. No server restart is needed for later publishes. Old packages remain available
-for clients that have fetched the old manifest; do not clean them up while either feed references them or a
-client could still be downloading them. Keep write access to the directory and the deployment channel tightly
-controlled: the unsigned feed can deliver executable code to every paired desktop. Transport security and
-feed hashes are not a substitute for code signing.
+The publisher finds the highest previous **desktop** release (even if Latest is Android-only), verifies
+its full package against its manifest, and uses it to build the delta. The first desktop release has no
+delta. For a real release, use a new output directory and pass `-Publish -Notes '<public release notes>'`.
+Publishing requires a clean worktree at the live tip of `origin/main` and an origin matching the root
+`Cargo.toml`. Desktop and Android must agree on the version. Both publish to `v<version>-build.<count>`
+without creating local tags or commits. The first platform creates the release at that commit; the second
+adds its assets to that same release. Desktop uploads Setup.exe, the full package, the delta if available,
+and `releases.win.json`. When adding to an existing release, both publishers upload binaries before their
+manifest. Neither overwrites assets. If a publish fails partway, inspect GitHub before retrying.
+
+Prefer publishing both platforms from the same commit. Either order works, and a one-platform release
+can be Latest: if the other platform's manifest returns HTTP 404, that client keeps its installed version
+and shows no update rather than an error. It does not search backward through releases. Keep old tagged
+assets available for clients that have already fetched a manifest. Serialize publishing, and don't enable
+immutable releases if the second platform still needs to add its assets.
+
+**These binaries are public.** Never build in a deployment hostname, private identity, credentials or
+local paths. For packaging only, the Rust build remaps the workspace, home, Cargo, Rustup/sysroot, temp
+and known native toolchain paths. Only the executable is staged from Cargo; no PDB is shipped. The release
+scan reads the raw manifest, nupkg and Setup.exe (including its embedded package), decompressed entries
+and nested ZIPs. It checks for local build paths, user-directory prefixes, local username, Git identity,
+hostname and extra private values; failures report categories, not values. Set `TODO_DESKTOP_DENYLIST`
+to a private UTF-8 file with additional values to reject, one per line. Blank lines and `#` comments are
+ignored. Publishing requires at least one active pattern. Add any one- or two-character local identity
+that needs scanning to this file. Review assets and release notes even if the scan passes.
+
+### Transition from the authenticated server feed
+
+Publish the first GitHub-enabled Windows build on **both** GitHub and the existing paired server's
+`/releases` feed. Older installed clients keep using the server until they install that build; the new
+build switches to GitHub without changing their pairing. Keep the existing `[releases]` section and
+restricted write access on the legacy release directory. Transfer the scanned packages, manifest and
+Setup.exe to the server over your trusted SSH transport. Use
+[`deploy/linux/publish-desktop-release.py`](../deploy/linux/publish-desktop-release.py) to install them
+into the configured directory; pass `--setup-sha256` with the hash from the trusted build output. Preserve
+any previous packages still referenced by the legacy manifest. Do not cache `/releases/*` on a proxy or CDN.
+Once all clients have migrated, the server feed and configuration can be removed in a later release.
 
 ### First install and day-to-day updates
 
-Copy `todo-desktop-win-Setup.exe` from your trusted build output to each Windows machine; the private
-feed is not a bootstrap download for an unpaired browser. Compare its SHA-256 against the copy you built
-before running it. The installer is unsigned, so Windows may warn or a managed policy may block it. Do not
+Get `todo-desktop-win-Setup.exe` from the project's public GitHub Releases or your trusted build output.
+Before running it, verify the SHA-256 against the trusted build output. The installer is unsigned, so Windows may warn or a managed policy may block it. Do not
 bypass policy or run an unverified installer. Quit any older unpackaged copy first. Setup installs per user
 under `%LOCALAPPDATA%` without elevation and adds Start menu and desktop shortcuts. Pair once in the app
 using your server's HTTPS address (for example `https://todo.example.com`). An existing local pairing from
 the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
 to point Windows at the installed copy. Uninstall removes the app's Start with Windows entry.
 
-An installed, paired app first checks `<paired server>/releases` about one minute after its session starts,
-then every six hours, on a Windows background-priority thread. After consecutive failures it retries after
-five minutes, thirty minutes, then six hours. The updater and sync both use Windows to verify HTTPS
-certificates. The server address is never compiled in. A missing/disabled feed, HTTP
-(including loopback), an offline server, or an unpaired app doesn't interrupt normal use. Updates download
-quietly and do not stop a running app.
+An installed app checks for updates about one minute after launch, then every six hours on a Windows
+background-priority thread, even when it is not paired. After consecutive failures it retries after
+five minutes, thirty minutes, then six hours. Downloads do not interrupt normal use.
+
+The build reads the root `Cargo.toml` repository URL by default. Forks can set the build-time
+`TODO_DESKTOP_UPDATE_FEED` to their public HTTPS repository base, or to an empty value to disable updates.
+The public publisher always uses the repository default. The updater uses a plain HTTPS Velopack source:
+it reads `/releases/latest/download/releases.win.json` and downloads full or delta packages from
+`/releases/download/v<version>/<filename>`. Pinning each download to its tag avoids a race when Latest
+changes after the manifest GET and lets older assets stay under their original tags. Unlike Velopack's
+GitHub API source, this uses ordinary asset URLs with no API rate limit or access token. Windows verifies
+HTTPS certificates and the source follows only HTTPS redirects. No request uses the server address,
+credentials or pairing. Because the packages are unsigned, GitHub release write access can deliver
+executable code to every installed client. HTTPS and feed hashes are not a substitute for code signing.
 
 **Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
 the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately
@@ -857,7 +854,7 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 composer, the settings page, the full board, and the board with the collapsed Done rail beside Detail.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
 menu and the detail pane's priority picker. `updates-up-to-date`, `updates-checking`, `updates-downloading`,
-`updates-ready` and `updates-failed` show the Updates page without checking a real feed; `updates-indicator`
+`updates-ready`, `updates-failed` and `updates-disabled` show the Updates page without checking a real feed; `updates-indicator`
 shows the ready control in the sidebar with Settings closed. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
 calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected

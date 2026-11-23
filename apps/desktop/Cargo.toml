@@ -87,6 +87,8 @@ windows-sys = { version = "0.59", features = [
 ] }
 
 [build-dependencies]
+# Reads the root workspace's repository URL at build time (version as in the root workspace).
+toml = "1"
 # Embeds the app icon and the version information in the exe (`build.rs`, `resources/app.rc`).
 embed-resource = "3"
 

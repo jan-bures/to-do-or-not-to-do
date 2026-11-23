@@ -644,15 +644,16 @@ pwsh apps/android/scripts/release-apk.ps1 -BuildTools $buildTools -OutputDir '<n
     -Publish -Notes '<public release notes>'
 ```
 
-The script refuses a dirty worktree, a stale commit or an existing `v<version>-build.<count>` tag.
+The script refuses a dirty worktree, a stale commit or a tag pointing to a different commit.
 `-Publish` also requires `TODO_ANDROID_LINEAGE` and `TODO_ANDROID_OLD_CERT_SHA256`: the lineage must
 start with the expected old certificate and end with the manifest signer, and the final APK must
-carry that lineage. `gh release create` creates the tag at that exact `main` commit and marks the
-release Latest. The script checks GitHub's Latest release afterward and warns if it can't confirm it. The
-assets are the signed APK and an `android-update.json` with `versionCode`, `versionName`, `size`,
-`sha256`, `fileName`, `minSdk` and `signingCertSha256`. Publish only one Android build per version;
-keep its assets available for clients that already read its manifest. A release marked Latest must
-include `android-update.json` or the app won't find an update.
+carry that lineage. Android and Windows publish to the same `v<version>-build.<count>` tag. The first
+platform creates the release at the exact `main` commit; the second adds its assets to that release without
+overwriting existing files. The script checks GitHub's Latest release afterward and warns if it can't confirm
+it. Android assets are the signed APK and an `android-update.json` with `versionCode`, `versionName`, `size`,
+`sha256`, `fileName`, `minSdk` and `signingCertSha256`. Publish only one Android build per version; keep its
+assets available for clients that already read its manifest. If Latest has no `android-update.json`, the app
+reports no update and keeps its installed version. For release order, see [the Windows publishing guide](desktop.md#publish-on-github-releases).
 
 The default feed base is the public `repository` URL from the root `Cargo.toml`. Forks can set
 `-Ptodo.updateFeed=<public-https-repo-url>` or `-Ptodo.updateFeed=` to disable the updater. The app

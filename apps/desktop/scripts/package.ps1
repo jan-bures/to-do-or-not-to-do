@@ -27,6 +27,53 @@ $vpk = Join-Path $toolDir 'vpk.exe'
 $channel = 'win'
 $appId = 'todo-desktop'
 $index = Join-Path $ReleaseDir "releases.$channel.json"
+$targetDir = Join-Path $app 'target'
+
+function Build-PublicBinary {
+    $sysroot = rustc --print sysroot
+    if ($LASTEXITCODE -ne 0 -or -not $sysroot) { throw 'Cannot determine the Rust sysroot.' }
+    $remap = [ordered]@{
+        USERPROFILE = '/build-user'; HOME = '/build-user';
+        CARGO_HOME = '/cargo'; RUSTUP_HOME = '/rustc';
+        TEMP = '/build-tmp'; TMP = '/build-tmp'; TMPDIR = '/build-tmp';
+        VCToolsInstallDir = '/msvc'; WindowsSdkDir = '/windows-sdk';
+    }
+    $paths = @{
+        $HOME = '/build-user'; $repo = '/src'; $sysroot = '/rustc';
+        (Join-Path $HOME '.cargo') = '/cargo'; (Join-Path $HOME '.rustup') = '/rustc';
+        ([IO.Path]::GetTempPath()) = '/build-tmp';
+    }
+    foreach ($key in $remap.Keys) {
+        if ($value = [Environment]::GetEnvironmentVariable($key)) { $paths[$value] = $remap[$key] }
+    }
+    $spellings = [Collections.Generic.Dictionary[string,string]]::new([StringComparer]::Ordinal)
+    foreach ($path in $paths.Keys) {
+        $full = [IO.Path]::TrimEndingDirectorySeparator([IO.Path]::GetFullPath($path))
+        if ($full -eq [IO.Path]::GetPathRoot($full)) { continue }
+        $resolved = Resolve-Path -LiteralPath $full -ErrorAction SilentlyContinue
+        foreach ($name in @($full; if ($resolved) { $resolved.Path })) {
+            $spellings[$name] = $paths[$path]
+            $spellings[$name.Replace('\', '/')] = $paths[$path]
+            if ($name -match '^[A-Za-z]:\\') { $spellings["\\?\$name"] = $paths[$path] }
+        }
+    }
+    # rustc uses the last matching remap. Cargo's encoded flags preserve paths with spaces.
+    $flags = $spellings.Keys | Sort-Object { $_.Length } | ForEach-Object { "--remap-path-prefix=$_=$($spellings[$_])" }
+    $previousFlags = $env:CARGO_ENCODED_RUSTFLAGS
+    $previousStrip = $env:CARGO_PROFILE_RELEASE_STRIP
+    $previousDebug = $env:CARGO_PROFILE_RELEASE_DEBUG
+    try {
+        $env:CARGO_ENCODED_RUSTFLAGS = $flags -join [char]0x1f
+        $env:CARGO_PROFILE_RELEASE_STRIP = 'symbols'
+        $env:CARGO_PROFILE_RELEASE_DEBUG = '0'
+        cargo build --release --locked --target $target --target-dir $targetDir --bin $appId
+        if ($LASTEXITCODE -ne 0) { throw 'Public release build failed.' }
+    } finally {
+        $env:CARGO_ENCODED_RUSTFLAGS = $previousFlags
+        $env:CARGO_PROFILE_RELEASE_STRIP = $previousStrip
+        $env:CARGO_PROFILE_RELEASE_DEBUG = $previousDebug
+    }
+}
 
 Push-Location $app
 try {
@@ -62,8 +109,7 @@ try {
         }
     }
 
-    cargo build --release --locked --target $target --bin $appId
-    if ($LASTEXITCODE -ne 0) { throw "cargo build failed ($LASTEXITCODE)." }
+    Build-PublicBinary
     if (-not (Test-Path -LiteralPath $vpk -PathType Leaf)) {
         # A build cache can restore part of the tool store without vpk.exe, and `dotnet tool
         # install` then fails on the leftovers. Start from an empty tool directory.
@@ -79,7 +125,8 @@ try {
         # --aumid gives the Start menu and desktop shortcuts the AppUserModelID that VelopackApp::run
         # sets on the installed process (`velopack.<packId>`, platform::toast::AUMID): reminder toasts
         # and the taskbar then name the app the same way the shortcut does.
-        Copy-Item -LiteralPath (Join-Path $metadata.target_directory "$target/release/$appId.exe") -Destination $staging
+        # Never stage Cargo's PDBs or other build outputs.
+        Copy-Item -LiteralPath (Join-Path $targetDir "$target/release/$appId.exe") -Destination $staging
         & $vpk pack --packId $appId --packVersion $version.ToString() --packTitle 'To-do or not to do' `
             --packDir $staging --outputDir $ReleaseDir --mainExe "$appId.exe" --channel $channel `
             --runtime win-x64 --delta BestSpeed --aumid "velopack.$appId" `
@@ -95,7 +142,9 @@ try {
     foreach ($kind in $kinds) {
         $name = "$appId-$version-$kind.nupkg"
         $asset = $feed.Assets | Where-Object { $_.FileName -ceq $name -and $_.Version -ceq $version.ToString() }
-        if (-not $asset -or $asset.SHA256 -ne (Get-FileHash -LiteralPath (Join-Path $ReleaseDir $name)).Hash) {
+        $package = Get-Item -LiteralPath (Join-Path $ReleaseDir $name)
+        if (-not $asset -or $asset.Size -ne $package.Length -or $package.Length -gt 256MB -or
+            $asset.SHA256 -ne (Get-FileHash -LiteralPath $package.FullName).Hash) {
             throw "Feed did not match package $name. Do not publish this output."
         }
     }

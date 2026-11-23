@@ -1,4 +1,4 @@
-//! Unsigned Velopack updates are trusted only from the paired HTTPS server. They are staged by a
+//! Unsigned Velopack updates come from the public release host. They are staged by a
 //! low-priority worker and applied on restart or before GPUI on the next primary launch.
 
 mod state;
@@ -14,8 +14,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use todo_client::Revocation;
-use todo_client::native::{Cleartext, server_origin_with};
 use todo_core::time::Timestamp;
 use tokio::sync::watch;
 use ureq::tls::{RootCerts, TlsConfig};
@@ -29,25 +27,54 @@ const CHANNEL: &str = "win";
 const MAX_FEED: u64 = 1024 * 1024;
 const MAX_PACKAGE: u64 = 256 * 1024 * 1024;
 
-fn feed_url(server: &str) -> Option<String> {
-    let base = server_origin_with(server, Cleartext::Refuse).ok()?;
-    Some(format!("{base}/releases"))
+const REPOSITORY: &str = env!("TODO_DESKTOP_UPDATE_FEED");
+
+#[derive(Debug)]
+struct ReleaseUrls(String);
+
+impl ReleaseUrls {
+    fn new(repository: &str) -> Option<Self> {
+        let url = url::Url::parse(repository.trim()).ok()?;
+        if url.scheme() != "https"
+            || !url.has_host()
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.query().is_some()
+            || url.fragment().is_some()
+            || url.path().trim_matches('/').is_empty()
+        {
+            return None;
+        }
+        Some(Self(format!(
+            "{}/releases",
+            url.as_str().trim_end_matches('/')
+        )))
+    }
+
+    fn manifest(&self) -> String {
+        format!("{}/latest/download/releases.win.json", self.0)
+    }
+
+    fn package(&self, asset: &VelopackAsset) -> String {
+        // The latest release can change between requests. Asset names and versions have already
+        // been validated, and each package lives under its own immutable release tag.
+        format!("{}/download/v{}/{}", self.0, asset.Version, asset.FileName)
+    }
 }
 
-/// The built-in HTTP source accepts headers but follows redirects and resolves asset names as
-/// URLs. Constrain both network requests and the filenames Velopack itself will use on disk.
+/// Follow GitHub's HTTPS asset redirects without credentials. Keep bounded reads and validate the
+/// filenames Velopack uses on disk, rather than treating manifest data as arbitrary URLs.
 struct Feed {
-    url: String,
-    authorization: String,
+    urls: ReleaseUrls,
     agent: ureq::Agent,
     stopped: Arc<AtomicBool>,
-    revocation: Revocation,
 }
 
 impl Feed {
-    fn new(url: String, token: &str, stopped: Arc<AtomicBool>, revocation: Revocation) -> Self {
-        let agent = ureq::Agent::config_builder()
-            .max_redirects(0)
+    fn agent(https_only: bool) -> ureq::Agent {
+        ureq::Agent::config_builder()
+            .https_only(https_only)
+            .max_redirects(5)
             .tls_config(
                 TlsConfig::builder()
                     .root_certs(RootCerts::PlatformVerifier)
@@ -59,38 +86,33 @@ impl Feed {
             .timeout_recv_response(Some(Duration::from_secs(20)))
             .timeout_per_read(Some(Duration::from_secs(30)))
             .build()
-            .into();
+            .into()
+    }
+
+    fn new(urls: ReleaseUrls, stopped: Arc<AtomicBool>) -> Self {
         Self {
-            url,
-            authorization: format!("Bearer {token}"),
-            agent,
+            urls,
+            agent: Self::agent(true),
             stopped,
-            revocation,
         }
     }
 
     fn ensure_running(&self) -> Result<(), Error> {
-        if self.stopped.load(Ordering::Relaxed) || self.revocation.is_revoked() {
+        if self.stopped.load(Ordering::Relaxed) {
             return Err(Error::Other("update check stopped".into()));
         }
         Ok(())
     }
 
-    fn get(&self, file: &str, body_timeout: Duration) -> Result<impl Read, Error> {
+    fn get(&self, url: &str, body_timeout: Duration) -> Result<impl Read + use<>, Error> {
         self.ensure_running()?;
         let response = self
             .agent
-            .get(format!("{}/{file}", self.url))
-            .header("Authorization", &self.authorization)
+            .get(url)
             .config()
             .timeout_recv_body(Some(body_timeout))
             .build()
-            .call()
-            .inspect_err(|e| {
-                if let ureq::Error::StatusCode(status) = e {
-                    self.revocation.observe_status(*status);
-                }
-            })?;
+            .call()?;
         if response.status() != 200 {
             return Err(Error::Other("expected a complete 200 response".into()));
         }
@@ -126,20 +148,22 @@ fn valid_asset(asset: &VelopackAsset) -> bool {
         && asset.SHA256.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-impl UpdateSource for Feed {
-    fn get_release_feed(
-        &self,
-        channel: &str,
-        _app: &Manifest,
-        _staged_user_id: &str,
-    ) -> Result<VelopackAssetFeed, Error> {
-        if channel != CHANNEL {
-            return Err(Error::Other("unexpected desktop update channel".into()));
-        }
+impl Feed {
+    fn latest(&self) -> Result<VelopackAssetFeed, Error> {
+        let response = match self.get(&self.urls.manifest(), Duration::from_secs(30)) {
+            // The repository can have no releases yet, or Latest can be Android-only.
+            Err(Error::Network(error))
+                if matches!(
+                    *error,
+                    velopack::NetworkError::Http(ureq::Error::StatusCode(404))
+                ) =>
+            {
+                return Ok(VelopackAssetFeed { Assets: vec![] });
+            }
+            result => result?,
+        };
         let mut bytes = Vec::new();
-        self.get("releases.win.json", Duration::from_secs(30))?
-            .take(MAX_FEED + 1)
-            .read_to_end(&mut bytes)?;
+        response.take(MAX_FEED + 1).read_to_end(&mut bytes)?;
         self.ensure_running()?;
         if bytes.len() as u64 > MAX_FEED {
             return Err(Error::Other("desktop release feed is too large".into()));
@@ -148,6 +172,35 @@ impl UpdateSource for Feed {
         if !feed.Assets.iter().all(valid_asset) {
             return Err(Error::Other("invalid desktop release feed asset".into()));
         }
+        Ok(feed)
+    }
+}
+
+impl UpdateSource for Feed {
+    fn get_release_feed(
+        &self,
+        channel: &str,
+        app: &Manifest,
+        _staged_user_id: &str,
+    ) -> Result<VelopackAssetFeed, Error> {
+        if channel != CHANNEL {
+            return Err(Error::Other("unexpected desktop update channel".into()));
+        }
+        let mut feed = self.latest()?;
+        // Publishing includes the previous full entry to identify the one supported delta base.
+        // Older installations skip the inapplicable delta and download the latest full package.
+        if let Some(base) = feed
+            .Assets
+            .iter()
+            .filter(|a| a.Type == "Full")
+            .filter_map(|a| Version::parse(&a.Version).ok())
+            .min()
+            && base == app.version
+            && feed.Assets.iter().filter(|a| a.Type == "Full").count() == 2
+        {
+            return Ok(feed);
+        }
+        feed.Assets.retain(|a| a.Type == "Full");
         Ok(feed)
     }
 
@@ -163,7 +216,7 @@ impl UpdateSource for Feed {
             ));
         }
         let mut reader = self
-            .get(&asset.FileName, package_body_timeout(asset.Size))?
+            .get(&self.urls.package(asset), package_body_timeout(asset.Size))?
             .take(asset.Size + 1);
         let mut file = File::create(local_file)?;
         let mut buffer = vec![0; 64 * 1024];
@@ -204,17 +257,20 @@ struct Shared {
 #[derive(Debug)]
 struct Connection {
     stopped: Arc<AtomicBool>,
-    revocation: Revocation,
     wake: Sender<()>,
 }
 
 impl Controller {
     pub fn new(enabled: bool) -> Self {
         if enabled && let Some((manager, marker)) = installed_manager(NoneSource {}) {
-            let state = pending(&manager, &marker)
-                .ok()
-                .flatten()
-                .map_or(State::Unpaired, |a| State::Ready { version: a.Version });
+            let state = if ReleaseUrls::new(REPOSITORY).is_some() {
+                pending(&manager, &marker)
+                    .ok()
+                    .flatten()
+                    .map_or(State::Idle, |a| State::Ready { version: a.Version })
+            } else {
+                State::Disabled
+            };
             return Self::with_state(
                 Some(manager.get_current_version_as_string()),
                 state,
@@ -251,19 +307,12 @@ impl Controller {
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
-        let mut snapshot = self.0.status.borrow().clone();
-        if snapshot.ready_version().is_none()
-            && worker.as_ref().is_some_and(|w| w.revocation.is_revoked())
-        {
-            snapshot.set(State::Unpaired, false);
-        }
-        snapshot
+        self.0.status.borrow().clone()
     }
 
     pub fn check_now(&self) {
         let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(worker) = worker.as_ref().filter(|w| !w.revocation.is_revoked()) else {
+        let Some(worker) = worker.as_ref() else {
             return;
         };
         // Reserve Checking before waking the worker: a double click, or a timeout racing
@@ -309,20 +358,18 @@ impl Controller {
         false
     }
 
-    pub fn start(&self, server: &str, token: &str, revocation: Revocation) -> Option<Worker> {
+    pub fn start(&self) -> Option<Worker> {
+        self.start_from(REPOSITORY)
+    }
+
+    fn start_from(&self, repository: &str) -> Option<Worker> {
+        let urls = ReleaseUrls::new(repository)?;
         let mut connection = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
         if self.0.status.borrow().installed_version.is_none() || connection.is_some() {
             return None;
         }
-        if revocation.is_revoked() {
-            return None;
-        }
-        let Some(url) = feed_url(server) else {
-            self.unless_ready(failed(Failure::SecureFeedRequired), false);
-            return None;
-        };
         let stopped = Arc::new(AtomicBool::new(false));
-        let feed = Feed::new(url, token, stopped.clone(), revocation.clone());
+        let feed = Feed::new(urls, stopped.clone());
         let (wake, rx) = mpsc::channel();
         let control = self.clone();
         let run = stopped.clone();
@@ -334,7 +381,6 @@ impl Controller {
                     control.disconnect(&run, failed(Failure::Check));
                     return;
                 }
-                let revocation = feed.revocation.clone();
                 let Some((manager, marker)) = installed_manager(feed) else {
                     control.disconnect(&run, failed(Failure::Check));
                     return;
@@ -347,8 +393,7 @@ impl Controller {
                         Err(mpsc::RecvTimeoutError::Timeout) => Check::Automatic,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
-                    if run.load(Ordering::Relaxed) || revocation.is_revoked() {
-                        control.disconnect(&run, State::Unpaired);
+                    if run.load(Ordering::Relaxed) {
                         break;
                     }
                     if check == Check::Automatic {
@@ -376,7 +421,6 @@ impl Controller {
                         Ok(None) => State::UpToDate {
                             checked_at: Timestamp::now(),
                         },
-                        Err(_) if revocation.is_revoked() => State::Unpaired,
                         Err(kind) => {
                             tracing::debug!(?kind, "desktop update check failed");
                             failed(kind)
@@ -395,7 +439,6 @@ impl Controller {
         }
         *connection = Some(Connection {
             stopped: stopped.clone(),
-            revocation,
             wake,
         });
         self.unless_ready(State::Idle, true);
@@ -426,8 +469,8 @@ impl Controller {
     }
 }
 
-/// Owned by the live session. Dropping it wakes a sleeping worker and stops in-flight I/O on its
-/// next chunk (or timeout). Late results from that session can't change the new session's state.
+/// Owned by the primary app process, whether or not it is paired. Dropping it wakes a sleeping
+/// worker and stops in-flight I/O on its next chunk (or timeout), without publishing a late result.
 pub struct Worker {
     control: Controller,
     stopped: Arc<AtomicBool>,
@@ -436,7 +479,7 @@ pub struct Worker {
 impl Drop for Worker {
     fn drop(&mut self) {
         self.stopped.store(true, Ordering::Relaxed);
-        self.control.disconnect(&self.stopped, State::Unpaired);
+        self.control.disconnect(&self.stopped, State::Idle);
     }
 }
 
@@ -568,6 +611,9 @@ fn should_apply(asset: &VelopackAsset, restarted: bool, marker: &Path) -> bool {
 /// Called only by the normal primary launch. Returns true when Update.exe is waiting for us to
 /// exit so it can apply the verified package and relaunch with the same CLI arguments.
 pub fn apply_pending(restarted: bool) -> bool {
+    if ReleaseUrls::new(REPOSITORY).is_none() {
+        return false;
+    }
     let Some((manager, marker)) = installed_manager(NoneSource {}) else {
         return false;
     };
@@ -599,10 +645,8 @@ mod tests {
         let controller = Controller::fixture(State::Idle);
         let (wake, requests) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
-        let revocation = Revocation::default();
         *controller.0.worker.lock().expect("updater lock") = Some(Connection {
             stopped: stopped.clone(),
-            revocation: revocation.clone(),
             wake,
         });
         let mut observer = controller.subscribe();
@@ -617,8 +661,6 @@ mod tests {
         controller.check_now();
         assert_eq!(requests.try_recv(), Err(mpsc::TryRecvError::Empty));
 
-        revocation.observe_status(401);
-        assert_eq!(controller.snapshot().state, State::Unpaired);
         let worker = Worker {
             control: controller.clone(),
             stopped: stopped.clone(),
@@ -637,7 +679,7 @@ mod tests {
             }),
             "a cancelled worker cannot publish a late result"
         );
-        assert_eq!(controller.snapshot().state, State::Unpaired);
+        assert_eq!(controller.snapshot().state, State::Idle);
     }
 
     #[test]
@@ -694,14 +736,11 @@ mod tests {
             Duration::from_secs(302)
         );
         assert_eq!(package_body_timeout(MAX_PACKAGE), Duration::from_secs(8492));
-        let feed = Feed::new(
-            "https://todo.example.com/releases".into(),
-            "token",
-            Arc::default(),
-            Revocation::default(),
-        );
+        let urls = ReleaseUrls::new("https://todo.example.com/owner/project").expect("feed URL");
+        let feed = Feed::new(urls, Arc::default());
         let config = feed.agent.config();
         assert_eq!(config.timeouts().global, None);
+        assert!(config.https_only());
         assert!(config.timeouts().connect.is_some());
         assert!(config.timeouts().recv_response.is_some());
         assert!(matches!(
@@ -711,26 +750,42 @@ mod tests {
     }
 
     #[test]
-    fn feed_uses_the_paired_https_address() {
+    fn feed_derives_latest_manifest_and_pins_packages_to_tags() {
+        let urls =
+            ReleaseUrls::new(" https://todo.example.com/owner/project/// ").expect("feed URL");
         assert_eq!(
-            feed_url(" https://todo.example.com:8443/ ").as_deref(),
-            Some("https://todo.example.com:8443/releases")
+            urls.manifest(),
+            "https://todo.example.com/owner/project/releases/latest/download/releases.win.json"
         );
+        let asset = VelopackAsset {
+            Version: "0.1.0-build.9".into(),
+            FileName: "todo-desktop-0.1.0-build.9-full.nupkg".into(),
+            ..Default::default()
+        };
         assert_eq!(
-            feed_url("https://todo.example.com/prefix///").as_deref(),
-            Some("https://todo.example.com/prefix/releases")
+            urls.package(&asset),
+            "https://todo.example.com/owner/project/releases/download/v0.1.0-build.9/todo-desktop-0.1.0-build.9-full.nupkg"
         );
         for bad in [
             "",
             "http://localhost:47320",
             "http://todo.example.com",
-            "https://user@todo.example.com",
-            "https://todo.example.com/?token=x",
-            "https://todo.example.com/#foo",
+            "https://user@todo.example.com/owner/project",
+            "https://todo.example.com/owner/project?token=x",
+            "https://todo.example.com/owner/project#foo",
             "file:///releases",
         ] {
-            assert!(feed_url(bad).is_none(), "{bad}");
+            assert!(ReleaseUrls::new(bad).is_none(), "{bad}");
         }
+    }
+
+    #[test]
+    fn empty_feed_disables_worker_even_for_an_install() {
+        let controller =
+            Controller::with_state(Some("0.1.0-build.9".into()), State::Disabled, None);
+        assert!(controller.start_from("").is_none());
+        assert_eq!(controller.snapshot().state, State::Disabled);
+        assert!(!controller.snapshot().can_check);
     }
 
     #[test]
@@ -784,14 +839,9 @@ mod tests {
             let _ = wait.recv_timeout(Duration::from_secs(2));
             let _ = stream.write_all(b"x");
         });
-        let feed = Feed::new(
-            format!("http://{addr}/releases"),
-            "token",
-            Arc::default(),
-            Revocation::default(),
-        );
+        let feed = loopback_feed(addr);
         let mut body = feed
-            .get("package.nupkg", Duration::from_millis(100))
+            .get(&feed.urls.manifest(), Duration::from_millis(100))
             .expect("response head");
         let result = body.read_exact(&mut [0]);
         let _ = release.send(());
@@ -808,57 +858,51 @@ mod tests {
         );
     }
 
+    fn loopback_feed(addr: std::net::SocketAddr) -> Feed {
+        Feed {
+            urls: ReleaseUrls(format!("http://{addr}/releases")),
+            agent: Feed::agent(false),
+            stopped: Arc::default(),
+        }
+    }
+
     #[test]
-    fn fetch_sends_the_bearer_and_does_not_follow_redirects() {
+    fn missing_latest_manifest_means_no_update_but_other_errors_propagate() {
         use std::io::{BufRead, BufReader};
         use std::net::TcpListener;
 
-        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
-        let url = format!(
-            "http://{}/releases",
-            listener.local_addr().expect("address")
-        );
-        let feed = Feed::new(
-            url,
-            "test-device-token",
-            Arc::default(),
-            Revocation::default(),
-        );
-        let server = std::thread::spawn(move || {
-            let (mut stream, _) = listener.accept().expect("connect");
-            let path = format!(
-                "http://{}/unexpected",
-                listener.local_addr().expect("address")
-            );
-            let mut request = BufReader::new(&mut stream);
-            let mut line = String::new();
-            request.read_line(&mut line).expect("request line");
-            assert_eq!(line, "GET /releases/releases.win.json HTTP/1.1\r\n");
-            let mut bearer_seen = false;
-            loop {
-                line.clear();
-                if request.read_line(&mut line).expect("header") == 0 || line == "\r\n" {
-                    break;
+        for status in [404, 503] {
+            let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+            let feed = loopback_feed(listener.local_addr().expect("address"));
+            let server = std::thread::spawn(move || {
+                let (mut stream, _) = listener.accept().expect("connect");
+                let mut request = BufReader::new(&mut stream);
+                let mut line = String::new();
+                request.read_line(&mut line).expect("request line");
+                assert_eq!(
+                    line,
+                    "GET /releases/latest/download/releases.win.json HTTP/1.1\r\n"
+                );
+                loop {
+                    line.clear();
+                    if request.read_line(&mut line).expect("header") == 0 || line == "\r\n" {
+                        break;
+                    }
+                    assert!(!line.to_ascii_lowercase().starts_with("authorization:"));
                 }
-                bearer_seen |=
-                    line.eq_ignore_ascii_case("Authorization: Bearer test-device-token\r\n");
-            }
-            assert!(bearer_seen);
-            write!(stream, "HTTP/1.1 302 Found\r\nLocation: {path}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                )
                 .expect("write response");
-            listener
-                .set_nonblocking(true)
-                .expect("nonblocking listener");
-            listener
-        });
-        assert!(
-            feed.get("releases.win.json", Duration::from_secs(1))
-                .is_err()
-        );
-        let listener = server.join().expect("server thread");
-        assert_eq!(
-            listener.accept().expect_err("no redirect").kind(),
-            std::io::ErrorKind::WouldBlock
-        );
+            });
+            let result = feed.latest();
+            server.join().expect("server thread");
+            if status == 404 {
+                assert!(result.expect("optional manifest").Assets.is_empty());
+            } else {
+                assert!(result.is_err());
+            }
+        }
     }
 }

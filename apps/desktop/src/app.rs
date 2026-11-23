@@ -125,6 +125,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         return Ok(());
     }
     let updates = crate::updates::Controller::new(!standalone && bench.is_none());
+    let _update_worker = updates.start();
     let mut metrics = Metrics::default();
     if bench.is_some() {
         metrics.ms("main_entered_ms", win::process_age_ms());

@@ -4,10 +4,22 @@ fn main() {
     println!("cargo:rerun-if-changed=build.rs");
     println!("cargo:rerun-if-changed=resources/app.rc");
     println!("cargo:rerun-if-changed=../../assets/brand/generated/todo.ico");
+    println!("cargo:rerun-if-changed=../../Cargo.toml");
+    println!("cargo:rerun-if-env-changed=TODO_DESKTOP_UPDATE_FEED");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
+    let root: toml::Table = include_str!("../../Cargo.toml")
+        .parse()
+        .expect("invalid root Cargo.toml");
+    let repository = root["workspace"]["package"]["repository"]
+        .as_str()
+        .expect("missing workspace.package.repository");
+    let feed = std::env::var("TODO_DESKTOP_UPDATE_FEED").unwrap_or_else(|_| repository.to_owned());
+    assert!(!feed.contains(['\n', '\r']), "invalid desktop update feed");
+    println!("cargo:rustc-env=TODO_DESKTOP_UPDATE_FEED={}", feed.trim());
+
     let var = |name: &str| std::env::var(name).unwrap_or_default();
     let macros = [
         format!("VERSION_MAJOR={}", var("CARGO_PKG_VERSION_MAJOR")),

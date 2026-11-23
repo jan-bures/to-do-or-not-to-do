@@ -14,7 +14,6 @@ const RETRY_INTERVALS: [Duration; 3] = [
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
-    SecureFeedRequired,
     Check,
     Download,
     Apply,
@@ -23,7 +22,7 @@ pub enum Failure {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum State {
     NotInstalled,
-    Unpaired,
+    Disabled,
     Idle,
     UpToDate { checked_at: Timestamp },
     Checking,
@@ -150,7 +149,7 @@ mod tests {
         let start = Instant::now();
         let mut schedule = Schedule::new(start);
         assert_eq!(schedule.due, start + INITIAL_CHECK_DELAY);
-        let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Unpaired);
+        let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Disabled);
         assert!(!view.begin());
         view.set(State::Idle, true);
         assert!(view.begin());

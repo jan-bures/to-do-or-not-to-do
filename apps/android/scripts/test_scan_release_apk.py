@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Regression tests for the read-only scan used before publishing an APK."""
 
-import importlib.util
 import io
 import os
 import re
 from pathlib import Path
+import sys
 import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
 
-spec = importlib.util.spec_from_file_location("scanner", Path(__file__).with_name("scan-release-apk.py"))
-scanner = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(scanner)
+sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
+import release_privacy as scanner
 
 
 class ScannerTest(unittest.TestCase):

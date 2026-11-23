@@ -307,6 +307,7 @@ fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateS
     let earlier =
         |minutes: i64| Timestamp::from_second(now.as_second() - 60 * minutes).unwrap_or(now);
     Some(match name {
+        "updates-disabled" => UpdateState::Disabled,
         "updates-up-to-date" => UpdateState::UpToDate {
             checked_at: earlier(5),
         },

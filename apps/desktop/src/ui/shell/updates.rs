@@ -74,11 +74,11 @@ impl ShellView {
                 "Automatic updates unavailable",
                 "Updates are available in the installed app.".into(),
             ),
-            State::Unpaired => (
-                Icon::Link,
+            State::Disabled => (
+                Icon::ArrowUp,
                 p.ink_3,
-                "Not paired",
-                "Pair this computer to check for updates.".into(),
+                "Automatic updates disabled",
+                "This build has no update feed.".into(),
             ),
             State::Idle => (
                 Icon::Clock,
@@ -115,16 +115,11 @@ impl ShellView {
             ),
             State::Failed { kind, at } => {
                 let title = match kind {
-                    Failure::SecureFeedRequired => "Updates need a secure connection",
                     Failure::Check => "Couldn’t check for updates",
                     Failure::Download => "Couldn’t prepare the update",
                     Failure::Apply => "Couldn’t apply the update",
                 };
-                let detail = if *kind == Failure::SecureFeedRequired {
-                    "Pair to an HTTPS server to receive updates.".into()
-                } else {
-                    relative_status("Last attempt", *at, self.store.now().at)
-                };
+                let detail = relative_status("Last attempt", *at, self.store.now().at);
                 (Icon::CircleAlert, p.danger_ink, title, detail)
             }
         };

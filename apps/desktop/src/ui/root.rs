@@ -344,7 +344,6 @@ impl RootView {
             ..UiState::default()
         };
         session.start();
-        session.start_updates(&self.updates);
         let store = Rc::new(Store::Live(LiveStore::new(session)));
         let theme = self.theme;
         let view = cx.new(|cx| {
