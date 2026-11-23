@@ -191,6 +191,153 @@ fn timeline_shapes_clip_inclusively_and_planned_includes_start_only_tasks() {
 }
 
 #[test]
+fn timeline_moves_both_dates_in_one_undo_and_refuses_a_stale_gesture() {
+    use workflow::{Dates, Schedule, schedule};
+    let mut w = World::new();
+    w.enable();
+    let id = w.task(WorkflowStatus::InProgress, Some(date(5)), Some(date(9)));
+    let before = Dates::of(&w.state.tasks[&id]);
+    let room = RoomKey::List(w.list);
+    assert!(schedule(&w.state, room, id, before, Schedule::Move(0)).is_none());
+    let command = schedule(&w.state, room, id, before, Schedule::Move(7)).unwrap();
+    let actor = Actor::owner("test").unwrap();
+    let events = decide(&w.state, &actor, &command, w.now).unwrap();
+    let [event] = &events[..] else {
+        panic!("one atomic date event")
+    };
+    apply(&mut w.state, event).unwrap();
+    assert_eq!(
+        Dates::of(&w.state.tasks[&id]),
+        Dates {
+            start: Some(date(12)),
+            due: Some(date(16))
+        }
+    );
+    assert!(schedule(&w.state, room, id, before, Schedule::StartEdge(-1)).is_none());
+    for inverse in todo_core::undo::undo(&w.state, event, &actor, w.now).unwrap() {
+        apply(&mut w.state, &inverse).unwrap();
+    }
+    assert_eq!(Dates::of(&w.state.tasks[&id]), before);
+}
+
+#[test]
+fn timeline_resizes_missing_edges_and_keeps_valid_inclusive_spans() {
+    use workflow::{Dates, Schedule};
+    let milestone = Dates {
+        start: None,
+        due: Some(date(9)),
+    };
+    assert_eq!(
+        Schedule::Move(-2).preview(milestone),
+        Some(Dates {
+            start: None,
+            due: Some(date(7))
+        })
+    );
+    assert_eq!(Schedule::StartEdge(1).preview(milestone), None);
+    assert_eq!(
+        Schedule::StartEdge(-2).preview(milestone).unwrap().start,
+        Some(date(7))
+    );
+    assert_eq!(
+        Schedule::Duration(1).preview(milestone),
+        Some(Dates {
+            start: Some(date(9)),
+            due: Some(date(10))
+        })
+    );
+    let open = Dates {
+        start: Some(date(5)),
+        due: None,
+    };
+    assert_eq!(Schedule::DueEdge(-2).preview(open), None);
+    let range = Schedule::DueEdge(3).preview(open).unwrap();
+    assert_eq!(range.due, Some(date(8)));
+    assert_eq!(
+        Schedule::DueEdge(-6).preview(range).unwrap().due,
+        range.start
+    );
+    assert_eq!(
+        Schedule::StartEdge(6).preview(range).unwrap().start,
+        range.due
+    );
+    assert_eq!(
+        Schedule::Move(-1).preview(Dates {
+            start: Some(Date::MIN),
+            due: None
+        }),
+        None
+    );
+}
+
+#[test]
+fn timeline_scheduling_tray_and_cross_list_planned_share_membership_rules() {
+    use workflow::{Dates, Schedule, schedule};
+    let mut w = World::new();
+    let id = w.task(WorkflowStatus::Todo, None, None);
+    let planned = RoomKey::Smart(SmartList::Planned);
+    let list = RoomKey::List(w.list);
+    assert!(
+        schedule(
+            &w.state,
+            planned,
+            id,
+            Dates::default(),
+            Schedule::Place(date(20))
+        )
+        .is_none()
+    );
+    assert!(
+        schedule(
+            &w.state,
+            list,
+            id,
+            Dates::default(),
+            Schedule::Place(date(20))
+        )
+        .is_none()
+    );
+    w.enable();
+    w.run(
+        schedule(
+            &w.state,
+            list,
+            id,
+            Dates::default(),
+            Schedule::Place(date(20)),
+        )
+        .unwrap(),
+    );
+    let before = Dates::of(&w.state.tasks[&id]);
+    assert!(schedule(&w.state, list, id, before, Schedule::Place(date(21))).is_none());
+    w.run(
+        workflow::set_list_features(
+            &w.state,
+            w.list,
+            ListFeaturesPatch {
+                timeline: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap(),
+    );
+    assert!(schedule(&w.state, list, id, before, Schedule::Move(1)).is_none());
+    w.run(schedule(&w.state, planned, id, before, Schedule::StartEdge(-1)).unwrap());
+    assert_eq!(w.state.tasks[&id].start_date, Some(date(19)));
+    w.run(Command::CompleteTask { id });
+    assert!(
+        schedule(
+            &w.state,
+            planned,
+            id,
+            Dates::of(&w.state.tasks[&id]),
+            Schedule::Move(1)
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn start_picker_does_not_overwrite_a_newer_due_date() {
     let mut w = World::new();
     w.enable();

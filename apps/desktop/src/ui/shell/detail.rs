@@ -980,7 +980,7 @@ impl ShellView {
                     .child(value)
                     .when_some(f.edit.filter(|edit| live && matches!(edit, FieldEdit::Status | FieldEdit::Starts)), |el, edit| self.workflow_property(el, task, edit, cx))
                     .when(due && live, |el| {
-                        let belongs = |kind: &MenuKind| matches!(kind, MenuKind::Date(c) if !c.starts && c.task == Some(task));
+                        let belongs = |kind: &MenuKind| matches!(kind, MenuKind::Date(c) if c.timeline.is_none() && !c.starts && c.task == Some(task));
                         let open = self.menu.as_ref().is_some_and(|m| belongs(&m.kind) && m.overlay.look(self.frame).open);
                         el.track_focus(&self.due_focus)
                             .role(gpui::Role::Button)

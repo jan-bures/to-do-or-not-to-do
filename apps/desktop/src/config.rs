@@ -237,6 +237,7 @@ impl DataDir {
 pub struct UiPreferences {
     pub collapsed_collections: BTreeSet<CollectionId>,
     pub board_done: BTreeMap<todo_core::ids::ListId, bool>,
+    pub timeline: crate::model::timeline::Preferences,
     #[serde(deserialize_with = "read_pane_widths")]
     pub panes: PaneWidths,
 }
@@ -654,6 +655,11 @@ mod tests {
                 todo_core::ids::ListId::from_uuid(todo_core::ids::uuid_v7(2, [0; 10])),
                 true,
             )]),
+            timeline: crate::model::timeline::Preferences {
+                zoom: todo_client::timeline::Zoom::Month,
+                tray: true,
+                rail: false,
+            },
         };
         data.save_ui(&prefs).expect("save preferences");
         assert_eq!(data.load_ui(), prefs);

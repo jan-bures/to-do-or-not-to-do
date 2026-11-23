@@ -214,7 +214,7 @@ into the app**: it is learnt here and saved in the user's config. Alternatively,
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 | `pairings\<pairing ID>\cache.sqlite.revoked` | same | empty marker: the server replied 401 to an authenticated request |
-| `pairings\<pairing ID>\ui.json` | same | collapsed collections, preferred pane widths and explicit Done rail choices (never synced) |
+| `pairings\<pairing ID>\ui.json` | same | collapsed collections, preferred pane widths, explicit Done rail choices and Timeline zoom, rail and tray preferences (never synced) |
 | `pairings\<pairing ID>\popouts.json` | same | list-window placement, pin and open state by room ID (never synced) |
 | `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
@@ -304,14 +304,13 @@ corrected. Adding a link can be undone like removing one. A link's remove button
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
 
-### Workflow lists and Board
+### Workflow lists, Board and Timeline
 
 Open **List settings…** in a list's header or sidebar menu. **Workflow & Board** adds task status
-and Board view; **Timeline & Start dates** adds Starts. Both are off on new lists. Turning either off
-hides its controls without clearing task data. **Default view** syncs with the list, while a switch
-made in the header applies only to the current visit. **V** cycles available views and **1** or **2**
-chooses List or Board while the room has focus. Timeline may be saved as the synced default, but its
-segment is disabled on desktop for now; a Timeline default opens as List here. Pop-outs stay in List.
+and Board view; **Timeline & Start dates** adds Starts and Timeline view. Both are off on new lists.
+Turning either off hides its controls without clearing task data. **Default view** syncs with the list,
+while a switch made in the header applies only to the current visit. **V** cycles available views;
+**1**, **2** and **3** choose List, Board and Timeline while the room has focus. Pop-outs stay in List.
 
 The workflow glyph appears beside a task's metadata, after the list chip in cross-list rooms. Those
 rooms only show Backlog and In progress marks. Click the mark or press **S** for Status, or **Shift+S**
@@ -324,8 +323,9 @@ cleared separately.
 The Board has three open columns, each with its own **+ Add** footer, and a Done column. Done shows
 at most 20 completions from today and the previous six local dates; **View all** opens this list's
 Completed section. Done automatically folds into a drop rail beside docked Detail. An explicit rail
-choice is remembered locally. Drag a card above or below another to place it there, or drop into an
-empty column. Drop on Done to complete, or drag out of Done to reopen in a particular stage. One Undo
+choice is remembered locally. The rail and the columns beside it ease to their new widths. Drag a
+card above or below another to place it there, or drop into an empty column. Sibling cards settle
+into their new positions after a local move; with reduced motion the rail and siblings snap. Drop on Done to complete, or drag out of Done to reopen in a particular stage. One Undo
 reverses both the stage and the placement. Completing a repeat still creates the next occurrence in
 To do.
 
@@ -335,6 +335,28 @@ Use **H/L** or **←/→** to move between columns, and **J/K** or **↓/↑** t
 completes or reopens, and **N** opens the active column's composer. **Ctrl+click** and **Shift+click**
 select several cards, with a **Status** action in the selection strip. Choosing an open status there
 leaves completed cards alone.
+
+**Timeline** shows a sticky, collapsible task rail beside an inclusive calendar grid. Choose **Week**,
+**2W** (default), **Month** or **Quarter**. Month labels ISO weeks; Quarter has Monday-first week
+columns, but edits still snap to calendar days. Zoom keeps the centre date. The arrows page the grid;
+**Today** or **0** returns to the Today line. Horizontal scrolling and **Shift+wheel** pan dates while
+the rail stays put. **Show completed on Timeline** reveals completed tasks that have dates.
+
+Drag a bar to move its dates together, or an edge to change one date. Due-only tasks show a one-day
+flag or overdue diamond; pulling their left edge out adds Starts. A start-only bar has a dashed
+right edge; pulling it out adds Due. **Unscheduled** opens a tray for open tasks without dates: drop a
+task on a day to set Due, or use its **Schedule** calendar. The tray, rail and zoom are remembered on
+this desktop, not synced. The date readout follows a drag; the final change has a single Undo in the
+reserved strip (**Ctrl+Z**). A drag won't overwrite dates that changed on another device mid-gesture.
+
+Use **↑/↓** or **K/J** to select lanes and reveal their dates. **Alt+←/→** shifts both dates one day
+(**Shift+Alt+←/→** one week). **[** and **]** shrink or extend the end of the span. **D** and **Shift+D**
+open Due and Starts; **Enter** opens Detail. In the tray, use the same selection keys and **D** to
+schedule a task without dragging. **Ctrl+N** switches to List and focuses its composer.
+
+**Planned** and collections with a Timeline-enabled child list also offer Timeline. Their bars use
+the task's own list colour. Planned shows every dated open task, including start-only tasks, and has
+no Unscheduled tray. Its List view keeps the existing due-date membership.
 
 ### Task activity
 

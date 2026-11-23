@@ -2,7 +2,7 @@
 
 use std::sync::Arc;
 
-use gpui::{Context, Div, MouseButton, Role, SharedString, div, prelude::*, px};
+use gpui::{Context, Div, MouseButton, Role, SharedString, Window, div, prelude::*, px};
 use todo_client::{CommandId, TrackedUndo};
 use todo_core::ids::{CollectionId, EntityId, TaskId};
 use todo_core::model::Entity;
@@ -25,6 +25,7 @@ pub(super) enum EditKind {
     Reopen,
     Status,
     Start,
+    Schedule,
     Restore,
     Delete,
     Merge,
@@ -104,6 +105,7 @@ impl EditKind {
             Self::Reopen => "Reopened",
             Self::Status => "Moved",
             Self::Start => "Changed start date for",
+            Self::Schedule => "Rescheduled",
             Self::Restore => "Restored",
             Self::Delete => "Deleted",
             Self::Merge => "Merged",
@@ -133,7 +135,7 @@ impl EditKind {
                 Self::Complete => "Reopened",
                 Self::Reopen => "Completed",
                 Self::Status => "Moved back",
-                Self::Start => "Restored dates for",
+                Self::Start | Self::Schedule => "Restored dates for",
                 Self::Restore => "Returned to Trash:",
                 Self::Delete | Self::Merge => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
@@ -167,14 +169,16 @@ impl EditKind {
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
             (Self::Bulk, EntityId::Task(id)) => before.tasks.get(&id) != after.tasks.get(&id),
-            (Self::Status | Self::Start | Self::Reopen, EntityId::Task(id)) => before
-                .tasks
-                .get(&id)
-                .zip(after.tasks.get(&id))
-                .is_some_and(|(a, b)| {
-                    (a.status, a.completed_at, &a.position, a.start_date, a.due)
-                        != (b.status, b.completed_at, &b.position, b.start_date, b.due)
-                }),
+            (Self::Status | Self::Start | Self::Schedule | Self::Reopen, EntityId::Task(id)) => {
+                before
+                    .tasks
+                    .get(&id)
+                    .zip(after.tasks.get(&id))
+                    .is_some_and(|(a, b)| {
+                        (a.status, a.completed_at, &a.position, a.start_date, a.due)
+                            != (b.status, b.completed_at, &b.position, b.start_date, b.due)
+                    })
+            }
             (Self::Repeat | Self::ClearDue, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)
@@ -615,11 +619,16 @@ impl ShellView {
 
     /// This footer is outside the scroll viewport and the narrow detail overlay. The overlay
     /// keeps Completed inert, but the same Undo is always visible and reachable.
-    pub(super) fn list_footer(&self, completed_enabled: bool, cx: &mut Context<Self>) -> Div {
+    pub(super) fn list_footer(
+        &self,
+        completed_enabled: bool,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
         let p = self.palette;
         let open = self.ui.show_completed;
         let count = self.shell.room.completed_count;
-        let completed = (count > 0 && !self.on_board()).then(|| {
+        let completed = (count > 0 && !self.on_board() && !self.on_timeline()).then(|| {
             div()
                 .id("completed-toggle")
                 .h_full()
@@ -661,6 +670,7 @@ impl ShellView {
             .border_t_1()
             .border_color(p.line)
             .children(completed)
+            .children(self.timeline_footer(completed_enabled, window, cx))
             .when(self.on_board(), |footer| {
                 footer.child(
                     div()
@@ -674,13 +684,18 @@ impl ShellView {
                         .child("DONE SHOWS LAST 7 DAYS"),
                 )
             })
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .flex()
-                    .justify_end()
-                    .children(self.toast_view(cx)),
+            .when(
+                !self.on_timeline() || self.toast.look(self.frame).is_some(),
+                |d| {
+                    d.child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .flex()
+                            .justify_end()
+                            .children(self.toast_view(cx)),
+                    )
+                },
             )
     }
 

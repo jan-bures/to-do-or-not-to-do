@@ -54,8 +54,7 @@ pub fn view_label(view: ListView) -> (&'static str, Icon) {
 }
 
 pub fn available(features: ListFeatures, view: ListView) -> bool {
-    // Timeline can already be opted into (and set as the synced default on other clients).
-    features.allows(view) && view != ListView::Timeline
+    features.allows(view)
 }
 
 pub fn effective(features: ListFeatures, selected: Option<ListView>) -> ListView {
@@ -229,7 +228,7 @@ mod tests {
         assert_eq!(effective(next, Some(ListView::Board)), ListView::List);
         let next = Setting::Default(ListView::Timeline).patch(next).merge(next);
         assert_eq!(next.default_view, ListView::Timeline);
-        assert_eq!(effective(next, None), ListView::List);
+        assert_eq!(effective(next, None), ListView::Timeline);
     }
 
     #[test]

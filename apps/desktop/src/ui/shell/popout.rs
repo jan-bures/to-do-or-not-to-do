@@ -420,7 +420,7 @@ impl ShellView {
                 .child(self.quick_add_field(window, cx))
                 .child(self.list(window, cx))
                 .children(self.bulk_bar(window, cx))
-                .child(self.list_footer(true, cx))
+                .child(self.list_footer(true, window, cx))
                 .children(status)
                 .into_any_element()
         };

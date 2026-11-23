@@ -21,6 +21,7 @@ pub mod menus;
 pub mod motion;
 pub mod popouts;
 pub mod reminders;
+pub mod timeline;
 pub mod workflow;
 pub use todo_client::intent::{self as commands, quick_add};
 
@@ -37,6 +38,7 @@ use todo_core::query::{BuiltinList, EvalContext};
 use todo_core::time::{Date, Timestamp};
 
 pub use activity::AgentKey;
+pub(crate) use derive::shared_key;
 pub use derive::{MyDayProgress, derive, my_day_progress};
 
 use crate::theme::{Agent, Glyph, Hue, Icon, hues};
@@ -271,6 +273,7 @@ pub struct UiState {
     pub collapsed_collections: BTreeSet<CollectionId>,
     /// Per-list override of the automatic Board Done rail collapse.
     pub board_done: BTreeMap<ListId, bool>,
+    pub timeline: timeline::Preferences,
     /// Device-local preferred widths of the main window's side panes.
     pub panes: layout::PaneWidths,
 }
@@ -415,6 +418,12 @@ pub struct BoardRows {
     pub total_done: usize,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct TimelineRows {
+    pub lanes: Vec<(todo_client::timeline::Lane, TaskRow)>,
+    pub unscheduled: Vec<TaskRow>,
+}
+
 /// The room the main pane shows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Room {
@@ -425,6 +434,7 @@ pub struct Room {
     pub chips: Chips,
     pub features: todo_core::model::ListFeatures,
     pub board: Option<BoardRows>,
+    pub timeline: Option<TimelineRows>,
     /// Header progress: done of total (`todo_client::room_header` says what counts).
     pub done: u32,
     pub total: u32,

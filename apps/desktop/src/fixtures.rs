@@ -107,7 +107,8 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(f)
         }
         "work" => Some(work()),
-        "list-status" | "list-settings" | "board" | "board-detail" => Some(workflow_room(name)),
+        "list-status" | "list-settings" | "board" | "board-detail" | "timeline"
+        | "timeline-month" | "timeline-tray" | "timeline-planned" => Some(workflow_room(name)),
         "quick-add-chips" | "quick-add-calendar" | "quick-add-priority" => Some(Fixture {
             quick_add_text: Some("Water the plants zítra !!"),
             ..my_day()
@@ -931,6 +932,7 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
 }
 
 fn workflow_room(name: &str) -> Fixture {
+    let timeline = name.starts_with("timeline");
     let mut b = Builder::new();
     let home = b.collection("Home", "fern");
     let renovation = b.list(home, "Home renovation", "clay");
@@ -950,6 +952,8 @@ fn workflow_room(name: &str) -> Fixture {
                 timeline: Some(true),
                 default_view: Some(if name == "list-status" {
                     ListView::List
+                } else if timeline {
+                    ListView::Timeline
                 } else {
                     ListView::Board
                 }),
@@ -960,6 +964,7 @@ fn workflow_room(name: &str) -> Fixture {
     let bathroom = b.tag("bathroom");
     let permits = b.tag("permits");
     let lights = b.tag("lighting");
+    let study = b.tag("study");
     let carpentry = b.tag("carpentry");
     let materials = b.tag("materials");
     let selected = b.task(T {
@@ -1024,12 +1029,45 @@ fn workflow_room(name: &str) -> Fixture {
         ..t(renovation, "Compare kitchen pendant lights")
     });
     b.task(T {
-        start: Some("2026-12-03"),
-        due: Some("2026-12-07"),
+        start: Some(if timeline { "2026-11-30" } else { "2026-12-03" }),
+        due: Some(if timeline { "2026-12-02" } else { "2026-12-07" }),
         status: WorkflowStatus::Backlog,
         tags: vec![carpentry],
-        ..t(renovation, "Get quote for hallway built-in wardrobe")
+        ..t(
+            renovation,
+            if timeline {
+                "Get hallway wardrobe quote"
+            } else {
+                "Get quote for hallway built-in wardrobe"
+            },
+        )
     });
+    if timeline {
+        b.task(T {
+            status: WorkflowStatus::Backlog,
+            tags: vec![study],
+            ..t(renovation, "Research acoustic panels for study")
+        });
+    }
+    if name == "timeline-planned" {
+        b.task(T {
+            start: Some("2026-11-22"),
+            due: Some("2026-11-28"),
+            ..t(launch, "Prepare release screenshots")
+        });
+        b.task(T {
+            start: Some("2026-11-30"),
+            ..t(launch, "Draft the announcement")
+        });
+        b.task(T {
+            due: Some("2026-11-25"),
+            ..t(admin, "Review the budget")
+        });
+        b.task(T {
+            due: Some("2026-11-26"),
+            ..t(groceries, "Pick up pantry staples")
+        });
+    }
     for (title, done) in [
         ("Deliver old sofa to charity depot", "2026-11-21T09:15:00Z"),
         (
@@ -1039,6 +1077,7 @@ fn workflow_room(name: &str) -> Fixture {
         ("Send floor plan PDF to contractor", "2026-11-20T10:00:00Z"),
     ] {
         b.task(T {
+            due: timeline.then_some("2026-11-20"),
             done: Some(done),
             ..t(renovation, title)
         });
@@ -1079,8 +1118,21 @@ fn workflow_room(name: &str) -> Fixture {
     let mut f = fixture(
         b,
         UiState {
-            room: RoomKey::List(renovation),
+            room: if name == "timeline-planned" {
+                RoomKey::Smart(Smart::Planned)
+            } else {
+                RoomKey::List(renovation)
+            },
             task: matches!(name, "list-status" | "board-detail").then_some(selected),
+            timeline: crate::model::timeline::Preferences {
+                zoom: if name == "timeline-month" {
+                    todo_client::timeline::Zoom::Month
+                } else {
+                    todo_client::timeline::Zoom::TwoWeeks
+                },
+                tray: name == "timeline-tray",
+                ..Default::default()
+            },
             ..UiState::default()
         },
         MORNING,

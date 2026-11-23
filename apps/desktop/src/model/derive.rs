@@ -149,7 +149,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
 }
 
 /// The shared room key for a room.
-fn shared_key(key: RoomKey) -> room_header::RoomKey<'static> {
+pub(crate) fn shared_key(key: RoomKey) -> room_header::RoomKey<'static> {
     match key {
         RoomKey::Smart(s) => room_header::RoomKey::Smart(s.shared()),
         RoomKey::Collection(c) => room_header::RoomKey::Collection(c),
@@ -293,6 +293,7 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
             _ => Default::default(),
         },
         board: None,
+        timeline: None,
         done: as_u32(header.progress_done),
         total: as_u32(header.progress_total),
         score: header.summary,
@@ -886,6 +887,46 @@ pub fn derive(state: &State, ui: &UiState, sync: &SyncInfo, now: &Now) -> Shell 
                     .map(|task| row(room_state, &ix, task, now))
                     .collect()
             }),
+        });
+    }
+    if !ui.compact
+        && let Some(projected) =
+            todo_client::timeline::room(sidebar_state, shared_key(room.key), &ctx)
+    {
+        room.features.timeline = true;
+        let visible = filter(
+            room_state,
+            &ui.filter,
+            &ctx,
+            projected
+                .lanes
+                .iter()
+                .map(|l| l.task)
+                .chain(projected.unscheduled.iter().copied())
+                .filter_map(|id| room_state.tasks.get(&id))
+                .collect(),
+            &ui.held_updates,
+        );
+        let rows: std::collections::HashMap<_, _> =
+            visible.into_iter().map(|t| (t.id, t)).collect();
+        room.timeline = Some(super::TimelineRows {
+            lanes: projected
+                .lanes
+                .into_iter()
+                .filter_map(|lane| {
+                    rows.get(&lane.task)
+                        .map(|task| (lane, row(room_state, &ix, task, now)))
+                })
+                .collect(),
+            unscheduled: projected
+                .unscheduled
+                .into_iter()
+                .filter_map(|id| {
+                    rows.get(&id)
+                        .filter(|_| !sidebar_state.tasks[&id].is_done())
+                        .map(|task| row(room_state, &ix, task, now))
+                })
+                .collect(),
         });
     }
     let mut sidebar = sidebar(sidebar_state, &ix, ui, sync, now, &ctx);

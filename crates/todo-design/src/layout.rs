@@ -559,8 +559,13 @@ pub mod timeline {
     /// Expanded Unscheduled tray height.
     pub const TRAY_EXPANDED: f32 = 148.0;
 
+    /// Below this width titles sit next to bars instead of inside them.
+    pub const INLINE_LABEL_MIN: f32 = 110.0;
+    /// Dot that joins the date ruler to the Today line.
+    pub const TODAY_DOT: f32 = 7.0;
+
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 11] = [
+    pub const ALL: [(&str, f32); 13] = [
         ("toolbar-height", TOOLBAR_HEIGHT),
         ("ruler-height", RULER_HEIGHT),
         ("rail-width", RAIL_WIDTH),
@@ -572,6 +577,8 @@ pub mod timeline {
         ("resize-hit", RESIZE_HIT),
         ("tray-collapsed", TRAY_COLLAPSED),
         ("tray-expanded", TRAY_EXPANDED),
+        ("inline-label-min", INLINE_LABEL_MIN),
+        ("today-dot", TODAY_DOT),
     ];
 }
 

@@ -150,6 +150,8 @@ impl ShellView {
         self.close_menu(false, window, cx);
         self.cancel_task_drag(cx);
         self.board.reset_view();
+        self.timeline.reset_view();
+        self.timeline.cursor = self.ui.task;
         self.board.view_override = Some(view);
         self.board.start_swap(self.now(), self.pace(), self.animate);
         self.multi.clear();
@@ -223,19 +225,13 @@ impl ShellView {
                             .map(|(i, view)| {
                                 let (label, icon) = workflow::view_label(view);
                                 let active = self.view() == view;
-                                let enabled = workflow::available(features, view);
                                 let focus = &self.workflow.view[i];
-                                let name = if enabled {
-                                    label
-                                } else {
-                                    "Timeline view isn’t available on desktop yet"
-                                };
                                 div()
                                     .id(("room-view", i))
                                     .role(Role::Tab)
-                                    .aria_label(name)
+                                    .aria_label(label)
                                     .aria_selected(active)
-                                    .tooltip(kit::tooltip(p, name))
+                                    .tooltip(kit::tooltip(p, label))
                                     .flex_none()
                                     .h_full()
                                     .flex()
@@ -259,27 +255,34 @@ impl ShellView {
                                     } else {
                                         500
                                     }))
-                                    .text_color(if active {
-                                        p.ink
-                                    } else if enabled {
-                                        p.ink_2
-                                    } else {
-                                        p.ink_3
-                                    })
+                                    .text_color(if active { p.ink } else { p.ink_2 })
                                     .child(kit::icon(
                                         icon,
                                         component::ICON_SMALL,
                                         if active { p.accent_strong } else { p.ink_3 },
                                     ))
                                     .when(!compact, |d| d.child(label))
-                                    .when(enabled, |d| {
-                                        d.track_focus(focus)
-                                            .cursor_pointer()
-                                            .hover(|s| s.bg(p.hover))
-                                            .on_click(cx.listener(move |this, _, window, cx| {
-                                                this.switch_view(view, window, cx)
-                                            }))
-                                    })
+                                    .track_focus(focus)
+                                    .cursor_pointer()
+                                    .hover(|s| s.bg(p.hover))
+                                    .on_click(cx.listener(move |this, _, window, cx| {
+                                        this.switch_view(view, window, cx)
+                                    }))
+                                    .on_key_down(cx.listener(
+                                        move |this, e: &KeyDownEvent, window, cx| {
+                                            if !e.keystroke.modifiers.modified()
+                                                && matches!(
+                                                    e.keystroke.key.as_str(),
+                                                    "enter" | "space"
+                                                )
+                                            {
+                                                cx.stop_propagation();
+                                                if !e.is_held {
+                                                    this.switch_view(view, window, cx);
+                                                }
+                                            }
+                                        },
+                                    ))
                             }),
                     ),
             ),
@@ -526,7 +529,7 @@ impl ShellView {
             )
         };
         let belongs = move |kind: &MenuKind| match kind {
-            MenuKind::Date(c) if starts => c.starts && c.task == Some(task),
+            MenuKind::Date(c) if starts => c.timeline.is_none() && c.starts && c.task == Some(task),
             MenuKind::Status {
                 task: Some(id),
                 at_row: false,

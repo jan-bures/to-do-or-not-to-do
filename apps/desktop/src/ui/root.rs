@@ -336,6 +336,7 @@ impl RootView {
         let ui = UiState {
             collapsed_collections: prefs.collapsed_collections,
             board_done: prefs.board_done,
+            timeline: prefs.timeline,
             panes: prefs.panes,
             ..UiState::default()
         };

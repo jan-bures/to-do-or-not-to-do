@@ -48,6 +48,7 @@ pub(super) struct Calendar {
     /// None for a composer draft; otherwise the task whose due date is being edited.
     pub(super) task: Option<TaskId>,
     pub(super) starts: bool,
+    pub(super) timeline: Option<todo_client::intent::workflow::Dates>,
     range: bool,
     today: Date,
     selected: Option<Date>,
@@ -60,6 +61,7 @@ impl Calendar {
         Self {
             task,
             starts: false,
+            timeline: None,
             range: false,
             today,
             selected,
@@ -70,6 +72,11 @@ impl Calendar {
 
     pub(super) fn for_start(mut self) -> Self {
         self.starts = true;
+        self
+    }
+
+    pub(super) fn for_timeline(mut self, dates: todo_client::intent::workflow::Dates) -> Self {
+        self.timeline = Some(dates);
         self
     }
 
@@ -402,7 +409,16 @@ impl ShellView {
             CalendarAction::Pick(date) => {
                 let starts = calendar.starts;
                 if let Some(task) = calendar.task {
-                    if starts {
+                    if let Some(before) = calendar.timeline {
+                        use todo_client::intent::workflow::Schedule;
+                        let edit = if starts {
+                            Schedule::PickStart(date)
+                        } else {
+                            Schedule::PickDue(date)
+                        };
+                        self.close_menu(true, window, cx);
+                        self.apply_schedule(task, before, edit, window, cx);
+                    } else if starts {
                         self.choose_task_start(task, date, window, cx);
                     } else {
                         self.choose_task_due(task, date, window, cx);

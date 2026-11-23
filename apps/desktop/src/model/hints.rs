@@ -74,6 +74,7 @@ pub enum Stop {
     /// The room header's "more" button, in rooms that have a menu.
     RoomMenu,
     View(usize),
+    Timeline(usize),
     QuickInput,
     QuickRemoveStatus,
     QuickStatus,
@@ -126,7 +127,7 @@ pub const QUICK_ADD_STOPS: [Stop; 7] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 37] = [
+pub const TAB_ORDER: [Stop; 47] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -142,6 +143,16 @@ pub const TAB_ORDER: [Stop; 37] = [
     Stop::View(1),
     Stop::View(2),
     Stop::RoomMenu,
+    Stop::Timeline(0),
+    Stop::Timeline(1),
+    Stop::Timeline(2),
+    Stop::Timeline(3),
+    Stop::Timeline(4),
+    Stop::Timeline(5),
+    Stop::Timeline(6),
+    Stop::Timeline(7),
+    Stop::Timeline(8),
+    Stop::Timeline(9),
     Stop::QuickInput,
     Stop::QuickRemoveStatus,
     Stop::QuickRemoveDate,
@@ -193,6 +204,7 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::Bulk(_)
         | Stop::RoomMenu
         | Stop::View(_)
+        | Stop::Timeline(_)
         | Stop::QuickInput
         | Stop::QuickStatus
         | Stop::QuickRemoveStatus
@@ -642,6 +654,16 @@ mod tests {
                 View(1),
                 View(2),
                 RoomMenu,
+                Timeline(0),
+                Timeline(1),
+                Timeline(2),
+                Timeline(3),
+                Timeline(4),
+                Timeline(5),
+                Timeline(6),
+                Timeline(7),
+                Timeline(8),
+                Timeline(9),
                 QuickInput,
                 QuickRemoveStatus,
                 QuickRemoveDate,
@@ -694,6 +716,16 @@ mod tests {
                 QuickRemoveDate,
                 QuickRemoveStatus,
                 QuickInput,
+                Timeline(9),
+                Timeline(8),
+                Timeline(7),
+                Timeline(6),
+                Timeline(5),
+                Timeline(4),
+                Timeline(3),
+                Timeline(2),
+                Timeline(1),
+                Timeline(0),
                 RoomMenu,
                 View(2),
                 View(1),
@@ -730,6 +762,7 @@ mod tests {
                     | Attachment(_)
                     | Bulk(_)
                     | View(_)
+                    | Timeline(_)
             ) || QUICK_ADD_STOPS.contains(&s)
         };
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
@@ -937,6 +970,7 @@ mod tests {
                         | Status
                         | Starts
                         | View(_)
+                        | Timeline(_)
                         | Due
                         | Reminder
                         | Repeat

@@ -316,6 +316,8 @@
   --timeline-resize-hit: 8px;
   --timeline-tray-collapsed: 36px;
   --timeline-tray-expanded: 148px;
+  --timeline-inline-label-min: 110px;
+  --timeline-today-dot: 7px;
   --desktop-quick-add-popup-top-fraction: 0.2;
   --landscape-height-desktop: 48px;
   --landscape-height-cover: 36px;

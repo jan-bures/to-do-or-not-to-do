@@ -412,11 +412,11 @@ node docs/mockups/status-board-timeline/render.mjs
   - [x] Extend `intent::quick_add` with workflow-gated `status:`/`stav:` suffix, `start..due` range syntax, and `Draft` reconciliation.
   - [x] Add shared pure board grouping (4 columns, 7-day recent `Done` cap), column drag placement resolver, and timeline layout/span/unscheduled projection helpers.
   - [x] Expose list settings, status updates, start-date edits, and board/timeline projections through `todo-ffi` for Android.
-- [ ] **Phase 3 — Desktop client (`apps/desktop`):**
-  - [x] Add `List settings…` in-place sub-page in `menu.rs` and eyebrow segmented view switcher (`V`, `1`, `2`; `3` awaits Timeline).
+- [x] **Phase 3 — Desktop client (`apps/desktop`):**
+  - [x] Add `List settings…` in-place sub-page in `menu.rs` and eyebrow segmented view switcher (`V`, `1`, `2`, `3`).
   - [x] Render non-pill status marks in List rows, Quick-Add status picker/chip, and `Status` (`S`) + `Starts` (`⇧D`) rows in Detail.
   - [x] Build Board view (4 columns, collapsible `Done` rail beside Detail, inline column quick-add, pointer drag + `H`/`L`/`Alt+←/→` keyboard).
-  - [ ] Build Timeline view (toolbar, 4 zooms, sticky rail, Today hairline, bar drag/resize + tooltips, Unscheduled bottom tray).
+  - [x] Build Timeline view (toolbar, 4 zooms, sticky rail, Today hairline, bar drag/resize + tooltips, Unscheduled bottom tray).
 - [ ] **Phase 4 — Web client (`apps/web`):**
   - [ ] Mirror List settings, eyebrow view switcher, List/Detail/Quick-Add status & start date, Board view (Pointer Events drag + keyboard), and Timeline view with responsive narrow-viewport layout and Playwright e2e tests.
 - [ ] **Phase 5 — Android client (`apps/android`):**

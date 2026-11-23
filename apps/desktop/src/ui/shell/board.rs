@@ -70,6 +70,8 @@ pub(super) struct BoardUi {
     scrollbars: [kit::Scrollbar; 4],
     drag: Option<Drag>,
     swap: Track,
+    rail: Option<Track>,
+    settling: HashMap<TaskId, Track>,
 }
 
 impl Default for BoardUi {
@@ -87,6 +89,8 @@ impl Default for BoardUi {
             scrollbars: std::array::from_fn(|_| kit::Scrollbar::default()),
             drag: None,
             swap: Track::rest(1.),
+            rail: None,
+            settling: HashMap::new(),
         }
     }
 }
@@ -368,15 +372,57 @@ impl ShellView {
         };
         let completion = matches!(cmd, Command::CompleteTask { .. });
         let t = state.tasks.get(&card);
+        let siblings = (self.on_board()
+            && self.animate
+            && !self.pace().reduced
+            && !completion
+            && t.is_some_and(|task| !task.is_done()))
+        .then(|| {
+            let bounds = *self.board.geometry.borrow().cards.get(&card)?;
+            Some((
+                self.board_order()?,
+                f32::from(bounds.size.height) + board::CARD_GAP,
+            ))
+        })
+        .flatten();
         let same = cmd.clone();
-        if self.submit_if(cmd, |live| {
+        let moved = self.submit_if(cmd, |live| {
             drop_command(live, list, card, stage, slot).as_ref() == Some(&same)
-        }) == Ok(true)
-            && let Some(task) = t.filter(|task| completion || task.is_done())
-        {
+        }) == Ok(true);
+        if moved && let Some(task) = t.filter(|task| completion || task.is_done()) {
             self.play_completion(task);
         }
         self.refresh(cx);
+        if moved
+            && let Some((before, slot_height)) = siblings
+            && let Some(after) = self.board_order()
+        {
+            let now = self.now();
+            for (id, slots) in sibling_offsets(&before, &after, card) {
+                let offset = self
+                    .board
+                    .settling
+                    .get(&id)
+                    .map_or(0., |track| track.at(now));
+                self.board.settling.insert(
+                    id,
+                    Track::new(
+                        offset + slots * slot_height,
+                        0.,
+                        now,
+                        Duration::from_millis(motion::ROW_ENTER.into()),
+                        motion::STANDARD,
+                    ),
+                );
+            }
+        }
+    }
+
+    fn board_order(&self) -> Option<[Vec<TaskId>; 4]> {
+        let board = self.shell.room.board.as_ref()?;
+        Some(std::array::from_fn(|i| {
+            board.columns[i].iter().map(|row| row.id).collect()
+        }))
     }
 
     fn reveal_board(&self, column: usize, card: Option<TaskId>) {
@@ -457,6 +503,32 @@ impl ShellView {
     pub(super) fn drive_board(&mut self, window: &mut Window) {
         if self.board.swap.moving(self.frame) {
             window.request_animation_frame();
+        }
+        if self.on_board() {
+            let target = f32::from(self.done_collapsed());
+            let ease = self.animate && !self.pace().reduced;
+            let track = self.board.rail.get_or_insert_with(|| Track::rest(target));
+            if ease {
+                track.aim(
+                    target,
+                    self.frame,
+                    Duration::from_millis(motion::PANEL.into()),
+                    if target > 0. {
+                        motion::EXIT
+                    } else {
+                        motion::ENTER
+                    },
+                );
+            } else {
+                *track = Track::rest(target);
+                self.board.settling.clear();
+            }
+            self.board
+                .settling
+                .retain(|_, track| track.moving(self.frame));
+            if track.moving(self.frame) || !self.board.settling.is_empty() {
+                window.request_animation_frame();
+            }
         }
         let Some(drag) = self.board.drag.filter(|g| g.lifted) else {
             return;
@@ -572,7 +644,15 @@ impl ShellView {
         };
         let collapsed = self.done_collapsed();
         let docked = self.docked() && self.shell.detail.is_some();
-        let width = column_width(self.room_width(window), collapsed, docked);
+        let room = self.room_width(window);
+        let expanded = column_width(room, false, docked);
+        let tucked = column_width(room, true, docked);
+        let rail = self
+            .board
+            .rail
+            .map_or(f32::from(collapsed), |track| track.at(self.frame));
+        let width = expanded + (tucked - expanded) * rail;
+        let done_width = expanded + (board::COL_COLLAPSED - expanded) * rail;
         let focused = self
             .list_focus
             .is_focused(window)
@@ -623,7 +703,11 @@ impl ShellView {
                                     self.board_column(
                                         stage,
                                         cards,
-                                        width,
+                                        if stage == QueryStatus::Done {
+                                            done_width
+                                        } else {
+                                            width
+                                        },
                                         data.total_done,
                                         collapsed,
                                         focused,
@@ -675,7 +759,11 @@ impl ShellView {
             .flex()
             .flex_col()
             .flex_none()
-            .w(px(if rail { board::COL_COLLAPSED } else { width }))
+            .w(px(width))
+            .when(
+                done && self.board.rail.is_some_and(|t| t.moving(self.frame)),
+                |d| d.overflow_hidden(),
+            )
             .min_h_0()
             .rounded(px(radius::LG))
             .border(px(elevation::HAIRLINE))
@@ -1180,6 +1268,10 @@ impl ShellView {
         }
         div()
             .flex_none()
+            .when_some(
+                self.board.settling.get(&id).filter(|_| !lifted),
+                |d, track| d.relative().top(px(track.at(self.frame))),
+            )
             .when(!lifted && look.height < 1., |d| {
                 d.overflow_hidden().max_h(px((board::CARD_PAD * 2.
                     + ty::QUICK_ADD.line_height * 2.
@@ -1336,6 +1428,40 @@ fn drop_line(p: &crate::theme::Palette) -> Div {
         .bg(p.accent_strong)
 }
 
+/// The sibling slot that the picked-up card used to occupy minus its new slot. Siblings
+/// outside those two columns (or outside the reordered interval) do not move.
+fn sibling_offsets(
+    before: &[Vec<TaskId>; 4],
+    after: &[Vec<TaskId>; 4],
+    moved: TaskId,
+) -> Vec<(TaskId, f32)> {
+    before
+        .iter()
+        .zip(after)
+        .flat_map(|(old, new)| {
+            let from = old.iter().position(|id| *id == moved);
+            let to = new.iter().position(|id| *id == moved);
+            if from == to {
+                return Vec::new();
+            }
+            let old_siblings = old.iter().copied().filter(|id| *id != moved);
+            let new_siblings = new.iter().copied().filter(|id| *id != moved);
+            old_siblings
+                .zip(new_siblings)
+                .enumerate()
+                .filter_map(|(i, (a, b))| {
+                    if a != b {
+                        return None;
+                    }
+                    let delta = f32::from(from.is_some_and(|slot| slot <= i))
+                        - f32::from(to.is_some_and(|slot| slot <= i));
+                    (delta != 0.).then_some((a, delta))
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn column_width(room: f32, rail: bool, beside_detail: bool) -> f32 {
     let width = room
         - 2. * desktop::LIST_PAD_X
@@ -1413,6 +1539,20 @@ mod tests {
         })
     }
 
+    #[test]
+    fn only_siblings_whose_card_slot_changed_slide_on_local_drop() {
+        let [a, b, c, d] =
+            (*b"abcd").map(|key| TaskId::derive(todo_core::time::Timestamp::UNIX_EPOCH, &[key]));
+        let before = [vec![a, b, c], vec![d], vec![], vec![]];
+        let reorder = [vec![b, a, c], vec![d], vec![], vec![]];
+        assert_eq!(sibling_offsets(&before, &reorder, a), [(b, 1.)]);
+        let moved = [vec![b, c], vec![a, d], vec![], vec![]];
+        assert_eq!(
+            sibling_offsets(&before, &moved, a),
+            [(b, 1.), (c, 1.), (d, -1.)]
+        );
+    }
+
     #[gpui::test]
     fn board_keys_move_reorder_undo_and_stage_a_column_draft(cx: &mut gpui::TestAppContext) {
         let (shell, cx) = fixture_board(cx);
@@ -1441,6 +1581,8 @@ mod tests {
             assert_eq!(QueryStatus::of(new), QueryStatus::Backlog);
         });
         cx.simulate_keystrokes("escape 1 3");
+        cx.update(|_, cx| assert_eq!(shell.read(cx).view(), ListView::Timeline));
+        cx.simulate_keystrokes("v");
         cx.update(|_, cx| assert_eq!(shell.read(cx).view(), ListView::List));
         cx.simulate_keystrokes("v");
         cx.update(|_, cx| assert_eq!(shell.read(cx).view(), ListView::Board));
