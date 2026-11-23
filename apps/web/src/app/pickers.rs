@@ -117,6 +117,7 @@ pub(super) struct DetailPicker {
     pub(super) open: RwSignal<bool>,
     pub(super) anchor: &'static str,
     pub(super) id: &'static str,
+    anchor_override: StoredValue<Option<String>>,
 }
 
 impl DetailPicker {
@@ -136,10 +137,15 @@ impl DetailPicker {
             open: RwSignal::new(false),
             anchor,
             id,
+            anchor_override: StoredValue::new(None),
         };
         let resize = window_event_listener(leptos::ev::resize, move |_| this.position());
         on_cleanup(move || resize.remove());
         this
+    }
+
+    pub(super) fn set_anchor(self, id: String) {
+        self.anchor_override.set_value(Some(id));
     }
 
     fn open_popover(self) -> bool {
@@ -185,7 +191,8 @@ impl DetailPicker {
             let _ = el.hide_popover();
         }
         if focus {
-            platform::focus(self.anchor);
+            self.anchor_override
+                .with_value(|id| platform::focus(id.as_deref().unwrap_or(self.anchor)));
         }
     }
 
@@ -198,7 +205,9 @@ impl DetailPicker {
     pub(super) fn position(self) {
         if self.open.try_get_untracked() == Some(true)
             && let Some(el) = self.node.get_untracked()
-            && !platform::place_room_menu(&el, self.anchor)
+            && !self.anchor_override.with_value(|id| {
+                platform::place_room_menu(&el, id.as_deref().unwrap_or(self.anchor))
+            })
         {
             self.close(false);
         }

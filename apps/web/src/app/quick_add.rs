@@ -40,10 +40,14 @@ impl DatePicker {
         if self.popup.open.get_untracked() {
             self.popup.close(true);
         } else {
-            self.today.set(Some(today));
-            self.show_date(today, due);
-            self.popup.show(self.active_day);
+            self.show(today, due);
         }
+    }
+
+    pub(super) fn show(self, today: Date, due: Option<Date>) {
+        self.today.set(Some(today));
+        self.show_date(today, due);
+        self.popup.show(self.active_day);
     }
 
     fn show_date(self, today: Date, day: Option<Date>) {

@@ -1,8 +1,8 @@
 //! Desktop viewport and input mapping. Calendar and edit semantics live in todo-client.
 
 use gpui::KeyDownEvent;
-use todo_client::timeline::{Span, Zoom};
-use todo_core::time::{Date, add_days, days_between};
+pub use todo_client::timeline::Axis;
+use todo_client::timeline::Zoom;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Deserialize, serde::Serialize)]
 #[serde(default)]
@@ -19,80 +19,6 @@ impl Default for Preferences {
             tray: false,
             rail: true,
         }
-    }
-}
-
-/// A continuous calendar axis, in logical pixels. Day cells are half-open; bars fill the
-/// complete last day. Keeping fractional days lets panning and keyboard jumps share an axis.
-#[derive(Clone, Copy, Debug)]
-pub struct Axis {
-    pub epoch: Date,
-    pub offset: f32,
-    pub zoom: Zoom,
-    pub width: f32,
-}
-
-impl Axis {
-    pub fn day_width(self) -> f32 {
-        self.width / self.zoom.days() as f32
-    }
-
-    pub fn x(self, date: Date) -> f32 {
-        (days_between(self.epoch, date) as f32 - self.offset) * self.day_width()
-    }
-
-    /// Calendar day hit by a pointer (at a cell edge, the cell on the right wins).
-    pub fn date_at(self, x: f32) -> Option<Date> {
-        add_days(
-            self.epoch,
-            (self.offset + x / self.day_width()).floor() as i64,
-        )
-    }
-
-    pub fn days_dragged(self, dx: f32) -> i64 {
-        (dx / self.day_width()).round() as i64
-    }
-
-    pub fn range(self) -> (Date, Date) {
-        let first = self.date_at(0.).unwrap_or(Date::MIN);
-        let last = add_days(
-            self.epoch,
-            (self.offset + self.zoom.days() as f32).ceil() as i64 - 1,
-        )
-        .unwrap_or(Date::MAX);
-        (first, last)
-    }
-
-    pub fn clamp(self, offset: f32) -> f32 {
-        offset.clamp(
-            days_between(self.epoch, Date::MIN) as f32,
-            (days_between(self.epoch, Date::MAX) + 1 - self.zoom.days()) as f32,
-        )
-    }
-
-    pub fn zoom_offset(self, next: Zoom) -> f32 {
-        Axis { zoom: next, ..self }
-            .clamp(self.offset + (self.zoom.days() - next.days()) as f32 / 2.)
-    }
-
-    pub fn reveal_offset(self, span: Span) -> f32 {
-        let start = days_between(self.epoch, span.first) as f32;
-        let end = days_between(self.epoch, span.last) as f32 + 1.;
-        let days = self.zoom.days() as f32;
-        let offset = if end - start > days {
-            if end <= self.offset || start >= self.offset + days {
-                start
-            } else {
-                self.offset
-            }
-        } else if start < self.offset {
-            start
-        } else if end > self.offset + days {
-            end - days
-        } else {
-            self.offset
-        };
-        self.clamp(offset)
     }
 }
 
@@ -137,8 +63,9 @@ mod tests {
     use gpui::{Keystroke, Modifiers};
     use todo_client::{
         intent::workflow::{Dates, Schedule},
-        timeline::SpanKind,
+        timeline::{Span, SpanKind},
     };
+    use todo_core::time::{Date, add_days};
 
     fn axis(zoom: Zoom) -> Axis {
         Axis {

@@ -623,9 +623,9 @@ pub fn state() -> State {
     b.state
 }
 
-/// The desktop Board's sample renovation, with the same card order and date spans.
+/// The desktop Board and Timeline's sample renovation, with the same order and date spans.
 #[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
-pub fn workflow_state() -> State {
+pub fn workflow_state(timeline: bool) -> State {
     use WorkflowStatus::{Backlog, InProgress, Todo};
     use todo_core::{
         command::ListFeaturesPatch,
@@ -665,7 +665,11 @@ pub fn workflow_state() -> State {
         features: Some(ListFeaturesPatch {
             workflow: Some(true),
             timeline: Some(true),
-            default_view: Some(ListView::Board),
+            default_view: Some(if timeline {
+                ListView::Timeline
+            } else {
+                ListView::Board
+            }),
         }),
     });
     for (n, name) in [
@@ -675,6 +679,7 @@ pub fn workflow_state() -> State {
         "materials",
         "lighting",
         "carpentry",
+        "study",
     ]
     .into_iter()
     .enumerate()
@@ -753,10 +758,14 @@ pub fn workflow_state() -> State {
         ),
         (
             108,
-            "Get quote for hallway built-in wardrobe",
+            if timeline {
+                "Get hallway wardrobe quote"
+            } else {
+                "Get quote for hallway built-in wardrobe"
+            },
             Backlog,
-            "2026-12-03",
-            "2026-12-07",
+            if timeline { "2026-11-30" } else { "2026-12-03" },
+            if timeline { "2026-12-02" } else { "2026-12-07" },
             Priority::None,
             &[6],
         ),
@@ -768,6 +777,13 @@ pub fn workflow_state() -> State {
         draft.priority = priority;
         draft.my_day = matches!(n, 101 | 102 | 105).then(|| day(21));
         draft.tags = tags.iter().copied().map(tag).collect();
+        draft.placement = Placement::Last;
+        b.run(Command::CreateTask(Box::new(draft)));
+    }
+    if timeline {
+        let mut draft = NewTask::new(task(123), list(40), "Research acoustic panels for study");
+        draft.status = Backlog;
+        draft.tags.push(tag(7));
         draft.placement = Placement::Last;
         b.run(Command::CreateTask(Box::new(draft)));
     }
@@ -857,11 +873,11 @@ pub fn workflow_state() -> State {
         .map(|(i, title)| (112 + i as u128, title, "2026-11-12T08:00:00Z")),
     ) {
         b.at("2026-11-01T09:00:00Z");
-        b.run(Command::CreateTask(Box::new(NewTask::new(
-            task(n),
-            list(40),
-            title,
-        ))));
+        let mut draft = NewTask::new(task(n), list(40), title);
+        if timeline && n <= 111 {
+            draft.due = dates("2026-11-20");
+        }
+        b.run(Command::CreateTask(Box::new(draft)));
         b.at(when);
         b.run(Command::CompleteTask { id: task(n) });
     }
@@ -875,16 +891,38 @@ pub fn workflow_state() -> State {
         (145, 41, "Coffee"),
         (146, 42, "Write the launch notes"),
         (147, 42, "Review the checklist"),
-        (148, 42, "Prepare screenshots"),
+        (
+            148,
+            42,
+            if timeline {
+                "Prepare release screenshots"
+            } else {
+                "Prepare screenshots"
+            },
+        ),
         (149, 42, "Draft the announcement"),
-        (150, 43, "Archive the invoices"),
+        (
+            150,
+            43,
+            if timeline {
+                "Review the budget"
+            } else {
+                "Archive the invoices"
+            },
+        ),
         (151, 43, "Renew the library card"),
     ] {
-        b.run(Command::CreateTask(Box::new(NewTask::new(
-            task(n),
-            list(target),
-            title,
-        ))));
+        let mut draft = NewTask::new(task(n), list(target), title);
+        if timeline {
+            (draft.start_date, draft.due) = match n {
+                140 => (None, dates("2026-11-26")),
+                148 => (dates("2026-11-22"), dates("2026-11-28")),
+                149 => (dates("2026-11-30"), None),
+                150 => (None, dates("2026-11-25")),
+                _ => (None, None),
+            };
+        }
+        b.run(Command::CreateTask(Box::new(draft)));
     }
     b.state
 }
@@ -987,8 +1025,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn timeline_fixture_keeps_start_only_tasks_in_filtered_planned() {
+        use crate::model::{RoomId, timeline_room};
+        use todo_client::timeline::SpanKind;
+
+        let s = workflow_state(true);
+        let planned = RoomId::from_path("/app/planned").0;
+        let timeline = timeline_room(
+            &s,
+            &planned,
+            now(),
+            "start:any due:none",
+            &Default::default(),
+        )
+        .unwrap();
+        assert_eq!(timeline.lanes.len(), 1);
+        assert_eq!(timeline.lanes[0].task, task(149));
+        assert_eq!(timeline.lanes[0].span.kind, SpanKind::OpenEnded);
+        assert!(timeline.unscheduled.is_empty());
+    }
+
+    #[test]
     fn workflow_fixture_keeps_recent_and_historical_completions_separate() {
-        let s = workflow_state();
+        let s = workflow_state(false);
         let board = todo_client::board::project(&s, list(40), &now().eval()).unwrap();
         assert_eq!(board.columns.map(|c| c.cards.len()), [2, 3, 3, 3]);
         assert_eq!(board.total_done, 14);

@@ -18,6 +18,7 @@ mod room_actions;
 mod tags;
 mod task_actions;
 mod task_drag;
+mod timeline;
 mod trash;
 mod workflow;
 
@@ -137,6 +138,8 @@ pub struct Ctx {
     task_drag: RwSignal<Option<task_drag::Gesture>>,
     board_ui: board::Ui,
     board: Memo<Option<todo_client::board::Board>>,
+    timeline_ui: timeline::Ui,
+    timeline: Memo<Option<todo_client::timeline::Timeline>>,
     status_menu: workflow::StatusMenu,
     room_features: Memo<ListFeatures>,
     room_view: Memo<ListView>,
@@ -332,8 +335,12 @@ impl Ctx {
             });
         }
         self.refresh();
-        if applied && let Some(id) = board_focus {
-            board::refocus(self, id);
+        if applied {
+            if let Some(id) = board_focus {
+                board::refocus(self, id);
+            } else if untrack(|| self.on_timeline()) {
+                timeline::after_undo(self);
+            }
         }
     }
 
@@ -369,6 +376,7 @@ impl Ctx {
     fn reset_room_controls(self) {
         self.cancel_task_drag();
         self.board_ui.reset_view();
+        self.timeline_ui.reset();
         self.view_override.set(None);
         self.status_menu.close(false);
         self.multi.update(todo_client::selection::Selection::clear);
@@ -447,6 +455,9 @@ impl Ctx {
         let board_slot = untrack(|| self.on_board())
             .then(|| board::slot(self, id))
             .flatten();
+        let timeline_slot = untrack(|| self.on_timeline())
+            .then(|| timeline::slot(self, id))
+            .flatten();
         if !self.submit_undoable(cmd, format!("Completed “{}”", row.title), Some(id)) {
             return;
         }
@@ -482,7 +493,13 @@ impl Ctx {
                 });
                 set_timeout(
                     move || {
+                        let timeline_focused = timeline_slot.is_some()
+                            && untrack(|| self.on_timeline())
+                            && pickers::focused().is_some_and(|el| el.id() == format!("row-{id}"));
                         self.lingering.update(|l| l.retain(|x| x.token != token));
+                        if timeline_focused && let Some(slot) = timeline_slot {
+                            timeline::after_completion(self, id, slot);
+                        }
                         if board_slot.is_some()
                             && pickers::focused().is_some_and(|el| {
                                 el.closest("[data-board-card]")
@@ -606,6 +623,19 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             .then(|| view_room.with(|r| state.with(|s| board::projection(s, r, now.get()))))
             .flatten()
     });
+    let timeline = Memo::new(move |_| {
+        (room_view.get() == ListView::Timeline)
+            .then(|| {
+                room.with(|r| {
+                    state.with(|s| {
+                        filter_text.with(|text| {
+                            holding.with(|held| model::timeline_room(s, r, now.get(), text, held))
+                        })
+                    })
+                })
+            })
+            .flatten()
+    });
     let shown = Memo::new(move |_| {
         view_room.with(|r| lingering.with(|l| rows_with_exits(r, RowSection::Open, l)))
     });
@@ -695,6 +725,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         task_drag: RwSignal::new(None),
         board_ui: board::Ui::new(),
         board,
+        timeline_ui: timeline::Ui::new(now.get_untracked().today()),
+        timeline,
         status_menu: workflow::StatusMenu::new(),
         room_features,
         room_view,
@@ -779,6 +811,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
     let _drag_blur = window_event_listener(leptos::ev::blur, move |_| {
         c.cancel_task_drag();
+        c.timeline_ui.cancel();
     });
     let _folds = window_event_listener(leptos::ev::storage, move |ev| {
         if platform::is_fold_key(ev.key().as_deref())
@@ -946,10 +979,11 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
-    if untrack(|| c.drag_active() || c.board_ui.dragging()) {
+    if untrack(|| c.drag_active() || c.board_ui.dragging() || c.timeline_ui.dragging()) {
         if key == "escape" {
             c.cancel_task_drag();
             c.board_ui.cancel();
+            c.timeline_ui.cancel();
             ev.prevent_default();
         }
         return;
@@ -961,7 +995,13 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let typing = typing(ev);
-    if !typing && !drawer && !c.room.with_untracked(RoomId::is_history) && bulk::key(c, ev, &key) {
+    let timeline = untrack(|| c.on_timeline());
+    if !typing
+        && !drawer
+        && !timeline
+        && !c.room.with_untracked(RoomId::is_history)
+        && bulk::key(c, ev, &key)
+    {
         return;
     }
     if ev.repeat()
@@ -972,11 +1012,18 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             && !ev.ctrl_key()
             && !ev.meta_key()
             && !ev.shift_key()
-            && untrack(|| c.on_board())
-            && matches!(
-                key.as_str(),
-                "h" | "l" | "j" | "k" | "arrowleft" | "arrowright" | "arrowup" | "arrowdown"
-            ))
+            && ((timeline && matches!(key.as_str(), "j" | "k" | "arrowup" | "arrowdown"))
+                || (untrack(|| c.on_board())
+                    && matches!(
+                        key.as_str(),
+                        "h" | "l"
+                            | "j"
+                            | "k"
+                            | "arrowleft"
+                            | "arrowright"
+                            | "arrowup"
+                            | "arrowdown"
+                    ))))
     {
         // Leave typing alone, but prevent a held Enter from activating a button or submitting a form.
         let single_line = ev
@@ -1003,8 +1050,13 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             c.drawer.set(false);
         } else if c.selected.get_untracked().is_some() {
             c.select(None);
+            if timeline && !modal {
+                timeline::clear_cursor(c);
+            }
         } else if c.filter_open.get_untracked() {
             c.close_filter();
+        } else if timeline && !typing {
+            timeline::clear_cursor(c);
         }
         return;
     }
@@ -1040,7 +1092,8 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         // The history has no task selection or composer. Keep native scrolling and button keys.
         return;
     }
-    if workflow::key(c, ev, &key, modal)
+    if (!modal && timeline && timeline::key(c, ev, &key))
+        || workflow::key(c, ev, &key, modal)
         || (!modal && untrack(|| c.on_board()) && board::key(c, ev, &key))
     {
         ev.prevent_default();
@@ -1048,6 +1101,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     }
     if ev.alt_key() {
         if !ev.shift_key()
+            && !timeline
             && !untrack(|| c.on_board())
             && !c.read_only()
             && matches!(key.as_str(), "arrowup" | "arrowdown")
@@ -1062,7 +1116,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     match key.as_str() {
-        "j" | "k" | "arrowup" | "arrowdown" if untrack(|| c.on_board()) => {}
+        "j" | "k" | "arrowup" | "arrowdown" if timeline || untrack(|| c.on_board()) => {}
         "j" | "arrowdown" => {
             ev.prevent_default();
             c.step_selection(1);
@@ -1071,7 +1125,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
             ev.prevent_default();
             c.step_selection(-1);
         }
-        " " if !c.read_only() => {
+        " " if !timeline && !c.read_only() => {
             let selected = c.selected.get_untracked();
             // Space may complete from the selected row, but not from other focused controls.
             if ev
@@ -1877,8 +1931,10 @@ fn RoomPane() -> impl IntoView {
                 <Show when=move || !c.room.with(RoomId::is_history)>
                     <RoomPills/>
                     <div id="room-view-panel" class="room-view-body" class:board-active=move || c.on_board()
+                        class:timeline-active=move || c.on_timeline()
                         role=move || (c.room_features.with(|f| f.workflow || f.timeline)).then_some("tabpanel")
-                        aria-labelledby=move || c.room_features.with(|f| (f.workflow || f.timeline).then(|| if c.on_board() { "view-board" } else { "view-list" }))>
+                        aria-labelledby=move || c.room_features.with(|f| (f.workflow || f.timeline).then(|| workflow::view_id(c.room_view.get())))>
+                        <Show when=move || c.on_timeline() fallback=move || view! {
                         <Show when=move || c.on_board() fallback=move || view! {
                             <QuickAdd/>
                             <div class="task-list-area" node_ref=drop.list
@@ -1894,6 +1950,9 @@ fn RoomPane() -> impl IntoView {
                             </div>
                         }>
                             <board::Pane/>
+                        </Show>
+                        }>
+                            <timeline::Pane/>
                         </Show>
                     </div>
                 </Show>
@@ -1969,7 +2028,10 @@ fn EyebrowLine() -> impl IntoView {
     move || {
         let e = c.view_room.with(|r| r.header.eyebrow.clone());
         let lead = e.lead().to_owned();
-        let details: Vec<String> = e.details().into_iter().map(str::to_owned).collect();
+        let mut details: Vec<String> = e.details().into_iter().map(str::to_owned).collect();
+        if c.on_timeline() && c.room.with(|r| matches!(r, RoomId::List(_))) {
+            details.push(format!("{} scheduled", timeline::counts(c).0));
+        }
         view! {
             <span class="eyebrow-lead">{lead}</span>
             {details.into_iter().map(|m| view! { <span class="eyebrow-meta">{m}</span> }).collect_view()}
@@ -2125,7 +2187,13 @@ fn CompletedRows() -> impl IntoView {
 #[component]
 fn ListFoot() -> impl IntoView {
     let c = ctx();
-    let count = Memo::new(move |_| c.view_room.with(|r| r.completed.len()));
+    let count = Memo::new(move |_| {
+        if c.on_timeline() {
+            timeline::counts(c).2
+        } else {
+            c.view_room.with(|r| r.completed.len())
+        }
+    });
     let has_completed = move || !c.on_board() && count.get() > 0;
     view! {
         <div class="list-foot">
@@ -2136,11 +2204,11 @@ fn ListFoot() -> impl IntoView {
                 <button type="button" class="completed-toggle"
                     class:open=move || c.completed_open.get()
                     aria-expanded=move || c.completed_open.get().to_string()
-                    aria-controls="completed-rows"
+                    aria-controls=move || if c.on_timeline() { "timeline-lanes" } else { "completed-rows" }
                     on:click=move |_| {
                         let open = !c.completed_open.get_untracked();
                         c.completed_open.set(open);
-                        if open {
+                        if open && !untrack(|| c.on_timeline()) {
                             request_animation_frame(|| {
                                 if let Some(rows) = document().get_element_by_id("completed-rows") {
                                     rows.scroll_into_view();
@@ -2150,9 +2218,15 @@ fn ListFoot() -> impl IntoView {
                     }
                 >
                     {icon(Icon::ChevronRight)}
-                    <span class="caps">"Completed"</span>
-                    <span class="count">{move || count.get()}</span>
+                    <Show when=move || c.on_timeline() fallback=move || view! {
+                        <span class="caps">"Completed"</span><span class="count">{move || count.get()}</span>
+                    }>
+                        <span class="caps">{move || format!("{} completed on Timeline ({})", if c.completed_open.get() { "Hide" } else { "Show" }, count.get())}</span>
+                    </Show>
                 </button>
+            </Show>
+            <Show when=move || c.on_timeline() && !c.read_only() && c.toast.with(Option::is_none)>
+                <span class="timeline-foot-note">"Drag a bar edge to set Start or Due date"</span>
             </Show>
             <Show when=move || !c.detail_modal.get()>
                 <ToastView/>
@@ -3198,6 +3272,10 @@ fn StatusBar() -> impl IntoView {
                         f.counts(agent.as_ref(), &c.now.with(Now::local_time)).text()
                     })),
                     RoomId::Trash => Some(c.trash.with(|rows| todo_client::trash::status(rows, &c.now.with(Now::local_time)).text())),
+                    _ if c.on_timeline() => {
+                        let (scheduled, unscheduled, _) = timeline::counts(c);
+                        Some(format!("{} open · {scheduled} scheduled · {unscheduled} unscheduled", scheduled + unscheduled))
+                    }
                     _ => c.view_room.with(|r| r.header.status.map(|s| s.text())),
                 })}
             </span>
@@ -3210,10 +3288,18 @@ fn StatusBar() -> impl IntoView {
                         <span><kbd class="keycap">"S"</kbd>" status"</span>
                     </Show>
                 </Show>
-                <Show when=move || c.room_features.get().workflow>
+                <Show when=move || c.on_timeline()>
+                    <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" lanes"</span>
+                    <span><kbd class="keycap">"0"</kbd>" today"</span>
+                    <Show when=move || !c.read_only()>
+                        <span><kbd class="keycap">"Alt ←/→"</kbd>" move dates"</span>
+                        <span><kbd class="keycap">"[ / ]"</kbd>" duration"</span>
+                    </Show>
+                </Show>
+                <Show when=move || c.room_features.with(|f| f.workflow || f.timeline)>
                     <span><kbd class="keycap">"V"</kbd>" view"</span>
                 </Show>
-                <Show when=move || !c.on_board() && (!c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done))))>
+                <Show when=move || !c.on_board() && !c.on_timeline() && (!c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done))))>
                     <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" move"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.selected.with(|id| id.is_some_and(|id|
@@ -3225,7 +3311,7 @@ fn StatusBar() -> impl IntoView {
                 <Show when=move || !c.read_only() && c.detail.with(Option::is_some)>
                     <span><kbd class="keycap">"E"</kbd>" edit title"</span>
                 </Show>
-                <Show when=move || !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add_placeholder.is_some())>
+                <Show when=move || !c.on_timeline() && !c.detail_modal.get() && !c.read_only() && c.view_room.with(|r| r.add_placeholder.is_some())>
                     <span><kbd class="keycap">"N"</kbd>" add task"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.undo.with(Option::is_some)>

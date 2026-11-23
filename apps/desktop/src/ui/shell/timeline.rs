@@ -16,7 +16,7 @@ use todo_core::{
     ids::TaskId,
     model::ListView,
     query::QueryStatus,
-    time::{Date, Weekday, add_days, days_between},
+    time::{Date, Weekday, days_between},
 };
 use todo_design::{layout::timeline as geometry, motion};
 
@@ -1896,23 +1896,14 @@ fn today_x(axis: Axis, date: Date) -> f32 {
 
 fn columns(axis: Axis) -> Vec<(Date, f32, f32)> {
     let (first, last) = axis.range();
-    let stride = axis.zoom.column_days();
-    let mut day = axis.zoom.column_start(first);
-    let mut dates = Vec::new();
-    while day <= last {
-        dates.push((day, axis.x(day), axis.day_width() * stride as f32));
-        let Some(next) = add_days(day, stride) else {
-            break;
-        };
-        day = next;
-    }
-    dates
+    axis.columns(first, last).collect()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::{fixtures, store::Store, theme::Theme};
+    use todo_core::time::add_days;
 
     fn fixture<'a>(
         name: &str,

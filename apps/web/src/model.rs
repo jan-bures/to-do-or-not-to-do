@@ -535,6 +535,11 @@ pub fn core_weekday(w: todo_core::time::Weekday) -> &'static str {
     }
 }
 
+#[cfg(target_arch = "wasm32")]
+pub fn month_day(d: Date) -> String {
+    format!("{} {}", d.day(), month(d))
+}
+
 fn month(d: Date) -> &'static str {
     MONTHS[usize::try_from(d.month() - 1).unwrap_or(0).min(11)]
 }
@@ -888,18 +893,41 @@ fn filter_room(
     if text.is_empty() || room.id.is_history() {
         return room.clone();
     }
+    with_task_filter(state, now.eval(), text, Some(updates), |matches| {
+        let matches = |row: &&Row| state.tasks.get(&row.id).is_some_and(matches);
+        Room {
+            id: room.id.clone(),
+            title: room.title.clone(),
+            hue: room.hue,
+            header: room.header.clone(),
+            rows: room.rows.iter().filter(matches).cloned().collect(),
+            completed: room.completed.iter().filter(matches).cloned().collect(),
+            add_placeholder: room.add_placeholder.clone(),
+            filtered: true,
+        }
+    })
+}
+
+fn with_task_filter<R>(
+    state: &State,
+    ctx: EvalContext,
+    text: &str,
+    updates: Option<&BTreeMap<TaskId, Stamp>>,
+    run: impl FnOnce(&dyn Fn(&Task) -> bool) -> R,
+) -> R {
     let query = Query::parse(text);
-    let ctx = now.eval();
     let matcher = query.as_ref().ok().map(|q| q.matcher(state, &ctx));
     // Like Desktop, keep free-text search useful while entering an incomplete query.
     let folded = matcher.is_none().then(|| fold(text));
-    let matches = |row: &&Row| {
+    run(&|task| {
         if let Some(matcher) = &matcher {
-            state.tasks.get(&row.id).is_some_and(|task| {
-                room_header::matches_with_held_update(matcher, task, updates.get(&row.id))
-            })
+            room_header::matches_with_held_update(
+                matcher,
+                task,
+                updates.and_then(|m| m.get(&task.id)),
+            )
         } else {
-            let title = fold(&row.title);
+            let title = fold(&task.title);
             folded
                 .as_deref()
                 .unwrap_or_default()
@@ -907,17 +935,28 @@ fn filter_room(
                 .filter(|s| !s.is_empty())
                 .all(|word| title.contains(word))
         }
-    };
-    Room {
-        id: room.id.clone(),
-        title: room.title.clone(),
-        hue: room.hue,
-        header: room.header.clone(),
-        rows: room.rows.iter().filter(matches).cloned().collect(),
-        completed: room.completed.iter().filter(matches).cloned().collect(),
-        add_placeholder: room.add_placeholder.clone(),
-        filtered: true,
+    })
+}
+
+#[cfg(any(target_arch = "wasm32", test))]
+pub fn timeline_room(
+    state: &State,
+    room: &RoomId,
+    now: Now,
+    text: &str,
+    holding: &BTreeMap<TaskId, Stamp>,
+) -> Option<todo_client::timeline::Timeline> {
+    let held = holding.keys().copied().collect();
+    let ctx = now.eval();
+    let mut timeline = todo_client::timeline::room_with_held(state, shared_key(room), &ctx, &held)?;
+    timeline.unscheduled.retain(|id| !state.tasks[id].is_done());
+    if !text.trim().is_empty() {
+        with_task_filter(state, ctx, text.trim(), Some(holding), |matches| {
+            timeline.lanes.retain(|l| matches(&state.tasks[&l.task]));
+            timeline.unscheduled.retain(|id| matches(&state.tasks[id]));
+        });
     }
+    Some(timeline)
 }
 
 // ---- tomorrow (the finished day) ---------------------------------------------------------------------------

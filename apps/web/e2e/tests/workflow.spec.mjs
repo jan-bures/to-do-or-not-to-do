@@ -45,8 +45,10 @@ test("list settings are reachable from both menus; default applies on next visit
   const w = watch(page);
   await open(page, ROOM);
   await expect(tab(page, "Board")).toHaveAttribute("aria-selected", "true");
-  await expect(tab(page, "Timeline")).toBeDisabled();
+  await expect(tab(page, "Timeline")).toBeEnabled();
   await page.locator("#room-title").focus();
+  await page.keyboard.press("V");
+  await expect(tab(page, "Timeline")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("V");
   await expect(tab(page, "List")).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("2");
@@ -84,7 +86,7 @@ test("list settings are reachable from both menus; default applies on next visit
   await dialog.getByRole("switch", { name: "Workflow & Board" }).click();
   await expect(tab(page, "List")).toHaveAttribute("aria-selected", "true");
   await expect(tab(page, "Board")).toBeHidden();
-  await expect(tab(page, "Timeline")).toBeDisabled();
+  await expect(tab(page, "Timeline")).toBeEnabled();
   await w.check();
 });
 

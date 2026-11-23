@@ -417,8 +417,8 @@ node docs/mockups/status-board-timeline/render.mjs
   - [x] Render non-pill status marks in List rows, Quick-Add status picker/chip, and `Status` (`S`) + `Starts` (`⇧D`) rows in Detail.
   - [x] Build Board view (4 columns, collapsible `Done` rail beside Detail, inline column quick-add, pointer drag + `H`/`L`/`Alt+←/→` keyboard).
   - [x] Build Timeline view (toolbar, 4 zooms, sticky rail, Today hairline, bar drag/resize + tooltips, Unscheduled bottom tray).
-- [ ] **Phase 4 — Web client (`apps/web`):**
-  - [ ] Mirror List settings, eyebrow view switcher, List/Detail/Quick-Add status & start date, Board view (Pointer Events drag + keyboard), and Timeline view with responsive narrow-viewport layout and Playwright e2e tests.
+- [x] **Phase 4 — Web client (`apps/web`):**
+  - [x] Mirror List settings, eyebrow view switcher, List/Detail/Quick-Add status & start date, Board view (Pointer Events drag + keyboard), and Timeline view with responsive narrow-viewport layout and Playwright e2e tests.
 - [ ] **Phase 5 — Android client (`apps/android`):**
   - [x] Add `List settings` sub-sheet inside Room Actions Bottom Sheet and thumb-zone `[View]` switcher in Lower Dock (Cover) / Left-Thumb segment (Inner). Timeline is disabled on Android until its view lands.
   - [x] Render status marks in rows, Status & Starts rows + `StartDateSheet` in Detail, and Status button in Quick-Add (workflow lists only).

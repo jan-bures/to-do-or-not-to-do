@@ -191,6 +191,41 @@ fn timeline_shapes_clip_inclusively_and_planned_includes_start_only_tasks() {
 }
 
 #[test]
+fn timeline_keeps_the_open_slot_of_a_held_completion_in_list_and_planned() {
+    let mut w = World::new();
+    w.enable();
+    let first = w.task(WorkflowStatus::InProgress, Some(date(5)), None);
+    let second = w.task(WorkflowStatus::Todo, None, Some(date(9)));
+    w.run(Command::CompleteTask { id: first });
+    let ctx = EvalContext::utc(w.now);
+    let held = [first].into_iter().collect();
+    let list = RoomKey::List(w.list);
+    let planned = RoomKey::Smart(SmartList::Planned);
+    for room in [list, planned] {
+        let timeline = timeline::room_with_held(&w.state, room, &ctx, &held).unwrap();
+        assert_eq!(
+            timeline
+                .lanes
+                .iter()
+                .map(|lane| (lane.task, lane.stage))
+                .collect::<Vec<_>>(),
+            [
+                (first, QueryStatus::InProgress),
+                (second, QueryStatus::Todo)
+            ]
+        );
+    }
+    assert_eq!(
+        timeline::room(&w.state, list, &ctx).unwrap().lanes[1].stage,
+        QueryStatus::Done
+    );
+    assert_eq!(
+        timeline::room(&w.state, planned, &ctx).unwrap().lanes.len(),
+        1
+    );
+}
+
+#[test]
 fn timeline_moves_both_dates_in_one_undo_and_refuses_a_stale_gesture() {
     use workflow::{Dates, Schedule, schedule};
     let mut w = World::new();

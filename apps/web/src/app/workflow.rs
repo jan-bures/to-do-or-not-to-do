@@ -55,15 +55,28 @@ fn view_info(view: ListView) -> (&'static str, super::Icon) {
     }
 }
 
-fn available(features: ListFeatures, view: ListView) -> bool {
-    features.allows(view) && view != ListView::Timeline
+pub(super) fn view_id(view: ListView) -> &'static str {
+    match view {
+        ListView::List => "view-list",
+        ListView::Board => "view-board",
+        ListView::Timeline => "view-timeline",
+    }
+}
+
+fn adjacent(features: ListFeatures, current: ListView, forward: bool) -> ListView {
+    let at = VIEWS.iter().position(|&v| v == current).unwrap_or(0);
+    let n = VIEWS.len();
+    (1..=n)
+        .map(|by| VIEWS[(at + if forward { by } else { n - by }) % n])
+        .find(|&v| features.allows(v))
+        .unwrap_or(ListView::List)
 }
 
 pub(super) fn effective(features: ListFeatures, override_view: Option<ListView>) -> ListView {
     override_view
-        .filter(|&v| available(features, v))
+        .filter(|&v| features.allows(v))
         .unwrap_or_else(|| {
-            if available(features, features.default_view) {
+            if features.allows(features.default_view) {
                 features.default_view
             } else {
                 ListView::List
@@ -74,7 +87,10 @@ pub(super) fn effective(features: ListFeatures, override_view: Option<ListView>)
 pub(super) fn features(state: &todo_core::State, room: &RoomId) -> ListFeatures {
     match room {
         RoomId::List(id) if state.is_live((*id).into()) => state.lists[id].features,
-        _ => ListFeatures::default(),
+        _ => ListFeatures {
+            timeline: todo_client::timeline::available(state, model::shared_key(room)),
+            ..ListFeatures::default()
+        },
     }
 }
 
@@ -83,14 +99,19 @@ impl Ctx {
         self.room_view.get() == ListView::Board
     }
 
+    pub(super) fn on_timeline(self) -> bool {
+        self.room_view.get() == ListView::Timeline
+    }
+
     pub(super) fn switch_view(self, view: ListView) {
         if self.room_view.get_untracked() == view
-            || !available(self.room_features.get_untracked(), view)
+            || !self.room_features.get_untracked().allows(view)
         {
             return;
         }
         self.cancel_task_drag();
         self.board_ui.reset_view();
+        self.timeline_ui.reset();
         self.status_menu.close(false);
         self.room_actions.close_menu(false);
         self.multi.update(todo_client::selection::Selection::clear);
@@ -119,7 +140,7 @@ impl Ctx {
         } else if self
             .view_override
             .get_untracked()
-            .is_some_and(|v| !available(self.room_features.get_untracked(), v))
+            .is_some_and(|v| !self.room_features.get_untracked().allows(v))
         {
             self.view_override.set(None);
         }
@@ -177,29 +198,26 @@ pub(super) fn Switcher() -> impl IntoView {
             on:keydown=move |ev| {
                 if matches!(ev.key().as_str(), "ArrowRight" | "ArrowLeft" | "Home" | "End") {
                     ev.prevent_default();
+                    let f = c.room_features.get_untracked();
                     let view = match ev.key().as_str() {
                         "Home" => ListView::List,
-                        "End" => ListView::Board,
-                        _ if c.on_board() => ListView::List,
-                        _ => ListView::Board,
+                        "End" => VIEWS.into_iter().rev().find(|&v| f.allows(v)).unwrap_or(ListView::List),
+                        key => adjacent(f, c.room_view.get_untracked(), key == "ArrowRight"),
                     };
-                    if available(c.room_features.get_untracked(), view) {
-                        c.switch_view(view);
-                        request_animation_frame(move || { platform::focus(if view == ListView::Board { "view-board" } else { "view-list" }); });
-                    }
+                    c.switch_view(view);
+                    request_animation_frame(move || { platform::focus(view_id(view)); });
                 }
             }>
             {VIEWS.into_iter().map(|v| {
                 let (label, glyph) = view_info(v);
-                let id = match v { ListView::List => "view-list", ListView::Board => "view-board", ListView::Timeline => "view-timeline" };
+                let id = view_id(v);
                 view! {
                     <button type="button" role="tab" id=id aria-label=label
                         aria-controls="room-view-panel"
                         hidden=move || !c.room_features.get().allows(v)
                         tabindex=move || if c.room_view.get() == v { "0" } else { "-1" }
                         aria-selected=move || (c.room_view.get() == v).to_string()
-                        title=if v == ListView::Timeline { "Timeline view isn’t available on web yet" } else { label }
-                        disabled=v == ListView::Timeline on:click=move |_| c.switch_view(v)>
+                        title=label on:click=move |_| c.switch_view(v)>
                         {icon(glyph)}<span>{label}</span>
                     </button>
                 }
@@ -241,9 +259,8 @@ pub(super) fn Settings(id: ListId) -> impl IntoView {
                         {VIEWS.into_iter().map(|v| {
                             let (label, glyph) = view_info(v);
                             view! { <button type="button" hidden=move || !settings.get().allows(v)
-                                title=if v == ListView::Timeline { "Timeline view isn’t available on web yet" } else { label }
-                                aria-pressed=move || (settings.get().default_view == v).to_string()
-                                disabled=move || v == ListView::Timeline || c.read_only()
+                                title=label aria-pressed=move || (settings.get().default_view == v).to_string()
+                                disabled=move || c.read_only()
                                 on:click=move |_| c.list_setting(id, ListFeaturesPatch { default_view: Some(v), ..Default::default() })>
                                 {icon(glyph)}<span>{label}</span>
                             </button> }
@@ -535,8 +552,7 @@ pub(super) fn key(c: Ctx, ev: &leptos::ev::KeyboardEvent, key: &str, modal: bool
             "1" => ListView::List,
             "2" => ListView::Board,
             "3" => ListView::Timeline,
-            _ if untrack(|| c.on_board()) => ListView::List,
-            _ => ListView::Board,
+            _ => adjacent(features, c.room_view.get_untracked(), true),
         };
         c.switch_view(view);
         return true;

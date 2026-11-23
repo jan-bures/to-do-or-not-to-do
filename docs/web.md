@@ -10,7 +10,7 @@ The web app covers sign-in, smart lists, collections, lists, task detail, adding
 check animation), deleting, moving and merging tasks, and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
 reminders, tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
 and delete lists and collections, and move lists between collections. Workflow lists also support task status,
-a four-column Board, and start dates. Activity shows confirmed changes
+a four-column Board, start dates, and a Timeline that can also show Planned and eligible collections. Activity shows confirmed changes
 and lets you undo past events.
 Undo compensates the exact change. It has the desktop layout on wide
 windows and the phone layout on narrow ones, in both themes.
@@ -72,7 +72,7 @@ browsers that accept gzip.
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
 | `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
-| `src/app/workflow.rs`, `board.rs` | List settings, view selection, status and start-date controls, and the shared Board projection with pointer and keyboard input. |
+| `src/app/workflow.rs`, `board.rs`, `timeline.rs` | List settings, view selection, status and start-date controls, and the shared Board and Timeline projections with pointer and keyboard input. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/reminder_alerts.rs`, `static/reminder-browser.js` | Reminder scheduling, permission settings, native and in-app delivery, and cross-tab claims. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
@@ -339,9 +339,8 @@ separate pickers: use the arrows to browse, Enter or Space to choose, or Back to
 Board; **Timeline & Start dates** enables start dates and date spans. Both are off on a new list, and
 turning either off keeps the underlying task data. The switches and **Default view** sync. Saving a
 new default changes the next visit, not the view behind the menu. Use **Esc** or the back button to return
-to the menu. List and Board sit in the room eyebrow; press **V** to switch or **1** / **2** to jump to one.
-Below 556 px of room width the tabs keep only their icons and accessible labels. The Timeline segment is
-visible but disabled when enabled for the list, and a synced Timeline default falls back to List on web.
+to the menu. Enabled views sit in the room eyebrow; press **V** to cycle or **1** / **2** / **3** to jump to
+List, Board or Timeline. Below 556 px of room width the tabs keep only their icons and accessible labels.
 
 **Board** groups Backlog, To do, In progress and Done using `todo_client::board`. Done shows at most 20
 completions from the last seven local days; **View all … in Completed** opens the same list's full
@@ -357,6 +356,22 @@ stages and **Alt+Up/Down** to reorder. **Enter** opens detail, **E** edits its t
 reopens, and **N** opens the active column's composer. Modified clicks use the same selection as List;
 **Status** in the bulk strip changes the selected cards together. Board moves and status edits offer tracked
 Undo, and completing a card uses the same check, hold, collapse and sun timing as List.
+
+**Timeline** is available in lists that opt in, collections with an opted-in list, and Planned. Planned
+shows every dated open task, including start-only tasks; cross-list bars use each task's list colour.
+The sticky date ruler and collapsible task rail frame a scrollable grid. Today marks the current local
+calendar day. **Week**, **2W** (default), **Month** and **Quarter** keep the centre date when changing
+scale. Even in Quarter, edits snap to days, not weeks. Zoom and the rail and tray disclosures are local
+browser preferences. Narrow rooms use compact controls; on phones the toolbar wraps, the rail narrows,
+and the date grid scrolls without moving the page. Task detail uses the usual modal layout.
+
+Drag a bar to move its dates or an edge to resize; a due-only milestone can grow a start and a
+start-only bar can grow a due date. The live readout previews the new dates. Drag an **Unscheduled**
+card onto a date, or choose **Schedule** to open the calendar without dragging. Escape or dropping
+outside the calendar cancels. A change saves one tracked edit with **Undo**. Use **J/K** or **Up/Down**
+to focus a lane, **Alt+Left/Right** to shift by a day (add **Shift** for a week), **[** / **]** to change
+its duration, **D** / **Shift+D** for the due/start calendar, and **0** for Today. **Enter** opens detail;
+**Space** toggles completion. **Show completed on Timeline** reveals dated completed tasks.
 
 When the sidebar's sync line says **n not synced**, open it to see the refused changes and plain-language
 reasons. **Dismiss** clears one; **Dismiss all** clears only the entries shown during this opening. A refusal
