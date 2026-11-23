@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Exercise the desktop scan with installer-shaped and nested package fixtures."""
 
+from hashlib import sha256
+import importlib.util
 import io
 import os
 from pathlib import Path
@@ -12,6 +14,9 @@ import zipfile
 
 
 SCANNER = Path(__file__).with_name("scan-release-desktop.py")
+SPEC = importlib.util.spec_from_file_location("scrubber", SCANNER.with_name("scrub-velopack-templates.py"))
+SCRUBBER = importlib.util.module_from_spec(SPEC)
+SPEC.loader.exec_module(SCRUBBER)
 PRIVATE = "example-private-build-value"
 
 
@@ -21,6 +26,18 @@ def archive(entries):
         for name, content in entries.items():
             bundle.writestr(name, content)
     return data.getvalue()
+
+
+class TemplateScrubTest(unittest.TestCase):
+    def test_remap_is_fixed_width_idempotent_and_rejects_unrecognized_templates(self):
+        original = b"MZ\0" + SCRUBBER.UPSTREAM + b"\\.cargo\\source.rs\0"
+        expected = sha256(original).hexdigest()
+        clean = SCRUBBER.remap(original, expected)
+        self.assertEqual(len(original), len(clean))
+        self.assertNotIn(SCRUBBER.UPSTREAM, clean)
+        self.assertEqual(SCRUBBER.remap(clean, expected), clean)
+        with self.assertRaisesRegex(ValueError, "Unrecognized Velopack template"):
+            SCRUBBER.remap(clean + b"X", expected)
 
 
 class DesktopScanTest(unittest.TestCase):

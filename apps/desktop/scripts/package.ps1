@@ -3,7 +3,7 @@
 .SYNOPSIS
     Builds and packages the Windows x64 desktop client. Does not install or publish it.
 .DESCRIPTION
-    Requires the pinned Rust toolchain, Windows MSVC x64 build tools and the .NET 8 SDK/runtime.
+    Requires the pinned Rust toolchain, Windows MSVC x64 build tools, .NET SDK/runtime and Python 3.
     The Velopack vpk tool is installed without admin rights in the workspace target directory.
     Keep the previous output in ReleaseDir to build a delta against its latest full package.
 .PARAMETER AllowUnmerged
@@ -117,6 +117,10 @@ try {
         dotnet tool install vpk --tool-path $toolDir --version $vpkVersion
         if ($LASTEXITCODE -ne 0) { throw "Installing vpk failed ($LASTEXITCODE). Install the .NET 8 SDK." }
     }
+
+    $templates = Join-Path $toolDir ".store/vpk/$vpkVersion/vpk/$vpkVersion/vendor"
+    python -B (Join-Path $PSScriptRoot 'scrub-velopack-templates.py') $templates
+    if ($LASTEXITCODE -ne 0) { throw 'Velopack template scrub failed.' }
 
     $staging = Join-Path $app "target/desktop-stage-$([guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $staging | Out-Null

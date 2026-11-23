@@ -78,7 +78,7 @@ if ($null -ne $previous) {
 
 $feedOverride = $env:TODO_DESKTOP_UPDATE_FEED
 try {
-    if ($Publish) { $env:TODO_DESKTOP_UPDATE_FEED = $null } # Public artifacts use the root Cargo.toml URL.
+    if ($Publish) { $env:TODO_DESKTOP_UPDATE_FEED = $repository.Url } # Don't use workstation overrides in public artifacts.
     & (Join-Path $PSScriptRoot 'package.ps1') -ReleaseDir $OutputDir -AllowUnmerged:(-not $Publish)
 } finally {
     $env:TODO_DESKTOP_UPDATE_FEED = $feedOverride

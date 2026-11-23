@@ -39,8 +39,8 @@ The toolchain comes from the root `rust-toolchain.toml` (1.98.1), which is pinne
 
 ### Build an unsigned release
 
-On a Windows x64 build machine, install PowerShell 7, the MSVC x64 build tools, the pinned Rust toolchain
-and the .NET 8 SDK/runtime. From a clean checkout with full history:
+On a Windows x64 build machine, install PowerShell 7, the MSVC x64 build tools, the pinned Rust toolchain,
+Python 3 and a .NET SDK/runtime compatible with the pinned `vpk` tool. From a clean checkout with full history:
 
 ```powershell
 git fetch origin
@@ -91,8 +91,9 @@ immutable releases if the second platform still needs to add its assets.
 
 **These binaries are public.** Never build in a deployment hostname, private identity, credentials or
 local paths. For packaging only, the Rust build remaps the workspace, home, Cargo, Rustup/sysroot, temp
-and known native toolchain paths. Only the executable is staged from Cargo; no PDB is shipped. The release
-scan reads the raw manifest, nupkg and Setup.exe (including its embedded package), decompressed entries
+and known native toolchain paths. Only the executable is staged from Cargo; no PDB is shipped. The
+packager also remaps upstream CI build paths in Velopack's pinned, unsigned x64 templates before vpk builds
+and hashes the packages. The exact template hashes must be reviewed when updating Velopack. The release scan reads the raw manifest, nupkg and Setup.exe (including its embedded package), decompressed entries
 and nested ZIPs. It checks for local build paths, user-directory prefixes, local username, Git identity,
 hostname and extra private values; failures report categories, not values. Set `TODO_DESKTOP_DENYLIST`
 to a private UTF-8 file with additional values to reject, one per line. Blank lines and `#` comments are
@@ -108,7 +109,9 @@ restricted write access on the legacy release directory. Transfer the scanned pa
 Setup.exe to the server over your trusted SSH transport. Use
 [`deploy/linux/publish-desktop-release.py`](../deploy/linux/publish-desktop-release.py) to install them
 into the configured directory; pass `--setup-sha256` with the hash from the trusted build output. Preserve
-any previous packages still referenced by the legacy manifest. Do not cache `/releases/*` on a proxy or CDN.
+any previous packages still referenced by the legacy manifest. If the transition manifest references an older
+GitHub package not already on the server, include that exact package in the transfer. Do not cache `/releases/*`
+on a proxy or CDN.
 Once all clients have migrated, the server feed and configuration can be removed in a later release.
 
 ### First install and day-to-day updates

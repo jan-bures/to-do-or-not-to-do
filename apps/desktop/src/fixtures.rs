@@ -156,6 +156,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "device-settings"
         | "device-invite"
         | "device-approve"
+        | "updates-disabled"
         | "updates-up-to-date"
         | "updates-checking"
         | "updates-downloading"

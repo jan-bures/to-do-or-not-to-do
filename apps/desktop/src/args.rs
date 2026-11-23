@@ -20,7 +20,7 @@ Options:
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, list-status, list-settings, board, board-detail,
                     timeline, timeline-month, timeline-tray, timeline-planned, room-menu, account-menu, device-settings,
-                    device-invite, device-approve, updates-up-to-date, updates-checking, updates-downloading,
+                    device-invite, device-approve, updates-disabled, updates-up-to-date, updates-checking, updates-downloading,
                     updates-ready, updates-indicator, updates-failed, priority-menu,
                     reminder-menu, reminder-custom, reminder-focus, reminder-none,
                     repeat-menu, repeat-custom, repeat-focus, repeat-none, repeat-weekly, repeat-monthly, delete-tag-confirm,
@@ -77,6 +77,7 @@ pub const FIXTURES: &[&str] = &[
     "device-settings",
     "device-invite",
     "device-approve",
+    "updates-disabled",
     "updates-up-to-date",
     "updates-checking",
     "updates-downloading",
