@@ -54,6 +54,7 @@ pub mod protocol;
 pub mod replica;
 pub mod revocation;
 pub mod room_header;
+pub mod selection;
 pub mod session;
 pub mod sse;
 pub mod storage;

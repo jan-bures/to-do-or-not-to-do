@@ -6,7 +6,7 @@ mod common;
 use common::World;
 use proptest::prelude::*;
 use todo_core::access::AccessLevel;
-use todo_core::command::{Command, NewTask, Placement, TaskPatch};
+use todo_core::command::{BulkTaskAction, Command, NewTask, Placement, TaskPatch};
 use todo_core::error::{ApplyError, DomainError, UndoError};
 use todo_core::event::{Event, EventPayload, FieldChange, FieldKey};
 use todo_core::ids::{EntityId, EventId, TaskId};
@@ -487,6 +487,53 @@ proptest! {
         let mut replay = State::new();
         for e in &w.log { apply(&mut replay, e).unwrap(); }
         prop_assert_eq!(w.state, replay);
+    }
+
+    #[test]
+    fn bulk_actions_replay_and_undo_as_one_group(
+        mix in prop::collection::vec((any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()), 2..20),
+        choice in 0u8..10,
+    ) {
+        let mut w = World::new();
+        let first = w.list(None, "First");
+        let second = w.list(None, "Second");
+        let today: Date = "2026-11-21".parse().unwrap();
+        let tasks: Vec<_> = mix.into_iter().enumerate().map(|(i, (done, repeat, important, in_day))| {
+            let id = w.ids.task();
+            let mut task = NewTask::new(id, if i % 2 == 0 { first } else { second }, format!("Task {i}"));
+            task.my_day = in_day.then_some(today);
+            if repeat {
+                task.due = Some(today);
+                task.recurrence = Some(Recurrence { rule: Rule::Daily { interval: 1 }, until: None });
+            }
+            if important { task.priority = Priority::High; }
+            w.run(Command::CreateTask(Box::new(task)));
+            if done { w.run(Command::CompleteTask { id }); }
+            id
+        }).collect();
+        let before = w.state.clone();
+        let action = match choice {
+            0 | 1 => BulkTaskAction::Completion { done: choice == 0 },
+            2 | 3 => BulkTaskAction::Important { on: choice == 2 },
+            4 | 5 => BulkTaskAction::MyDay { day: today, on: choice == 4 },
+            6 => BulkTaskAction::Move { list: second },
+            7 => BulkTaskAction::Due { date: Some(today) },
+            8 => BulkTaskAction::Due { date: None },
+            _ => BulkTaskAction::Delete,
+        };
+        let events = w.run(Command::BulkTasks { tasks: tasks.clone(), action });
+        if let Some(first) = events.first() {
+            prop_assert!(events.iter().all(|event| event.group == first.id));
+            if choice == 6 {
+                let moved: Vec<_> = tasks.iter().copied().filter(|id| before.tasks[id].list != second).collect();
+                prop_assert!(moved.windows(2).all(|p| w.state.tasks[&p[0]].position < w.state.tasks[&p[1]].position));
+            }
+            let mut replay = before.clone();
+            for e in &events { apply(&mut replay, e).unwrap(); }
+            prop_assert_eq!(&replay, &w.state);
+            w.undo_group(&events).unwrap();
+            prop_assert!(before.data_eq(&w.state));
+        }
     }
 
     /// (a) Replaying the log (also after a JSON round trip) on a fresh state gives an identical state.

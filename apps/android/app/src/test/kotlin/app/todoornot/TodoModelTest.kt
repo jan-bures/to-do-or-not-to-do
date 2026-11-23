@@ -1857,6 +1857,45 @@ class TodoModelTest {
     }
 
     @Test
+    fun bulk_tasks_respect_room_generation_and_share_one_undo() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val room = m.ui.value.room.key
+        val ids = m.ui.value.room.tasks.take(2).map { it.id }
+        assertEquals(2, ids.size)
+        val original = ids.map { m.engine.task(it, FIXTURE_NOW) }
+        val oldGeneration = m.ui.value.generation
+        m.open(room)
+        s.drain()
+        m.toggleBulk(ids[0], oldGeneration)
+        assertTrue(m.ui.value.bulkIds.isEmpty())
+        val generation = m.ui.value.generation
+        m.toggleBulk(ids[1], generation)
+        assertEquals("1 task selected", m.ui.value.bulk?.label)
+        assertTrue(requireNotNull(m.ui.value.bulk).tools.isEmpty())
+        m.toggleBulk(ids[0], generation)
+        assertEquals(ids, m.ui.value.bulkIds)
+        val pending = m.ui.value.status.pending
+        val tool = requireNotNull(m.ui.value.bulk).tools.first()
+        assertEquals("Complete", tool.label)
+        m.editBulk((tool.control as app.todoornot.core.BulkControl.Apply).edit)
+        s.drain()
+        assertTrue(m.ui.value.bulkIds.isEmpty())
+        assertEquals(pending + 1u, m.ui.value.status.pending)
+        assertTrue(ids.all { m.engine.task(it, FIXTURE_NOW)?.done == true })
+        val toast = requireNotNull(m.ui.value.toast)
+        assertEquals("Completed 2 tasks", toast.text)
+        m.undo(toast)
+        s.drain()
+        assertEquals(original, ids.map { m.engine.task(it, FIXTURE_NOW) })
+        assertEquals(pending, m.ui.value.status.pending)
+        m.toggleBulk(ids[0], generation)
+        m.setFilter("no matching task exists in this fixture")
+        s.drain()
+        assertTrue(m.ui.value.bulkIds.isEmpty())
+    }
+
+    @Test
     fun merge_filters_tasks_rechecks_the_confirmation_and_undoes_the_whole_change() {
         val s = Stepped(fixtureEngine()) { time }
         val m = s.model

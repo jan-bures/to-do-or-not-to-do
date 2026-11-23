@@ -121,6 +121,8 @@ pub(super) enum MenuKind {
         id: TaskId,
         page: TaskPage,
     },
+    /// The list picker from the multi-selection bar.
+    BulkMove,
     /// The sidebar footer's "N couldn't sync": the refused changes, to see and dismiss.
     SyncFailures,
 }
@@ -128,7 +130,10 @@ pub(super) enum MenuKind {
 impl MenuKind {
     /// Which way the menu opens from its anchor: down (shifting in from above) or up.
     fn opens_up(self) -> bool {
-        matches!(self, Self::New | Self::Account { .. } | Self::SyncFailures)
+        matches!(
+            self,
+            Self::New | Self::Account { .. } | Self::SyncFailures | Self::BulkMove
+        )
     }
 
     /// Whether a button's menu hangs from its left edge rather than its right.
@@ -166,10 +171,11 @@ impl MenuKind {
             Self::Task {
                 page: TaskPage::Move | TaskPage::PickMerge,
                 ..
-            } | Self::Tags {
-                page: TagPage::Pick,
-                ..
-            }
+            } | Self::BulkMove
+                | Self::Tags {
+                    page: TagPage::Pick,
+                    ..
+                }
         )
     }
 
@@ -295,6 +301,14 @@ impl ShellView {
                 id,
                 page: TaskPage::ConfirmMerge(target),
             } => menus::merge_confirmation(&state, id, target),
+            MenuKind::BulkMove => {
+                let filter = self
+                    .menu
+                    .as_ref()
+                    .filter(|m| m.kind == kind)
+                    .map_or("", |m| m.filter.as_str());
+                menus::bulk_move_menu(&state, &self.bulk_ids(), filter)
+            }
             MenuKind::SyncFailures => {
                 let shown = self
                     .menu
@@ -889,6 +903,13 @@ impl ShellView {
                 }
                 self.refresh(cx);
             }
+            MenuAction::BulkMove(list) => {
+                self.apply_bulk(
+                    todo_client::selection::BulkTaskAction::Move { list },
+                    window,
+                    cx,
+                );
+            }
             MenuAction::MoveTask(task, list) => {
                 if let Some(from) = menu.move_from {
                     self.move_task_to(task, from, list, cx);
@@ -1258,6 +1279,7 @@ impl ShellView {
         let live = look.open;
         let kind = menu.kind;
         let footer_menu = match kind {
+            MenuKind::BulkMove => Some("Move selected tasks to…"),
             MenuKind::New => Some("New"),
             MenuKind::Account { confirm: false } => Some("Settings"),
             _ => None,
@@ -1533,6 +1555,11 @@ impl ShellView {
             });
         let popover = match menu.at {
             Some(at) => anchored()
+                .anchor(if kind == MenuKind::BulkMove {
+                    Anchor::BottomLeft
+                } else {
+                    Anchor::TopLeft
+                })
                 .position(at)
                 .snap_to_window_with_margin(px(space::S2))
                 .child(body),

@@ -242,6 +242,7 @@ private fun Screen(
         ) {
             val detail = state.detail
             val feed = state.activity
+            BackHandler(enabled = drawer.isClosed && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
             if (feed != null) {
                 BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
                 ActivityRoom(paneSurface, actions, menu)
@@ -259,7 +260,7 @@ private fun Screen(
                     if (detail != null) {
                         DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
                     } else {
-                        NoDetail(Modifier.weight(1f))
+                        NoDetail(Modifier.weight(1f), selection = state.bulk?.label)
                     }
                 }
             } else {

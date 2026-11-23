@@ -288,6 +288,13 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
         C::MoveTask { id, list, .. } => {
             vec![(Need::Plan, on_task(id)), (Need::Plan, Target::List(*list))]
         }
+        C::BulkTasks { tasks, action } => {
+            let mut needs: Vec<_> = tasks.iter().map(|id| (Need::Plan, on_task(id))).collect();
+            if let crate::command::BulkTaskAction::Move { list } = action {
+                needs.push((Need::Plan, Target::List(*list)));
+            }
+            needs
+        }
         C::MergeTasks { source, target } => {
             vec![(Need::Plan, on_task(source)), (Need::Plan, on_task(target))]
         }

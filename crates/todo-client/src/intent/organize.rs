@@ -160,41 +160,48 @@ pub fn task_move_groups<'a>(
     filter: &str,
 ) -> Option<Vec<TaskMoveGroup<'a>>> {
     let task = actionable_task(state, id)?;
+    Some(task_destination_groups(state, filter, |id| id == task.list))
+}
+
+/// Shared list picker, with a caller-provided predicate marking unavailable (current) lists.
+pub fn task_destination_groups<'a>(
+    state: &'a State,
+    filter: &str,
+    current: impl Fn(ListId) -> bool,
+) -> Vec<TaskMoveGroup<'a>> {
     let groups = super::list_groups(state);
     let has_collections = groups.iter().any(|(collection, _)| collection.is_some());
     let filter = fold(filter);
     let words: Vec<_> = filter.split_whitespace().collect();
-    Some(
-        groups
-            .into_iter()
-            .filter_map(|(collection, ids)| {
-                let collection = collection.and_then(|id| state.collections.get(&id));
-                let collection_name = collection.map_or("", |c| c.name.as_str());
-                let lists: Vec<_> = ids
-                    .into_iter()
-                    .filter_map(|id| state.lists.get(&id))
-                    .filter(|list| {
-                        if words.is_empty() {
-                            return true;
-                        }
-                        let name = fold(&format!("{} {collection_name}", list.name));
-                        words.iter().all(|word| name.contains(word))
-                    })
-                    .map(|list| TaskMoveDestination {
-                        list,
-                        current: list.id == task.list,
-                    })
-                    .collect();
-                (!lists.is_empty()).then(|| TaskMoveGroup {
-                    collection,
-                    heading: collection
-                        .map(|c| confirm::one_line(&c.name))
-                        .or_else(|| has_collections.then(|| "Other lists".into())),
-                    lists,
+    groups
+        .into_iter()
+        .filter_map(|(collection, ids)| {
+            let collection = collection.and_then(|id| state.collections.get(&id));
+            let collection_name = collection.map_or("", |c| c.name.as_str());
+            let lists: Vec<_> = ids
+                .into_iter()
+                .filter_map(|id| state.lists.get(&id))
+                .filter(|list| {
+                    if words.is_empty() {
+                        return true;
+                    }
+                    let name = fold(&format!("{} {collection_name}", list.name));
+                    words.iter().all(|word| name.contains(word))
                 })
+                .map(|list| TaskMoveDestination {
+                    list,
+                    current: current(list.id),
+                })
+                .collect();
+            (!lists.is_empty()).then(|| TaskMoveGroup {
+                collection,
+                heading: collection
+                    .map(|c| confirm::one_line(&c.name))
+                    .or_else(|| has_collections.then(|| "Other lists".into())),
+                lists,
             })
-            .collect(),
-    )
+        })
+        .collect()
 }
 
 /// The swatch with this key (`"lagoon"`), if the design has one.

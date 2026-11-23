@@ -51,6 +51,22 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`task multi-selection (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      const rows = page.locator(".rows:not(.completed-rows) .row-title");
+      await rows.first().click({ modifiers: ["Control"] });
+      await rows.nth(2).click({ modifiers: ["Shift"] });
+      await expect(page.locator(".bulk-count")).toHaveText("3 tasks selected");
+      await page.mouse.move(0, DESKTOP.height - 1);
+      await shot(page, `multi-select-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await expect(page.locator(".bulk-count")).toBeVisible();
+      await shot(page, `multi-select-phone-${scheme}`);
+      await w.check();
+    });
+
     test(`task activity on desktop and phone (${scheme})`, async ({ page }) => {
       const w = watch(page);
       for (const [layout, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {

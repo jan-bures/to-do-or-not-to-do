@@ -7,7 +7,8 @@
 
 use crate::access::authorize;
 use crate::actor::Actor;
-use crate::command::{Command, NewTask, Placement, TaskPatch};
+use crate::apply::apply;
+use crate::command::{BulkTaskAction, Command, NewTask, Placement, TaskPatch};
 use crate::error::DomainError;
 use crate::event::{Change, Event, EventPayload, FieldChange};
 use crate::ids::{EntityId, EventId, ReminderId, StepId, TagId, TaskId};
@@ -30,6 +31,8 @@ pub const MAX_COLOR: usize = 32;
 pub const MAX_URL: usize = 2048;
 /// Most tags a new task may be created with (more can be added one at a time).
 pub const MAX_TASK_TAGS: usize = 64;
+/// Upper bound on one bulk command, including requests from outside the app.
+pub const MAX_BULK_TASKS: usize = 1000;
 
 /// Checks the limits a command must meet whatever the state and the actor: how many entities it may
 /// list. Pure and cheap, and [`decide`] runs it first, so a server can run it before anything else
@@ -40,6 +43,21 @@ pub fn check_limits(command: &Command) -> Result<(), DomainError> {
             "tags",
             format!("more than {MAX_TASK_TAGS} tags"),
         )),
+        Command::BulkTasks { tasks, .. } if tasks.is_empty() || tasks.len() > MAX_BULK_TASKS => {
+            Err(DomainError::invalid(
+                "tasks",
+                format!("expected 1 to {MAX_BULK_TASKS} tasks"),
+            ))
+        }
+        Command::BulkTasks { tasks, .. }
+            if tasks
+                .iter()
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != tasks.len() =>
+        {
+            Err(DomainError::invalid("tasks", "duplicate task"))
+        }
         _ => Ok(()),
     }
 }
@@ -873,6 +891,7 @@ impl<'a> Decider<'a> {
                 }
                 self.update((*id).into(), ch);
             }
+            C::BulkTasks { .. } => unreachable!("bulk commands are decided separately"),
             C::CreateTask(n) => self.create_task(n)?,
             C::UpdateTask { id, patch } => self.update_task_fields(*id, patch)?,
             C::MoveTask {
@@ -1099,15 +1118,46 @@ pub fn decide(
 ) -> Result<Vec<Event>, DomainError> {
     check_limits(command)?;
     authorize(state, actor, command)?;
-    let mut d = Decider {
-        state,
-        actor,
-        now,
-        seed: format!("{actor:?}|{command:?}"),
-        events: Vec::new(),
+    let seed = format!("{actor:?}|{command:?}");
+    let mut events = if let Command::BulkTasks { tasks, action } = command {
+        let seed = EventId::derive(now, seed.as_bytes());
+        let mut next = state.clone();
+        let mut events = Vec::new();
+        // Prepend in reverse so the affected tasks retain their relative room order.
+        let mut tasks = tasks.iter();
+        while let Some(&id) = if matches!(action, BulkTaskAction::Move { .. }) {
+            tasks.next_back()
+        } else {
+            tasks.next()
+        } {
+            let mut d = Decider {
+                state: &next,
+                actor,
+                now,
+                seed: format!("{seed}|{id}"),
+                events: Vec::new(),
+            };
+            if let Some(change) = action.change(d.task(id)?) {
+                d.run(&change)?;
+                for event in d.events {
+                    apply(&mut next, &event)
+                        .map_err(|_| DomainError::invalid("tasks", "cannot apply bulk change"))?;
+                    events.push(event);
+                }
+            }
+        }
+        events
+    } else {
+        let mut d = Decider {
+            state,
+            actor,
+            now,
+            seed,
+            events: Vec::new(),
+        };
+        d.run(command)?;
+        d.events
     };
-    d.run(command)?;
-    let mut events = d.events;
     if let Some(first) = events.first().map(|e| e.id) {
         for e in &mut events {
             e.group = first;

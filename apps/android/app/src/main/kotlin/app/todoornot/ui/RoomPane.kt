@@ -63,6 +63,7 @@ import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
 import androidx.compose.ui.text.input.ImeAction
@@ -143,7 +144,10 @@ fun RoomPane(
         }
         // The model holds the filter and whether its field is open, so the text and the rows agree.
         Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
-            RoomHeader(room, landscape, collapse, onMenu, bar) {
+            val selectionHeader: (@Composable () -> Unit)? = if (state.bulk != null) {
+                { BulkSelectionHeader(state.bulk.label, actions::clearBulk) }
+            } else null
+            RoomHeader(room, landscape, collapse, onMenu, bar, selectionHeader) {
                 SyncChip(state.status, actions::nudge)
                 IconButton("search", "Filter", expanded = state.searching) {
                     actions.setSearching(!state.searching)
@@ -169,7 +173,8 @@ fun RoomPane(
                 TaskList(state, actions)
             }
             ToastStrip(state.toast, actions)
-            Composer(room.addPlaceholder, draft, keyboard, actions, composerFocus)
+            if (state.bulk != null) BulkSelectionTools(state, actions)
+            else Composer(room.addPlaceholder, draft, keyboard, actions, composerFocus)
         }
     }
 }
@@ -368,19 +373,19 @@ private fun LazyItemScope.MovingRow(
     // A ghost whose choreography is over is gone, whatever the list has yet to hear.
     val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
     val done = checked ?: t.done
-    TaskActionsAnchor(state, actions, t.id, t.list, done, t.myDay, t.priority.toInt(), row = true,
-        enabled = !s.ghost && l?.gone != true,
+    val selecting = state.bulk != null
+    val toggle = { if (!s.ghost && l?.gone != true) actions.toggleBulk(t.id, state.generation) }
+    TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
+        onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
+        onImportant = { if (!s.ghost) actions.setImportant(t.id, it) },
+        onOpen = { if (selecting) toggle() else if (!s.ghost) actions.select(t.id) },
+        onActions = toggle, look = l, inert = s.ghost, selecting = selecting,
         modifier = Modifier.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
             placementSpec = if (swap) tween(M.ROW_ENTER, easing = M.EASE_STANDARD.cubic()) else null,
             fadeOutSpec = null,
         ),
-    ) { openMenu ->
-        TaskRowView(t, selected = !s.ghost && t.id == state.selected, checked = done,
-            onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
-            onImportant = { if (!s.ghost) actions.setImportant(t.id, it) },
-            onOpen = { if (!s.ghost) actions.select(t.id) }, onActions = openMenu, look = l, inert = s.ghost)
-    }
+    )
 }
 
 @Composable
@@ -483,11 +488,14 @@ private fun Caps(text: String, modifier: Modifier = Modifier) {
 private fun HandoverRow(t: TaskRow, state: UiState, actions: Actions, enabled: Boolean, gap: Dp,
     modifier: Modifier = Modifier, inset: Modifier = Modifier, content: @Composable RowScope.() -> Unit,
 ) {
-    TaskActionsAnchor(state, actions, t.id, t.list, t.done, t.myDay, t.priority.toInt(), row = true, enabled = enabled) { menu ->
-        Row(modifier.fillMaxWidth().combinedClickable(enabled = enabled, onLongClickLabel = "Task actions", onLongClick = menu,
-            onClick = { actions.select(t.id) }).then(inset), verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(gap), content = content)
-    }
+    val r = LocalDesign.current.room
+    val isSelected = t.id in state.bulkIds
+    val toggle = { actions.toggleBulk(t.id, state.generation) }
+    Row(modifier.fillMaxWidth().then(if (isSelected) Modifier.background(r.wash).selectionBar(r.accentStrong) else Modifier)
+        .combinedClickable(enabled = enabled, onLongClickLabel = "Select task", onLongClick = toggle,
+            onClick = { if (state.bulk != null) toggle() else actions.select(t.id) })
+        .semantics { selected = isSelected }.then(inset), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(gap), content = content)
 }
 
 /** A compact row for the hand-over (item [i] of it): check, title, chip, and the date on the right. */
@@ -499,7 +507,7 @@ private fun SmallRow(t: TaskRow, state: UiState, actions: Actions, i: Int, dusk:
         modifier = Modifier.handover(i, dusk).height(P.TOUCH.dp).hairline(r.line, top = true),
         inset = Modifier.padding(start = S.S3.dp, end = S.S5.dp),
     ) {
-        Check(t.done, { actions.setDone(t.id, it, state.generation) }, t.title, enabled = on)
+        Check(t.done, { actions.setDone(t.id, it, state.generation) }, t.title, enabled = on && state.bulk == null, onWash = t.id in state.bulkIds)
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(t.title, Tokens.Type.TASK_TITLE, r.ink, Modifier.weight(1f, fill = false))
             t.chip?.let { ListChip(it) }

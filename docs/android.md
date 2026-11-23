@@ -55,7 +55,15 @@ What the first version does:
   room, even the same one, clears the filter and closes its field.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
-- **Task actions.** Long-press a task row or tap **⋯** in its detail header. The menu offers Complete or
+- **Select several tasks.** Long-press a task row, then tap other rows to add or remove them. The app
+  bar shows the count; **Close** or system **Back** clears it. Changing rooms or filtering a row out
+  drops its selection. With two or more tasks, the contextual controls offer Complete or Reopen,
+  importance, My Day, Move to…, Set due… and Delete. Mixed selections offer the positive action and
+  skip tasks already in that state. Move and Due reuse their usual pickers; moved tasks keep their
+  room order at the front of the destination. The unfolded detail pane shows the selected count.
+  Each successful change clears selection and offers one **Undo** for all affected tasks, including
+  any next occurrences created by completing repeats. The `multi_selection` gallery shows both themes.
+- **Task actions.** Tap **⋯** in a task's detail header. The menu offers Complete or
   Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to…,
   Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
   from a list or collection name to filter; case and accents don't matter. The task moves to the front

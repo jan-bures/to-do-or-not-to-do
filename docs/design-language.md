@@ -317,6 +317,13 @@ The mark repeats the actor already named in text. This is a read-only summary, n
   the right.
 - On phones, a 56 dp strip above the single 48 dp composer holds the toast.
 
+**Multi-selection.** A room uses the same `wash` and leading `accent-strong` mark on every selected row,
+with a separate keyboard focus edge on the current row. Desktop and web place the selection count,
+actions and clear button in a flat strip above the reserved Undo footer; narrow web lets the controls
+wrap. Android uses a count and Close in the app bar and replaces the composer with touch-sized bulk
+controls. The wide detail column shows a selection summary instead of a task editor. A bulk completion
+or move changes the rows together, without staggering; one count-based toast offers one Undo.
+
 **Pills are rationed.** Only three things are pill-shaped: list chips (a 6 px dot, a 6 px gap and 8 px padding),
 the overdue badge and phone room pills. Tags are plain mono `#tag` text. Suggestions get a compact chip with a
 6 px radius, not a banner.

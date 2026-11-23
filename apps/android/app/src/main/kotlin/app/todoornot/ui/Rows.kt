@@ -59,6 +59,8 @@ fun TaskRowView(
     modifier: Modifier = Modifier,
     look: RowLook? = null,
     inert: Boolean = false,
+    selecting: Boolean = false,
+    longClickLabel: String = "Select task",
 ) {
     val r = LocalDesign.current.room
     val l = look ?: RowLook.rest(task.done)
@@ -74,7 +76,7 @@ fun TaskRowView(
         .then(if (selected) Modifier.background(r.wash).selectionBar(r.accentStrong) else Modifier)
         .semantics { this.selected = selected }
         .hairline(r.line)
-        .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = "Task actions", onLongClick = onActions)
+        .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = longClickLabel, onLongClick = onActions)
         .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = P.ROW_PAD_TOP.dp, bottom = bottom)
     Row(m, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
         Box(Modifier.size(P.COL_CHECK.dp, titleLine), contentAlignment = Alignment.Center) {
@@ -83,7 +85,7 @@ fun TaskRowView(
                 onToggle = onCheck,
                 label = task.title,
                 overdue = task.due?.tone == DueTone.OVERDUE,
-                enabled = live,
+                enabled = live && !selecting,
                 look = l,
                 onWash = selected,
             )
@@ -106,7 +108,7 @@ fun TaskRowView(
             Spacer(Modifier.height(S.S1.dp))
             MetaLine(task)
         }
-        TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live,
+        TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live && !selecting,
             label = "Important: ${task.title}", alignment = Alignment.TopCenter, onChange = onImportant)
     }
 }

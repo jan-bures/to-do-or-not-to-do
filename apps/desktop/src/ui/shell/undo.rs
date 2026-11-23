@@ -20,6 +20,7 @@ use crate::theme::TextStyled;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum EditKind {
     ImportEmail,
+    Bulk,
     Complete,
     Restore,
     Delete,
@@ -87,6 +88,7 @@ impl EditKind {
     fn verb(self) -> &'static str {
         match self {
             Self::ImportEmail => "Created email task",
+            Self::Bulk => "Changed selected tasks",
             Self::Complete => "Completed",
             Self::Restore => "Restored",
             Self::Delete => "Deleted",
@@ -107,9 +109,13 @@ impl EditKind {
     }
 
     fn undone_label(self, title: &str) -> SharedString {
+        if self == Self::Bulk {
+            return "Bulk change undone.".into();
+        }
         task_label(
             match self {
                 Self::ImportEmail => "Undid email import",
+                Self::Bulk => unreachable!(),
                 Self::Complete => "Reopened",
                 Self::Restore => "Returned to Trash:",
                 Self::Delete | Self::Merge => "Restored",
@@ -143,6 +149,7 @@ impl EditKind {
 
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
+            (Self::Bulk, EntityId::Task(id)) => before.tasks.get(&id) != after.tasks.get(&id),
             (Self::Repeat | Self::ClearDue, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)

@@ -3,6 +3,7 @@
 
 mod activity;
 mod attachments;
+mod bulk;
 mod detail_splitter;
 mod device_pairing;
 mod email_drop;
@@ -110,6 +111,8 @@ pub struct Ctx {
     live: bool,
     room: RwSignal<RoomId>,
     selected: RwSignal<Option<TaskId>>,
+    multi: RwSignal<todo_client::selection::Selection>,
+    bulk_due: NodeRef<html::Dialog>,
     lingering: RwSignal<Vec<Linger>>,
     toast: RwSignal<Option<Toast>>,
     toast_seq: RwSignal<u64>,
@@ -342,6 +345,8 @@ impl Ctx {
     }
 
     fn reset_room_controls(self) {
+        self.multi.update(todo_client::selection::Selection::clear);
+        self.close_bulk_due(false);
         self.room_actions.close_menu(false);
         let _ = self.task_actions.close();
         self.lingering
@@ -362,6 +367,11 @@ impl Ctx {
     }
 
     fn select(self, id: Option<TaskId>) {
+        self.multi.update(todo_client::selection::Selection::clear);
+        self.set_detail(id);
+    }
+
+    fn set_detail(self, id: Option<TaskId>) {
         self.editing.set(false);
         self.selected.set(id);
         let room = self.room.get_untracked();
@@ -486,8 +496,9 @@ impl Ctx {
             return;
         }
         let cur = self
-            .selected
-            .get_untracked()
+            .multi
+            .with_untracked(todo_client::selection::Selection::cursor)
+            .or(self.selected.get_untracked())
             .and_then(|id| rows.iter().position(|r| r.id == id));
         let next = match cur {
             None => 0,
@@ -606,6 +617,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         live,
         room,
         selected,
+        multi: RwSignal::new(todo_client::selection::Selection::default()),
+        bulk_due: NodeRef::new(),
         lingering,
         toast: RwSignal::new(None),
         toast_seq: RwSignal::new(0),
@@ -645,6 +658,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         sidebar,
     };
     provide_context(c);
+    Effect::new(move |_| {
+        let visible = c.bulk_visible();
+        c.multi.update(|s| s.retain_visible(&visible));
+    });
     c.refresh();
     if let Some(n) = notice {
         c.show_toast(n, false);
@@ -677,6 +694,8 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         if r != c.room.get_untracked() {
             c.reset_room_controls();
         }
+        c.multi.update(todo_client::selection::Selection::clear);
+        c.close_bulk_due(false);
         c.room.set(r);
         c.selected.set(t);
         c.editing.set(false);
@@ -710,7 +729,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
 
     track_overlay_focus(c);
     let detail_layout = detail_splitter::Layout::new();
-    let docked = Memo::new(move |_| !narrow.get() && detail.with(Option::is_some));
+    let bulk_summary = Memo::new(move |_| !narrow.get() && c.multi_active());
+    let docked =
+        Memo::new(move |_| !narrow.get() && (detail.with(Option::is_some) || bulk_summary.get()));
     let app = NodeRef::<html::Div>::new();
     Effect::new(move |_| {
         let width = detail_layout.width.get();
@@ -730,6 +751,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     });
     view! {
         <div class="app" node_ref=app class:has-detail=move || c.detail.with(Option::is_some)
+            class:has-bulk-summary=move || bulk_summary.get()
             class:compact-room=move || docked.get() && detail_layout.compact_room.get()
             class:detail-modal=move || c.detail_modal.get() class:drawer-open=move || c.drawer.get()>
             <SidebarPane/>
@@ -739,14 +761,22 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             <main class="main" inert=move || c.drawer.get() || c.detail_modal.get()>
                 <AppBar/>
                 <RoomPane/>
+                <bulk::Bar/>
                 <ListFoot/>
             </main>
             <detail_splitter::DetailSplitter layout=detail_layout docked=docked/>
             <DetailPane/>
+            <Show when=move || bulk_summary.get()>
+                <aside class="bulk-summary" aria-label="Selection summary">
+                    {icon(Icon::List)}
+                    <p>{move || todo_client::selection::count_label(c.bulk_ids().len())}</p>
+                </aside>
+            </Show>
             <StatusBar/>
         </div>
         <room_actions::Overlays/>
         <task_actions::Overlays/>
+        <bulk::DueDialog/>
     }
 }
 
@@ -768,6 +798,7 @@ fn track_overlay_focus(c: Ctx) {
             let before = pickers::focused();
             request_animation_frame(move || {
                 if c.selected.get_untracked().is_none()
+                    && !untrack(|| c.multi_active())
                     && pickers::focus_unmoved(before.as_ref())
                     && !platform::focus(&format!("row-{old}"))
                 {
@@ -842,6 +873,9 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let typing = typing(ev);
+    if !typing && !drawer && !c.room.with_untracked(RoomId::is_history) && bulk::key(c, ev, &key) {
+        return;
+    }
     if ev.repeat() {
         // Leave typing alone, but prevent a held Enter from activating a button or submitting a form.
         let single_line = ev
@@ -2107,7 +2141,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
     let important_label = format!("Important: {}", row.title);
     let on_check = move |ev: leptos::ev::MouseEvent| {
         ev.stop_propagation();
-        if phase.is_none() {
+        if phase.is_none() && !c.modified_task_click(id, &ev) {
             c.toggle(&r);
         }
     };
@@ -2149,11 +2183,12 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             data-task-row=id.to_string()
             on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
             class:overdue=overdue
-            class:selected=move || c.selected.get() == Some(id)
+            class:selected=move || c.row_selected(id)
+            class:bulk-cursor=move || c.multi.with(|s| s.cursor() == Some(id))
             class:with-agent=move || c.columns.with(|cols| cols.agent)
             class:with-priority=move || c.columns.with(|cols| cols.priority)
             class:with-due=move || c.columns.with(|cols| cols.due)
-            on:click=move |_| c.select(Some(id))
+            on:click=move |ev| c.click_task(id, &ev)
         >
             <button
                 class="check"
@@ -2167,7 +2202,9 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             </button>
             <div class="row-main">
                 <button type="button" class="row-title" id=format!("row-{id}")
-                    aria-current=move || (c.selected.get() == Some(id)).then_some("true")>{row.title.clone()}</button>
+                    aria-current=move || (c.selected.get() == Some(id)).then_some("true")
+                    aria-pressed=move || c.multi_active().then(|| c.multi.with(|s| s.contains(id).to_string()))
+                    >{row.title.clone()}</button>
                 <span class="meta">
                     <span class="due-slot">{due_view("due")}</span>
                     {row.chip.clone().map(|ch| chip(ch.label, ch.hue))}
@@ -2188,7 +2225,9 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 disabled=move || c.read_only() || phase.is_some()
                 on:click=move |ev| {
                     ev.stop_propagation();
-                    c.submit_intent(|state| intent::toggle_important(state, id));
+                    if !c.modified_task_click(id, &ev) {
+                        c.submit_intent(|state| intent::toggle_important(state, id));
+                    }
                 }>
                 {toggle_icon(Icon::Star, Icon::StarFilled)}
             </button>
@@ -2399,17 +2438,18 @@ fn HandoverFirst(row: Row, date: String) -> impl IntoView {
     let phase = handover_phase(c, id);
     view! {
         <div class="next-task handover-task" class:done=row.done
-            class:selected=move || c.selected.get() == Some(id)
+            class:selected=move || c.row_selected(id)
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || Phase::exiting(phase.get())
             inert=move || phase.get() == Some(Phase::Depart)
             data-task-row=id.to_string()
             on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
-            on:click=move |_| c.select(Some(id))>
+            on:click=move |ev| c.click_task(id, &ev)>
             <HandoverCheck row=row.clone() phase=phase/>
             <span class="sunrise">{icon(Icon::Sunrise)}</span>
             <div class="next-text">
-                <button class="next-title" type="button" id=format!("row-{id}")>{row.title}</button>
+                <button class="next-title" type="button" id=format!("row-{id}")
+                    aria-pressed=move || c.multi_active().then(|| c.multi.with(|s| s.contains(id).to_string()))>{row.title}</button>
                 <div class="next-meta">
                     <span class="due" data-tone="later">{date}</span>
                     {row.chip.map(|ch| chip(ch.label, ch.hue))}
@@ -2426,15 +2466,16 @@ fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
     let phase = handover_phase(c, id);
     view! {
         <li class="t-row handover-task" class:done=row.done
-            class:selected=move || c.selected.get() == Some(id)
+            class:selected=move || c.row_selected(id)
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || Phase::exiting(phase.get())
             inert=move || phase.get() == Some(Phase::Depart)
             data-task-row=id.to_string()
             on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
-            on:click=move |_| c.select(Some(id))>
+            on:click=move |ev| c.click_task(id, &ev)>
             <HandoverCheck row=row.clone() phase=phase/>
-            <button class="t-title" type="button" id=format!("row-{id}")>{row.title}</button>
+            <button class="t-title" type="button" id=format!("row-{id}")
+                aria-pressed=move || c.multi_active().then(|| c.multi.with(|s| s.contains(id).to_string()))>{row.title}</button>
             {row.chip.map(|ch| chip(ch.label, ch.hue))}
             <span class="t-date">{row.due.filter(|_| show_date).map(|d| d.text)}</span>
         </li>
@@ -2455,7 +2496,7 @@ fn HandoverCheck(row: Row, phase: Memo<Option<Phase>>) -> impl IntoView {
             aria-disabled=move || phase.get().is_some().then_some("true")
             on:click=move |ev| {
                 ev.stop_propagation();
-                if phase.with_untracked(Option::is_none) {
+                if phase.with_untracked(Option::is_none) && !c.modified_task_click(row.id, &ev) {
                     c.toggle(&row);
                 }
             }>
@@ -2761,6 +2802,30 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
     }
 }
 
+const DUE_DATE_ERROR: &str = "Try tomorrow, fri, +3d or a date like 2026-12-01.";
+
+// A task and a selection both use the same typed date control and parser.
+fn due_field(
+    c: Ctx,
+    bulk: bool,
+    input: NodeRef<html::Input>,
+    draft: RwSignal<String>,
+    invalid: RwSignal<bool>,
+    on_blur: impl FnMut(leptos::ev::FocusEvent) + 'static,
+    on_key: impl FnMut(leptos::ev::KeyboardEvent) + 'static,
+) -> impl IntoView {
+    view! {
+        <input class=if bulk { "room-name-input" } else { "prop-input" }
+            type="text" node_ref=input aria-label="Due date" autocomplete="off"
+            autofocus=bulk disabled=move || c.read_only() placeholder="tomorrow, fri, +3d…"
+            aria-invalid=move || invalid.get().to_string()
+            aria-describedby=move || if bulk { Some("bulk-due-help") } else { invalid.get().then_some("due-date-error") }
+            prop:value=move || draft.get()
+            on:input=move |ev| { draft.set(event_target_value(&ev)); invalid.set(false); }
+            on:blur=on_blur on:keydown=on_key/>
+    }
+}
+
 #[component]
 fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let c = ctx();
@@ -2819,24 +2884,17 @@ fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                         {move || due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "Set date".into()))}
                     </button>
                 }>
-                    <input class="prop-input" type="text" node_ref=input aria-label="Due date"
-                        disabled=move || c.read_only() placeholder="tomorrow, fri, +3d…"
-                        aria-invalid=move || invalid.get().to_string()
-                        aria-describedby=move || invalid.get().then_some("due-date-error")
-                        prop:value=move || draft.get()
-                        on:input=move |ev| { draft.set(event_target_value(&ev)); invalid.set(false); }
-                        on:blur=move |_| editing.set(false)
-                        on:keydown=move |ev| {
-                            if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
-                                ev.prevent_default();
-                                ev.stop_propagation();
-                                if !ev.repeat() {
-                                    if ev.key() == "Enter" { save(); } else { close(); }
-                                }
+                    {due_field(c, false, input, draft, invalid, move |_| editing.set(false), move |ev| {
+                        if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
+                            ev.prevent_default();
+                            ev.stop_propagation();
+                            if !ev.repeat() {
+                                if ev.key() == "Enter" { save(); } else { close(); }
                             }
-                        }/>
+                        }
+                    })}
                     <Show when=move || invalid.get()>
-                        <p id="due-date-error" class="prop-error" role="alert">"Try tomorrow, fri, +3d or a date like 2026-12-01."</p>
+                        <p id="due-date-error" class="prop-error" role="alert">{DUE_DATE_ERROR}</p>
                     </Show>
                 </Show>
             </dd>

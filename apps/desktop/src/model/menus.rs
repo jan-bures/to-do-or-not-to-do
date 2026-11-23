@@ -88,6 +88,8 @@ pub enum MenuAction {
     AskMove(TaskId),
     /// Moves the task to the list (nothing when it's there already).
     MoveTask(TaskId, ListId),
+    /// Move the selected tasks to a list.
+    BulkMove(ListId),
     PickMerge(TaskId),
     AskMerge(TaskId, TaskId),
     Merge(TaskId, TaskId),
@@ -1193,6 +1195,24 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
     let Some(groups) = todo_client::intent::organize::task_move_groups(state, task, filter) else {
         return Vec::new();
     };
+    move_entries(groups, filter, |id| MenuAction::MoveTask(task, id))
+}
+
+pub fn bulk_move_menu(state: &State, tasks: &[TaskId], filter: &str) -> Vec<MenuEntry> {
+    if tasks.len() < 2 {
+        return Vec::new();
+    }
+    let groups = todo_client::intent::organize::task_destination_groups(state, filter, |list| {
+        !todo_client::selection::can_move(state, tasks, list)
+    });
+    move_entries(groups, filter, MenuAction::BulkMove)
+}
+
+fn move_entries(
+    groups: Vec<todo_client::intent::organize::TaskMoveGroup<'_>>,
+    filter: &str,
+    action: impl Fn(ListId) -> MenuAction,
+) -> Vec<MenuEntry> {
     let mut entries = vec![MenuEntry::Filter {
         typed: filter.to_string().into(),
         hint: "Type to filter lists",
@@ -1214,7 +1234,7 @@ pub fn move_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
                 danger: false,
                 checked: dest.current,
                 hint: None,
-                action: MenuAction::MoveTask(task, l.id),
+                action: action(l.id),
                 more: None,
             })
         }));

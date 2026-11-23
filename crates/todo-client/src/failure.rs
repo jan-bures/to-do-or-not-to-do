@@ -93,6 +93,7 @@ pub fn what(entry: &OutboxEntry) -> &'static str {
         Command::AddTag { .. } => "Tag a task",
         Command::RemoveTag { .. } => "Untag a task",
         Command::MergeTasks { .. } => "Merge tasks",
+        Command::BulkTasks { .. } => "Change selected tasks",
         Command::AddNote { .. } => "Add to the notes",
         Command::CreateStep { .. } => "Add a step",
         Command::UpdateStep { .. } => "Rename a step",
@@ -146,6 +147,7 @@ pub fn subject(entry: &OutboxEntry) -> Option<EntityId> {
         | Command::CreateTask(_)
         | Command::CreateTag { .. }
         | Command::UpdateReminder { .. }
+        | Command::BulkTasks { .. }
         | Command::ImportEntity { .. } => return None,
     })
 }

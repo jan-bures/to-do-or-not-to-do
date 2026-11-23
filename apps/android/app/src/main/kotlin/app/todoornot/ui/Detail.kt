@@ -644,9 +644,9 @@ internal fun SourceCard(s: SourceLink, remove: () -> Unit) {
 
 /** The right pane on the unfolded phone when no task is open. */
 @Composable
-fun NoDetail(modifier: Modifier = Modifier) {
+fun NoDetail(modifier: Modifier = Modifier, selection: String? = null) {
     val r = LocalDesign.current.room
     Box(modifier.fillMaxSize().background(r.pane).padding(S.S8.dp), contentAlignment = Alignment.Center) {
-        Label("Pick a task to see it here.", Tokens.Type.EYEBROW_DAY, r.ink3)
+        Label(selection ?: "Pick a task to see it here.", Tokens.Type.EYEBROW_DAY, if (selection == null) r.ink3 else r.accentStrong)
     }
 }

@@ -67,6 +67,8 @@ pub enum Stop {
     SidebarSplitter,
     /// The task list, where the keyboard starts.
     List,
+    /// One of the bulk toolbar controls, in visual order.
+    Bulk(usize),
     /// The undo toast's Undo, while the toast is up.
     Undo,
     /// The room header's "more" button, in rooms that have a menu.
@@ -102,9 +104,16 @@ pub enum Stop {
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 16] = [
+pub const TAB_ORDER: [Stop; 23] = [
     Stop::SidebarSplitter,
     Stop::List,
+    Stop::Bulk(0),
+    Stop::Bulk(1),
+    Stop::Bulk(2),
+    Stop::Bulk(3),
+    Stop::Bulk(4),
+    Stop::Bulk(5),
+    Stop::Bulk(6),
     Stop::Undo,
     Stop::RoomMenu,
     Stop::ActivityFilter,
@@ -142,6 +151,7 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         Stop::SidebarSplitter
         | Stop::List
         | Stop::Undo
+        | Stop::Bulk(_)
         | Stop::RoomMenu
         | Stop::ActivityFilter
         | Stop::ActivityRefresh
@@ -572,6 +582,13 @@ mod tests {
         assert_eq!(
             round(List, true, all),
             [
+                Bulk(0),
+                Bulk(1),
+                Bulk(2),
+                Bulk(3),
+                Bulk(4),
+                Bulk(5),
+                Bulk(6),
                 Undo,
                 RoomMenu,
                 ActivityFilter,
@@ -608,19 +625,27 @@ mod tests {
                 ActivityFilter,
                 RoomMenu,
                 Undo,
+                Bulk(6),
+                Bulk(5),
+                Bulk(4),
+                Bulk(3),
+                Bulk(2),
+                Bulk(1),
+                Bulk(0),
                 List
             ]
         );
-        // Shift+Tab from Undo leaves it for the list, and the list goes on backwards: never stuck
-        // between the two.
-        assert_eq!(tab_stop(Undo, false, all), List);
+        // Shift+Tab from Undo goes through the bulk controls when visible.
+        assert_eq!(tab_stop(Undo, false, all), Bulk(6));
+        assert_eq!(tab_stop(Bulk(0), false, all), List);
         assert_eq!(tab_stop(List, false, all), SidebarSplitter);
     }
 
     #[test]
     fn tab_skips_the_stops_that_are_not_there() {
         use Stop::*;
-        let extra_detail_control = |s| matches!(s, DetailMyDay | DetailImportant | Attachment(_));
+        let extra_detail_control =
+            |s| matches!(s, DetailMyDay | DetailImportant | Attachment(_) | Bulk(_));
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
         // fixed stops only (New is always there). (Below, nothing couldn't
         // sync unless said.)
@@ -803,6 +828,7 @@ mod tests {
                     | Reminder
                     | Repeat
                     | Attachment(_)
+                    | Bulk(_)
                     | SyncFailures
             )
         };

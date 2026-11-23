@@ -156,6 +156,7 @@ pub fn command(state: &State, cmd: &Command, events: &[Event]) -> String {
         C::RemoveTag { task, tag } => {
             format!("Removed {} from {}", d((*tag).into()), d((*task).into()))
         }
+        C::BulkTasks { .. } => "Updated selected tasks".to_owned(),
         C::MergeTasks { source, target } => {
             format!(
                 "Merged {} into {}",

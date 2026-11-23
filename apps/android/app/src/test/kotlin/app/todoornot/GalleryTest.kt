@@ -760,6 +760,19 @@ class GalleryTest {
     }
 
     @Test
+    fun multi_selection() {
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val e = fixtureEngine()
+            val m = TodoModel(e, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, listen = {})
+            val s = m.ui.value
+            s.room.tasks.take(3).forEach { m.toggleBulk(it.id, s.generation) }
+            check(m.ui.value.bulkIds.size == 3)
+            main("multi_select_$theme", COVER, m.ui.value, dark)
+        }
+    }
+
+    @Test
     fun merge_tasks() {
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"

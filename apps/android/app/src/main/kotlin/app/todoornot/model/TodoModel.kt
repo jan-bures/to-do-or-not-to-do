@@ -1,5 +1,8 @@
 package app.todoornot.model
 
+import app.todoornot.core.BulkBar
+import app.todoornot.core.BulkEdit
+import app.todoornot.core.RoomSelection
 import app.todoornot.core.ColorTarget
 import app.todoornot.core.ActivityRow
 import app.todoornot.core.ActivityLoad
@@ -116,6 +119,8 @@ data class UiState(
     val feed: ActivityView? = null,
     val attachment: TransferStatus? = null,
     val attachmentTaskConfirmed: Boolean = false,
+    val bulkIds: List<String> = emptyList(),
+    val bulk: BulkBar? = null,
 ) {
     val selected: String? get() = detail?.id
     val signedOut: Boolean get() = status.signedOut
@@ -332,6 +337,11 @@ class TodoModel(
      */
     private val writes = Mutex()
 
+    // Protected by publishing. Selection is local to a room generation, never synced or persisted.
+    private val bulkSelection = RoomSelection()
+    private var bulkRevision = 0L
+    private var bulkPending = false
+
     private val transfers = AttachmentTransfers(AttachmentTransferCore(engine), documents, scope, io, { selected }, ::publishTransfer)
     private val _ui = MutableStateFlow(read())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
@@ -465,7 +475,8 @@ class TodoModel(
                 (generation > published && read.epoch == inputs && read.truth.placed == placement.version).also {
                     if (it) {
                         published = generation
-                        _ui.value = read.state.copy(attachment = transfers.status(read.state.selected))
+                        val ids = if (_ui.value.bulkIds.isEmpty()) emptyList() else bulkSelection.retain(bulkVisible(read.state))
+                        _ui.value = withBulk(read.state.copy(attachment = transfers.status(read.state.selected)), ids)
                     }
                 }
             }
@@ -639,6 +650,9 @@ class TodoModel(
             motion.touched()
             synchronized(publishing) {
                 generation++
+                bulkSelection.clear()
+                bulkRevision++
+                _ui.value = withBulk(_ui.value, emptyList())
                 reorder = null
                 key = room
                 if (fresh) {
@@ -704,9 +718,72 @@ class TodoModel(
 
     override fun select(id: String?) {
         if (id != null && activity != null) enter(key)
+        if (_ui.value.bulkIds.isNotEmpty()) clearBulk()
         selectTask(id)
         scope.launch { refresh() }
     }
+
+    private fun bulkVisible(state: UiState): List<String> = buildList {
+        addAll(state.room.tasks.map { it.id })
+        state.room.tomorrow?.let { plan ->
+            add(plan.first.id)
+            addAll(plan.also.map { it.id })
+            addAll(plan.week.map { it.id })
+        }
+        if (state.showCompleted) addAll(state.room.completed.map { it.id })
+    }
+
+    private fun withBulk(state: UiState, ids: List<String>): UiState = state.copy(
+        bulkIds = ids,
+        bulk = if (ids.isEmpty()) null else engine.bulkBar(ids, state.today),
+        detail = state.detail.takeIf { ids.isEmpty() },
+    )
+
+    override fun toggleBulk(id: String, generation: Long) {
+        synchronized(publishing) {
+            val state = _ui.value
+            if (generation != this.generation || generation != state.generation || state.signedOut) return
+            val visible = bulkVisible(state)
+            if (id !in visible) return
+            selectTask(null)
+            val ids = bulkSelection.toggle(visible, id)
+            inputs++
+            bulkRevision++
+            _ui.value = withBulk(state.copy(detail = null), ids)
+        }
+        scope.launch { refresh() }
+    }
+
+    override fun clearBulk() {
+        synchronized(publishing) {
+            bulkSelection.clear()
+            bulkRevision++
+            _ui.value = withBulk(_ui.value, emptyList())
+        }
+    }
+
+    override fun editBulk(edit: BulkEdit) {
+        val (ids, revision) = synchronized(publishing) {
+            val state = _ui.value
+            val ids = state.bulkIds
+            if (ids.size < 2 || state.generation != generation || state.signedOut || bulkPending) return
+            bulkPending = true
+            ids to bulkRevision
+        }
+        act {
+            try {
+                engine.bulkEdit(ids, edit)?.let { change ->
+                    show(Toast(++serial, change.toastText(), organize = change))
+                    synchronized(publishing) { if (revision == bulkRevision) clearBulk() }
+                }
+            } finally {
+                synchronized(publishing) { bulkPending = false }
+            }
+        }
+    }
+
+    override suspend fun bulkDestinations(tasks: List<String>, filter: String) =
+        withContext(io) { engine.bulkDestinations(tasks, filter) }
 
     override fun previewDate(text: String): String? = quickAddDate(text, now())
 

@@ -203,8 +203,10 @@ impl ShellView {
     /// selected, otherwise only what isn't being edited (a change that arrived from elsewhere).
     pub(super) fn load_detail(&mut self, cx: &mut Context<Self>) {
         let Some(d) = self.shell.detail.as_ref() else {
+            if self.edit.loaded.is_some() || self.bulk_ids().len() < 2 {
+                self.edit.due = None;
+            }
             self.edit.loaded = None;
-            self.edit.due = None;
             return;
         };
         let fresh = self.edit.loaded != Some(d.task);
@@ -339,15 +341,19 @@ impl ShellView {
 
     /// Opens the due-date editor (the D key, or a click on the field).
     pub(super) fn start_due(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(id) = self.ui.task else {
-            return;
-        };
-        let current = self
-            .store
-            .view()
-            .tasks
-            .get(&id)
-            .and_then(|t| t.due)
+        if let Some(id) = self.ui.task {
+            self.start_due_editor(Some(id), window, cx);
+        }
+    }
+
+    pub(super) fn start_due_editor(
+        &mut self,
+        id: Option<TaskId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let current = id
+            .and_then(|id| self.store.view().tasks.get(&id).and_then(|t| t.due))
             .map(|d| d.to_string());
         let colors = quick_add_colors(&self.palette);
         let input = cx.new(|cx| {
@@ -364,9 +370,23 @@ impl ShellView {
             move |this, input, e: &InputEvent, window, cx| match e {
                 InputEvent::Submit => {
                     let text = input.read(cx).content.to_string();
-                    this.set_due_text(id, &text, cx);
+                    if let Some(id) = id {
+                        this.set_due_text(id, &text, cx);
+                    } else {
+                        let Some(date) = this.parse_due_text(&text, cx) else {
+                            return;
+                        };
+                        if !this.apply_bulk(
+                            todo_client::selection::BulkTaskAction::Due { date },
+                            window,
+                            cx,
+                        ) {
+                            return;
+                        }
+                    }
                     this.edit.due = None;
                     window.focus(&this.list_focus, cx);
+                    cx.notify();
                 }
                 InputEvent::Cancel => {
                     this.edit.due = None;
@@ -386,7 +406,11 @@ impl ShellView {
         cx.notify();
     }
 
-    fn set_due_text(&mut self, id: TaskId, text: &str, cx: &mut Context<Self>) {
+    fn parse_due_text(
+        &mut self,
+        text: &str,
+        cx: &mut Context<Self>,
+    ) -> Option<Option<todo_core::time::Date>> {
         let now = self.store.now();
         let due = if text.trim().is_empty() {
             None
@@ -398,6 +422,13 @@ impl ShellView {
                 text.trim()
             )));
             cx.notify();
+            return None;
+        };
+        Some(due)
+    }
+
+    fn set_due_text(&mut self, id: TaskId, text: &str, cx: &mut Context<Self>) {
+        let Some(due) = self.parse_due_text(text, cx) else {
             return;
         };
         if let Some(cmd) = commands::set_due(&self.store.view(), id, due) {
@@ -1314,6 +1345,20 @@ impl ShellView {
             look.task.max(look.placeholder)
         };
         let placeholder = (look.placeholder > 0.).then(|| {
+            let count = self.bulk_ids().len();
+            let (icon, text, ink) = if count > 0 {
+                (
+                    Icon::List,
+                    todo_client::selection::count_label(count).into(),
+                    p.accent_strong,
+                )
+            } else {
+                (
+                    Icon::Text,
+                    SharedString::from("Select a task to see its details"),
+                    p.ink_3,
+                )
+            };
             div()
                 .absolute()
                 .inset_0()
@@ -1327,13 +1372,12 @@ impl ShellView {
                         .flex_col()
                         .items_center()
                         .gap(px(space::S2 + 2.))
-                        .child(kit::icon(Icon::Text, component::ICON + space::S1, p.ink_4))
-                        .child(
-                            div()
-                                .style(ty::BODY)
-                                .text_color(p.ink_3)
-                                .child("Select a task to see its details"),
-                        ),
+                        .child(kit::icon(
+                            icon,
+                            component::ICON + space::S1,
+                            if count > 0 { ink } else { p.ink_4 },
+                        ))
+                        .child(div().style(ty::BODY).text_color(ink).child(text)),
                 )
         });
         let task = self

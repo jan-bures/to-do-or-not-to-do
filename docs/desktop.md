@@ -312,6 +312,21 @@ room. An owner device is shown as **You**, not by its device ID. Editing a compl
 who completed it; when the replica doesn't know the completer (for example a historical import), the row
 says **Unknown actor**. This section works offline and doesn't show every change or offer per-event Undo.
 
+### Select and change several tasks
+
+Use **Ctrl+click** to toggle rows, **Shift+click** to select the range from the anchor, and **Shift+Up/Down**
+to extend or shrink it from the keyboard cursor. **Ctrl+A** selects all visible task rows in the room,
+including the filtered results and any expanded Completed rows, but not rows already leaving.
+**Esc** or the selection bar's Close button clears the selection. Changing rooms also clears it.
+
+With two or more selected, the strip above Undo offers **Complete** or **Reopen**, importance, My Day,
+**Move to…**, **Set due…**, and **Delete**. Tab reaches each control, including the icons in narrower
+columns. Mixed selections offer the positive action and leave tasks already in that state alone.
+Move to… reuses the searchable list picker and puts moved tasks at the front in selection order. The
+Due editor accepts the task editor's usual date syntax; Enter saves, a blank clears dates and repeats,
+and Esc cancels. The detail pane shows a count instead of a task editor. Each change clears the selection
+and offers one Undo (also **Ctrl+Z**), including any next occurrences created by completing repeats.
+
 ### Merge two tasks
 
 Right-click a task row (or select it and press **Shift+F10**) and choose **Merge into…**. The picker
@@ -693,7 +708,8 @@ menu and the detail pane's priority picker. `task-context-menu` is a task's menu
 one, as a right-click leaves it; `move-to-picker` is the selected task's list picker as M opens it, grouped by
 collection with the keyboard on the task's own list; `sync-failures` is "3 couldn't sync" opened, with three
 refused changes in plain words. `merge-task-picker` shows the destination search and list locations;
-`merge-task-confirm` shows the merge confirmation with Cancel selected. Activity: `activity` is the feed over the sample data,
+`merge-task-confirm` shows the merge confirmation with Cancel selected. `multi-select` shows three
+selected tasks, the bulk strip and the count in the detail pane. Activity: `activity` is the feed over the sample data,
 `activity-agent` the same filtered to Claude (opened from the sidebar's agent row), `activity-empty`
 the feed with nothing in it, `activity-pending` a change being undone from the keyboard (selected,
 Enter, waiting to be sent) and `activity-refused` an undo the server refused, its reason under the

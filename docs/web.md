@@ -261,7 +261,8 @@ connection open (which keeps the upgrade waiting), keeps retrying, and says "Thi
 save yet; other tabs will update once they’re saved." (That alert comes before the read-only one: reloading
 then would drop those changes.) Once they are stored, it closes and reloads. Version 3 uses the same
 stores as version 2; the bump retires older senders before they can read and drop the `from_list`
-precondition on another tab's queued task move.
+precondition on another tab's queued task move. Version 4 likewise leaves the stores unchanged but
+retires older senders before a tab can queue a bulk task command.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -387,6 +388,20 @@ Enter or Space to choose, and Escape or Cancel to return to the opener. If the t
 still in the current room after moving, it stays selected. If a row leaves, it collapses over
 `--duration-row-collapse` (instantly with reduced motion). Focus goes to the next surviving row, the
 previous row, or the room heading when neither remains. A modal detail closes so the next row is reachable.
+
+**Ctrl/Cmd+click** toggles rows, **Shift+click** selects a range, and **Shift+Up/Down** extends or
+shrinks it from the keyboard cursor. **Ctrl/Cmd+A** on the list selects all visible task rows, including
+filtered results and expanded Completed rows. **Esc** or **Clear selection** clears it. Hidden rows
+are dropped from the selection, and changing rooms clears it. From a narrow window, start selection
+from the list, not inside a detail overlay.
+
+The selection strip above Undo shows the count; when at least two tasks are selected it offers
+**Complete** or **Reopen**, importance, My Day, **Move to…**, **Set due…**, and **Delete**. Mixed
+selections offer the positive action and skip tasks already in that state. Move to… uses the usual
+searchable list picker and keeps the moved tasks in their room order at the front of the destination.
+The due editor uses the usual date syntax and **Clear due** clears both the date and the repeat.
+The wide detail pane shows a count instead of editing a task. Each successful edit clears selection
+and shows one Undo for the whole batch (also **Ctrl+Z** outside text fields).
 
 **Merge into…** searches other open tasks across lists by title, ignoring case and accents. Choose a task
 and confirm after reviewing both titles and their lists. The destination keeps its own title, list,

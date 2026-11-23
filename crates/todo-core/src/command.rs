@@ -6,7 +6,7 @@
 use crate::ids::{
     AttachmentId, CollectionId, EntityId, LinkId, ListId, ReminderId, StepId, TagId, TaskId,
 };
-use crate::model::{Entity, LinkKind, Priority};
+use crate::model::{Entity, LinkKind, Priority, Task};
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -33,6 +33,78 @@ pub enum Placement {
     Before(EntityId),
     /// Immediately after the given sibling.
     After(EntityId),
+}
+
+/// An explicit action on several tasks, never a toggle against changing state.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum BulkTaskAction {
+    /// Complete open tasks or reopen done tasks.
+    Completion { done: bool },
+    /// Set or clear High priority, without clearing Low or Normal.
+    Important { on: bool },
+    /// Add to the given day, or remove only tasks on that day.
+    MyDay {
+        #[cfg_attr(feature = "openapi", schema(value_type = String, format = Date))]
+        day: Date,
+        on: bool,
+    },
+    /// Move to the front of another list.
+    Move { list: ListId },
+    /// Set due, or clear both due and repeat.
+    Due {
+        #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
+        date: Option<Date>,
+    },
+    /// Move to Trash.
+    Delete,
+}
+
+impl BulkTaskAction {
+    /// The ordinary single-task command, if this action changes this task.
+    #[must_use]
+    pub fn change(self, task: &Task) -> Option<Command> {
+        let id = task.id;
+        Some(match self {
+            Self::Completion { done } if done != task.is_done() => {
+                if done {
+                    Command::CompleteTask { id }
+                } else {
+                    Command::UncompleteTask { id }
+                }
+            }
+            Self::Important { on } if on != (task.priority == Priority::High) => {
+                Command::UpdateTask {
+                    id,
+                    patch: TaskPatch {
+                        priority: Some(if on { Priority::High } else { Priority::None }),
+                        ..TaskPatch::default()
+                    },
+                }
+            }
+            Self::MyDay { day, on } if on != (task.my_day == Some(day)) => Command::SetMyDay {
+                id,
+                date: on.then_some(day),
+            },
+            Self::Move { list } if list != task.list => Command::MoveTask {
+                id,
+                list,
+                from_list: Some(task.list),
+                placement: Placement::First,
+            },
+            Self::Due { date } if date != task.due => Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    due: Some(date),
+                    recurrence: (date.is_none() && task.recurrence.is_some()).then_some(None),
+                    ..TaskPatch::default()
+                },
+            },
+            Self::Delete => Command::Delete { id: id.into() },
+            _ => return None,
+        })
+    }
 }
 
 /// Fields of a new task.
@@ -232,6 +304,13 @@ pub enum Command {
         /// The date, or `None` to clear.
         #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
         date: Option<Date>,
+    },
+    /// Apply one action to a set of tasks as a single event group, in room order.
+    BulkTasks {
+        /// Distinct, live task IDs.
+        tasks: Vec<TaskId>,
+        /// The same explicit action on each applicable task.
+        action: BulkTaskAction,
     },
     /// Attach a tag to a task.
     AddTag {

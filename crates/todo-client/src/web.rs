@@ -539,7 +539,8 @@ impl Entropy for BrowserEntropy {
 /// The IndexedDB database's version. 2 split the outbox and failed list into per-command records
 /// and added the damaged area. 3 has the same stores but retires older senders before a tab can
 /// queue a guarded move: older builds deserialize `MoveTask` without `from_list` and drop the guard.
-const DB_VERSION: u32 = 3;
+/// 4 likewise retires senders that cannot decode the bulk task command.
+const DB_VERSION: u32 = 4;
 const KV: &str = "kv";
 const EVENTS: &str = "events";
 const OUTBOX: &str = Area::Outbox.name();

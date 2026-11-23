@@ -68,6 +68,7 @@ pub(super) struct Controls {
     menu: RwSignal<Option<Origin>>,
     popover: NodeRef<html::Div>,
     moving: RwSignal<Option<Move>>,
+    bulk_moving: RwSignal<bool>,
     dialog: NodeRef<html::Dialog>,
     filter: RwSignal<String>,
     merging: RwSignal<Option<Origin>>,
@@ -81,6 +82,7 @@ impl Controls {
             menu: RwSignal::new(None),
             popover: NodeRef::new(),
             moving: RwSignal::new(None),
+            bulk_moving: RwSignal::new(false),
             dialog: NodeRef::new(),
             filter: RwSignal::new(String::new()),
             merging: RwSignal::new(None),
@@ -91,6 +93,7 @@ impl Controls {
     pub(super) fn open(self) -> bool {
         self.menu.with_untracked(Option::is_some)
             || self.moving.with_untracked(Option::is_some)
+            || self.bulk_moving.get_untracked()
             || self.merging.with_untracked(Option::is_some)
     }
 
@@ -148,6 +151,19 @@ impl Controls {
         }
     }
 
+    pub(super) fn show_bulk_move(self) {
+        let _ = self.close();
+        if let Some(dialog) = self.dialog.get_untracked() {
+            self.filter.set(String::new());
+            self.bulk_moving.set(true);
+            if dialog.show_modal().is_ok() {
+                platform::focus(FILTER);
+            } else {
+                self.bulk_moving.set(false);
+            }
+        }
+    }
+
     fn show_merge(self, c: Ctx, origin: Origin) {
         let opener = self.close();
         self.opener.set_value(opener);
@@ -178,7 +194,9 @@ impl Controls {
         {
             let _ = el.hide_popover();
         }
-        if self.moving.try_update(Option::take).flatten().is_some() {
+        if self.moving.try_update(Option::take).flatten().is_some()
+            || self.bulk_moving.try_update(std::mem::take).unwrap_or(false)
+        {
             super::room_actions::close_dialog(self.dialog);
         }
         if self.merging.try_update(Option::take).flatten().is_some() {
@@ -193,8 +211,11 @@ impl Controls {
             .get_untracked()
             .or_else(|| self.moving.get_untracked().map(|m| m.origin))
             .or_else(|| self.merging.get_untracked());
+        let bulk = self.bulk_moving.get_untracked();
         let opener = self.close();
-        if let Some(origin) = origin {
+        if bulk {
+            platform::focus("bulk-move");
+        } else if let Some(origin) = origin {
             origin.restore(c, opener);
         }
     }
@@ -202,6 +223,7 @@ impl Controls {
 
 pub(super) fn row_menu(c: Ctx, task: TaskId, ev: &leptos::ev::MouseEvent) {
     if c.read_only()
+        || untrack(|| c.multi_active())
         || !c
             .state
             .with_untracked(|s| actionable_task(s, task).is_some())
@@ -463,6 +485,10 @@ pub(super) fn Overlays() -> impl IntoView {
     on_cleanup(move || resize.remove());
     Effect::new(move |_| {
         let moving = controls.moving.get();
+        if controls.bulk_moving.get() && (c.bulk_ids().len() < 2 || c.read_only() || c.drawer.get())
+        {
+            controls.dismiss(c);
+        }
         if let Some(origin) = controls
             .menu
             .get()
@@ -659,13 +685,22 @@ fn MovePicker() -> impl IntoView {
     let c = ctx();
     let controls = c.task_actions;
     let groups = Memo::new(move |_| {
-        let Some(moving) = controls.moving.get() else {
+        let moving = controls.moving.get();
+        let bulk = controls.bulk_moving.get();
+        if moving.is_none() && !bulk {
             return Vec::new();
-        };
+        }
+        let ids = if bulk { c.bulk_ids() } else { Vec::new() };
         controls.filter.with(|filter| {
             c.state.with(|s| {
-                organize::task_move_groups(s, moving.origin.task, filter)
-                    .unwrap_or_default()
+                let groups = if let Some(moving) = moving {
+                    organize::task_move_groups(s, moving.origin.task, filter).unwrap_or_default()
+                } else {
+                    organize::task_destination_groups(s, filter, |id| {
+                        !todo_client::selection::can_move(s, &ids, id)
+                    })
+                };
+                groups
                     .into_iter()
                     .map(|group| Group {
                         id: group.collection.map(|c| c.id),
@@ -797,6 +832,10 @@ fn MoveChoice(id: ListId, group: Memo<Option<Group>>) -> impl IntoView {
             on:click=move |_| {
                 if let Some(moving) = c.task_actions.moving.get_untracked() {
                     change(c, moving.origin, Some((moving.from, id)));
+                } else if c.task_actions.bulk_moving.get_untracked()
+                    && c.apply_bulk(todo_client::selection::BulkTaskAction::Move { list: id })
+                {
+                    c.task_actions.dismiss(c);
                 }
             }>
             {move || mark.get().map(|(hue, mark)| view! { <span class="move-glyph" data-list-hue=hue>{glyph(mark)}</span> })}

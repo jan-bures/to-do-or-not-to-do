@@ -94,6 +94,8 @@ fun DueDateCard(
     onCancel: () -> Unit,
     modifier: Modifier = Modifier,
     markToday: Boolean = true,
+    clearAvailable: Boolean = due != null,
+    repeatNote: String = REPEAT_NOTE,
 ) {
     val d = LocalDesign.current
     val r = d.room
@@ -130,9 +132,9 @@ fun DueDateCard(
                 .padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S5.dp, top = if (compact) S.S3.dp else 0.dp),
             verticalArrangement = Arrangement.spacedBy(S.S3.dp),
         ) {
-            if (repeats && due != null) Label(REPEAT_NOTE, Tokens.Type.META_PHONE, r.ink3, maxLines = 2)
+            if (repeats && clearAvailable) Label(repeatNote, Tokens.Type.META_PHONE, r.ink3, maxLines = 2)
             Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
-                if (due != null) Button("Clear", primary = false, modifier = Modifier.weight(1f)) { onSave(null) }
+                if (clearAvailable) Button("Clear", primary = false, modifier = Modifier.weight(1f)) { onSave(null) }
                 Button("Cancel", primary = false, modifier = Modifier.weight(1f), onClick = onCancel)
                 val picked = state.selectedDateMillis
                 Button("Save", primary = true, modifier = Modifier.weight(1f), enabled = picked != null) {

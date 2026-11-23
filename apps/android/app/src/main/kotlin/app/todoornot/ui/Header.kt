@@ -64,6 +64,7 @@ fun RoomHeader(
     collapse: HeaderCollapse,
     onMenu: () -> Unit,
     bar: Boolean = true,
+    selection: (@Composable () -> Unit)? = null,
     actions: @Composable RowScope.() -> Unit,
 ) {
     val outer = LocalDesign.current
@@ -74,7 +75,7 @@ fun RoomHeader(
     val sun: () -> Float? = remember(room.key, motion) { { motion.sun(room.key) } }
     val nightInk by remember(dusk) { derivedStateOf { dusk().nightInk } }
     TodoTheme(dark = outer.dark || nightInk, roomHue = outer.roomHue) {
-        HeaderBody(room, landscape, collapse, onMenu, bar, outer, dusk, sun, actions)
+        HeaderBody(room, landscape, collapse, onMenu, bar, outer, dusk, sun, selection, actions)
     }
 }
 
@@ -88,6 +89,7 @@ private fun HeaderBody(
     outer: Design,
     dusk: () -> DuskLook,
     sun: () -> Float?,
+    selection: (@Composable () -> Unit)?,
     actions: @Composable RowScope.() -> Unit,
 ) {
     val d = LocalDesign.current
@@ -102,7 +104,9 @@ private fun HeaderBody(
     }
     val motion = tween<IntSize>(Tokens.Motion.PANEL, easing = Tokens.Motion.EASE_STANDARD.cubic())
     Column(sky.fillMaxWidth().statusBarsPadding()) {
-        AnimatedVisibility(bar, enter = expandVertically(motion), exit = shrinkVertically(motion)) {
+        if (selection != null) {
+            selection()
+        } else AnimatedVisibility(bar, enter = expandVertically(motion), exit = shrinkVertically(motion)) {
             Row(
                 Modifier.fillMaxWidth().height(Tokens.Metrics.Phone.APP_BAR.dp).padding(horizontal = S.S2.dp),
                 verticalAlignment = Alignment.CenterVertically,

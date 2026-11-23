@@ -36,6 +36,7 @@ use tokio::task::JoinHandle;
 
 pub mod activity;
 pub mod attachments;
+pub mod bulk;
 pub mod merge;
 pub mod organize;
 pub mod trash;
@@ -362,6 +363,33 @@ fn step_id(id: &str) -> Result<StepId, FfiError> {
 
 fn list_id(id: &str) -> Result<ListId, FfiError> {
     id.parse().map_err(|_| invalid("no such list"))
+}
+
+fn destinations(groups: Vec<intent::organize::TaskMoveGroup<'_>>) -> Vec<DestinationGroup> {
+    groups
+        .into_iter()
+        .map(|group| DestinationGroup {
+            heading: group.heading,
+            lists: group
+                .lists
+                .into_iter()
+                .map(|dest| {
+                    let list = dest.list;
+                    Destination {
+                        id: list.id.to_string(),
+                        name: crate::labels::one_line(&list.name),
+                        glyph: crate::lists::list_glyph(&list.name).into(),
+                        hue: crate::lists::swatch(
+                            list.color.as_deref(),
+                            list.id.as_uuid().as_bytes(),
+                        )
+                        .into(),
+                        current: dest.current,
+                    }
+                })
+                .collect(),
+        })
+        .collect()
 }
 
 fn collection_id(id: &str) -> Result<CollectionId, FfiError> {
@@ -980,30 +1008,7 @@ impl TodoEngine {
         id.parse()
             .ok()
             .and_then(|id| intent::organize::task_move_groups(&state, id, &filter))
-            .unwrap_or_default()
-            .into_iter()
-            .map(|group| DestinationGroup {
-                heading: group.heading,
-                lists: group
-                    .lists
-                    .into_iter()
-                    .map(|dest| {
-                        let list = dest.list;
-                        Destination {
-                            id: list.id.to_string(),
-                            name: crate::labels::one_line(&list.name),
-                            glyph: crate::lists::list_glyph(&list.name).into(),
-                            hue: crate::lists::swatch(
-                                list.color.as_deref(),
-                                list.id.as_uuid().as_bytes(),
-                            )
-                            .into(),
-                            current: dest.current,
-                        }
-                    })
-                    .collect(),
-            })
-            .collect()
+            .map_or_else(Vec::new, destinations)
     }
 
     /// Moves to the front of another list. Queues nothing if the picker is stale or the list is the same.

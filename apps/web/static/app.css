@@ -160,7 +160,8 @@ a {
 }
 
 /* The list's left hairline lives inside .main; the detail's has its own track. */
-.app.has-detail {
+.app.has-detail,
+.app.has-bulk-summary {
   --room-min: calc(var(--desktop-list-min-beside-detail) + var(--hairline));
   --detail-max: calc(100% - var(--desktop-sidebar) - var(--room-min) - var(--hairline));
   grid-template-columns: var(--desktop-sidebar) minmax(var(--room-min), 1fr) var(--hairline)
@@ -244,6 +245,20 @@ a {
 .has-detail .detail {
   display: flex;
 }
+
+.bulk-summary {
+  grid-area: detail;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: var(--space-2);
+  background: var(--color-pane);
+  color: var(--color-accent-strong);
+  font: var(--text-body);
+}
+
+.bulk-summary p { margin: 0; }
 
 .detail-scroll {
   flex: 1;
@@ -1916,6 +1931,64 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   font: var(--text-empty-line);
   letter-spacing: var(--text-empty-line-tracking);
   color: var(--color-ink-2);
+}
+
+.bulk-bar {
+  flex: none;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  min-height: var(--desktop-toast-inset);
+  gap: var(--space-2) var(--space-3);
+  padding: var(--space-2) var(--desktop-list-pad-x);
+  border-top: var(--hairline) solid var(--color-line);
+  background: var(--color-wash);
+}
+
+.bulk-count {
+  color: var(--color-accent-strong);
+  font: var(--text-caps-label);
+}
+
+.bulk-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1);
+}
+
+.bulk-tool {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+  min-height: var(--component-button-small);
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-button);
+  color: var(--color-ink);
+}
+
+.bulk-tool.danger { color: var(--color-danger-ink); }
+.bulk-tool:not(:disabled):hover { background: var(--color-pane); }
+.bulk-cursor:has(.row-title:focus-visible) { box-shadow: inset 0 0 0 var(--hairline) var(--color-accent); }
+
+@media (max-width: 759px) {
+  .bulk-bar { padding: 0 var(--space-4) var(--space-2); gap: 0; }
+  .bulk-count { grid-column: 1 / span 2; grid-row: 1; }
+  .bulk-close { grid-column: 3; grid-row: 1; width: var(--phone-touch); height: var(--phone-touch); }
+  .bulk-tools {
+    grid-column: 1 / -1;
+    grid-row: 2;
+    display: grid;
+    grid-template-columns: repeat(6, minmax(var(--phone-touch), 1fr));
+    overflow-x: auto;
+  }
+  .bulk-tools:empty { display: none; }
+  .bulk-tool {
+    flex-direction: column;
+    justify-content: center;
+    min-height: var(--phone-touch);
+    padding: var(--space-1);
+    white-space: nowrap;
+  }
 }
 
 .list-foot {

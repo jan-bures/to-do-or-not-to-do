@@ -101,6 +101,11 @@ pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
+        "multi-select" => {
+            let mut f = my_day();
+            f.ui.task = None;
+            Some(f)
+        }
         "work" => Some(work()),
         "popout-pinned" | "popout-unpinned" => Some(popout()),
         // Keep the same detail and task row in both captures, outside the My Day filter.

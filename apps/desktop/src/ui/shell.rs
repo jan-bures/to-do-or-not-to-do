@@ -4,6 +4,7 @@
 
 mod activity;
 mod attachments;
+mod bulk;
 mod detail;
 mod device_pairing;
 mod email_drop;
@@ -62,6 +63,9 @@ actions!(
         FocusFilter,
         NextTask,
         PreviousTask,
+        SelectAllTasks,
+        ExtendTasksUp,
+        ExtendTasksDown,
         EditTask,
         EditDue,
         CyclePriority,
@@ -107,6 +111,10 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("down", NextTask, list),
         KeyBinding::new("k", PreviousTask, list),
         KeyBinding::new("up", PreviousTask, list),
+        KeyBinding::new("ctrl-a", SelectAllTasks, list),
+        KeyBinding::new("cmd-a", SelectAllTasks, list),
+        KeyBinding::new("shift-up", ExtendTasksUp, list),
+        KeyBinding::new("shift-down", ExtendTasksDown, list),
         KeyBinding::new("escape", Escape, list),
     ]
 }
@@ -241,6 +249,8 @@ pub struct ShellView {
     landscape: HeaderCache,
     quick_add: Entity<TextInput>,
     list_focus: FocusHandle,
+    multi: todo_client::selection::Selection,
+    bulk_focus: [FocusHandle; 7],
     rows: UniformListScrollHandle,
     trash_selected: Option<todo_core::ids::EntityId>,
     /// The finished day's hand-over, which scrolls when it's taller than the pane.
@@ -426,6 +436,8 @@ impl ShellView {
             quick_add,
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
+            multi: todo_client::selection::Selection::default(),
+            bulk_focus: std::array::from_fn(|_| cx.focus_handle()),
             trash_selected: None,
             handover_scroll: ScrollHandle::new(),
             handover_bar: kit::Scrollbar::default(),
@@ -572,12 +584,13 @@ impl ShellView {
             self.clear_undo();
         }
         if room_changed {
+            self.multi.clear();
             self.motion.settle_all();
             self.row_lifts.clear();
             self.row_bounds.borrow_mut().clear();
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
-            MenuKind::Room { .. } | MenuKind::Task { .. } => room_changed,
+            MenuKind::Room { .. } | MenuKind::Task { .. } | MenuKind::BulkMove => room_changed,
             MenuKind::Priority { task }
             | MenuKind::Tags { task, .. }
             | MenuKind::Repeat { task, .. }
@@ -651,6 +664,9 @@ impl ShellView {
                 .any(|r| r.id == *id && r.blocked.is_none())
         });
         self.shell = shell;
+        if self.multi.cursor().is_some() {
+            self.multi.retain_visible(&self.nav_tasks());
+        }
         if self.animate {
             self.aim_detail();
         } else {
@@ -1011,6 +1027,11 @@ impl ShellView {
             ]
             .into_iter()
             .any(|stop| self.stop_handle(stop).is_focused(window) && !self.has_stop(stop))
+            || self
+                .bulk_focus
+                .iter()
+                .enumerate()
+                .any(|(i, focus)| focus.is_focused(window) && !self.bulk_stop(i))
             || (self.sync_focus.is_focused(window) && self.store.sync().failed == 0)
         {
             window.focus(&self.list_focus, cx);
@@ -1023,6 +1044,17 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if fixture == "multi-select" {
+            self.change_selection(
+                |selection, rows, _| {
+                    if let Some(last) = rows.get(2) {
+                        selection.range(rows, *last, rows.first().copied());
+                    }
+                },
+                cx,
+            );
+            return;
+        }
         let pairing = match fixture {
             "device-settings" => Some(device_pairing::Mode::Settings),
             "device-invite" => Some(device_pairing::Mode::Invite),
@@ -1616,6 +1648,7 @@ impl ShellView {
             self.keep_unsaved(cx);
             return;
         }
+        self.multi.clear();
         let revealed = self.ui.select_room(&self.store.view(), room);
         self.refresh_with_collapse_change(revealed, cx);
     }
@@ -1636,6 +1669,7 @@ impl ShellView {
             self.keep_unsaved(cx);
             return;
         }
+        self.multi.clear();
         self.ui.task = id;
         self.refresh(cx);
         if let Some(i) = self.shell.selected_task {
@@ -1912,8 +1946,9 @@ impl ShellView {
             return;
         }
         let at = self
-            .ui
-            .task
+            .multi
+            .cursor()
+            .or(self.ui.task)
             .and_then(|id| tasks.iter().position(|&t| t == id));
         let next = match at {
             None if by > 0 => 0,
@@ -2694,6 +2729,8 @@ impl ShellView {
             (Some(meta), None)
         };
         let id = task.id;
+        let bulk_selected = room.is_some() && self.multi.contains(id);
+        let selected = selected || bulk_selected;
         let check = match look {
             Some(l) => kit::checkbox_at(
                 p,
@@ -2710,9 +2747,11 @@ impl ShellView {
             .flex_none()
             .child(check)
             .when_some(room, |el, room| {
-                el.on_click(cx.listener(move |this, _, _, cx| {
+                el.on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
                     cx.stop_propagation();
-                    if this.row_can_act(room, id) {
+                    if this.row_can_act(room, id)
+                        && !this.modified_task_click(id, click.modifiers(), cx)
+                    {
                         this.toggle_complete(id, cx);
                     }
                 }))
@@ -2764,12 +2803,16 @@ impl ShellView {
                         .justify_center()
                         .child(kit::priority(p, task.priority))
                         .when_some(room, |el, room| {
-                            el.on_click(cx.listener(move |this, _, _, cx| {
-                                cx.stop_propagation();
-                                if this.row_can_act(room, id) {
-                                    this.cycle_priority(id, cx);
-                                }
-                            }))
+                            el.on_click(cx.listener(
+                                move |this, click: &gpui::ClickEvent, _, cx| {
+                                    cx.stop_propagation();
+                                    if this.row_can_act(room, id)
+                                        && !this.modified_task_click(id, click.modifiers(), cx)
+                                    {
+                                        this.cycle_priority(id, cx);
+                                    }
+                                },
+                            ))
                         }),
                 )
             })
@@ -2811,9 +2854,11 @@ impl ShellView {
                                     "Mark as important"
                                 },
                             ))
-                            .on_click(cx.listener(move |this, _, _, cx| {
+                            .on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
                                 cx.stop_propagation();
-                                if this.row_can_act(room, id) {
+                                if this.row_can_act(room, id)
+                                    && !this.modified_task_click(id, click.modifiers(), cx)
+                                {
                                     this.toggle_task_glyph(id, Icon::Star, cx);
                                 }
                             }))
@@ -2824,9 +2869,11 @@ impl ShellView {
                     cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
                         if this.row_can_act(room, id) {
                             window.focus(&this.list_focus, cx);
-                            this.select_task(Some(id), cx);
-                            if this.ui.compact && event.click_count() >= 2 {
-                                this.show_task_in_main(id, cx);
+                            if !this.modified_task_click(id, event.modifiers(), cx) {
+                                this.select_task(Some(id), cx);
+                                if this.ui.compact && event.click_count() >= 2 {
+                                    this.show_task_in_main(id, cx);
+                                }
                             }
                         }
                     }),
@@ -2835,7 +2882,7 @@ impl ShellView {
                 .on_mouse_down(
                     MouseButton::Right,
                     cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                        if this.row_can_act(room, id) {
+                        if this.row_can_act(room, id) && this.multi.cursor().is_none() {
                             cx.stop_propagation();
                             let kind = MenuKind::Task {
                                 id,
@@ -2855,6 +2902,20 @@ impl ShellView {
             .filter(|m| m.overlay.look(self.frame).open)
             .and_then(|m| m.kind.task())
             == Some(id);
+        let cursor =
+            room.is_some() && self.multi.cursor() == Some(id) && self.list_focus.is_focused(window);
+        let row = row.when(bulk_selected || cursor, |row| {
+            row.role(gpui::Role::Button)
+                .aria_label(task.title.clone())
+                .aria_toggled(if bulk_selected {
+                    gpui::Toggled::True
+                } else {
+                    gpui::Toggled::False
+                })
+                .when(cursor, |row| {
+                    row.child(div().absolute().inset_0().border_1().border_color(p.accent))
+                })
+        });
         if selected {
             row.bg(p.wash).child(
                 div()
@@ -3207,6 +3268,15 @@ impl ShellView {
                             this.move_selection(-1, cx);
                         }
                     }))
+                    .on_action(cx.listener(|this, _: &SelectAllTasks, _, cx| {
+                        this.change_selection(todo_client::selection::Selection::all, cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ExtendTasksUp, _, cx| {
+                        this.change_selection(|s, rows, previous| s.extend(rows, -1, previous), cx);
+                    }))
+                    .on_action(cx.listener(|this, _: &ExtendTasksDown, _, cx| {
+                        this.change_selection(|s, rows, previous| s.extend(rows, 1, previous), cx);
+                    }))
                     // Space completes or reopens the selected task, and Delete deletes it (`list_key`):
                     // a held key's repeats are consumed without acting.
                     .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
@@ -3479,10 +3549,14 @@ impl ShellView {
         // Picking a task opens it in the detail pane, like a row.
         let selected = self.ui.task;
         let pick = |id: TaskId| {
-            cx.listener(move |this: &mut Self, _: &gpui::ClickEvent, window, cx| {
-                window.focus(&this.list_focus, cx);
-                this.select_task(Some(id), cx);
-            })
+            cx.listener(
+                move |this: &mut Self, click: &gpui::ClickEvent, window, cx| {
+                    window.focus(&this.list_focus, cx);
+                    if this.task_is_visible(id) {
+                        this.click_task(id, click.modifiers(), cx);
+                    }
+                },
+            )
         };
         // A hand-over task completed from its box (or with Space) plays the row's choreography in its
         // place, the same `RowLook` as a list row's: the disc fills, the title dims and the
@@ -3493,7 +3567,10 @@ impl ShellView {
             let height = component::ICON_BUTTON + space::S1;
             div()
                 .id(SharedString::from(format!("next-{}", task.id)))
-                .when(selected == Some(task.id), |d| d.bg(p.wash))
+                .when(
+                    selected == Some(task.id) || live && self.multi.contains(task.id),
+                    |d| self.handover_selected(d),
+                )
                 .when(interactive, |el| {
                     el.hover(|s| s.bg(p.hover)).on_click(pick(task.id))
                 })
@@ -3528,7 +3605,10 @@ impl ShellView {
         // It closes from below, as a list row does in its slot: the card keeps its height inside a clip.
         let card = div()
             .id("next-first")
-            .when(selected == Some(first.id), |d| d.bg(p.wash))
+            .when(
+                selected == Some(first.id) || live && self.multi.contains(first.id),
+                |d| self.handover_selected(d),
+            )
             .when(interactive, |el| el.on_click(pick(first.id)))
             .flex_none()
             .h(px(desktop::SUNRISE_MARK))
@@ -3651,13 +3731,17 @@ impl ShellView {
             .flex_none()
             .child(mark)
             .when(interactive, |el| {
-                el.on_click(cx.listener(move |this, _, window, cx| {
-                    cx.stop_propagation();
-                    if this.shell.room.key == room && this.task_is_visible(id) {
-                        window.focus(&this.list_focus, cx);
-                        this.toggle_complete(id, cx);
-                    }
-                }))
+                el.on_click(
+                    cx.listener(move |this, click: &gpui::ClickEvent, window, cx| {
+                        cx.stop_propagation();
+                        if this.shell.room.key == room && this.task_is_visible(id) {
+                            window.focus(&this.list_focus, cx);
+                            if !this.modified_task_click(id, click.modifiers(), cx) {
+                                this.toggle_complete(id, cx);
+                            }
+                        }
+                    }),
+                )
             })
     }
 
@@ -3700,6 +3784,7 @@ impl ShellView {
             || on(&self.activity_refresh_focus)
             || on(&self.activity_more_focus)
             || on(&self.attachment_ui.add)
+            || self.bulk_focus.iter().any(on)
             || self.attachment_ui.rows.values().any(on)
         {
             Focus::Button
@@ -3745,6 +3830,13 @@ impl ShellView {
                 || (!self.animate && self.toast.look(self.frame).is_some_and(|t| t.active)),
             activity: self.activity_hints(),
         });
+        if self.list_focus.is_focused(window) && !self.nav_tasks().is_empty() {
+            if self.multi.cursor().is_some() {
+                keys.insert(0, ("Esc", "clear selection"));
+            }
+            keys.push(("Ctrl A", "select all"));
+            keys.push(("Shift ↑ ↓", "select range"));
+        }
         if self.shell.room.key == RoomKey::Trash {
             keys.retain(|(key, _)| *key != "Ctrl K");
             if self.list_focus.is_focused(window)
@@ -3892,6 +3984,7 @@ impl ShellView {
             Stop::SidebarSplitter => self.splitters.focus(Pane::Sidebar),
             Stop::List => &self.list_focus,
             Stop::Undo => &self.undo_focus,
+            Stop::Bulk(index) => &self.bulk_focus[index],
             Stop::RoomMenu => &self.room_menu_focus,
             Stop::ActivityFilter => &self.activity_filter_focus,
             Stop::ActivityRefresh => &self.activity_refresh_focus,
@@ -3929,6 +4022,7 @@ impl ShellView {
                     && self.toast.look(self.frame).is_some_and(|look| look.active)
                     && (self.last_undo.is_some() || !self.animate)
             }
+            Stop::Bulk(index) => self.bulk_stop(index),
             Stop::RoomMenu => self.has_room_menu(),
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
@@ -4145,6 +4239,7 @@ impl Render for ShellView {
                                     .child(self.list(window, cx))
                                     .children(overlay.into_iter().flatten()),
                             )
+                            .children(self.bulk_bar(window, cx))
                             .child(footer),
                     )
                     .children(detail)
@@ -4170,6 +4265,7 @@ impl Render for ShellView {
                             | MenuKind::Smart(_)
                             | MenuKind::Collection { .. }
                             | MenuKind::Task { .. }
+                            | MenuKind::BulkMove
                     )
                 },
                 cx,

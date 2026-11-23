@@ -1,5 +1,6 @@
 package app.todoornot.model
 
+import app.todoornot.core.BulkEdit
 import app.todoornot.core.DestinationGroup
 import app.todoornot.core.MergeCandidate
 import app.todoornot.core.ReminderRef
@@ -9,6 +10,10 @@ import app.todoornot.core.RoomKey
 interface Actions {
     fun open(room: RoomKey)
     fun select(id: String?)
+    fun toggleBulk(id: String, generation: Long) = Unit
+    fun clearBulk() = Unit
+    fun editBulk(edit: BulkEdit) = Unit
+    suspend fun bulkDestinations(tasks: List<String>, filter: String): List<DestinationGroup> = emptyList()
     fun add(title: String)
     fun previewDate(text: String): String?
     /**

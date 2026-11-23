@@ -614,6 +614,52 @@ async fn tracked_undo_restores_a_repeat_as_a_unit_but_refuses_a_conflicting_remo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bulk_completion_and_its_next_occurrences_sync_and_undo_together() {
+    use todo_client::selection::{BulkTaskAction, batch};
+
+    let server = TestServer::start().await;
+    let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
+    let b = client(server.transport(TOKEN_B), MemoryStorage::new(), beta());
+    let (ha, hb) = (spawn(&a), spawn(&b));
+    let (list, make_list) = new_list(&a, "Bulk undo");
+    a.submit(make_list).unwrap();
+    let ids = ["Water seedlings", "Check traps"].map(|title| {
+        let id = TaskId::from_uuid(a.new_uuid());
+        let mut task = NewTask::new(id, list, title);
+        task.due = Some("2026-11-21".parse().unwrap());
+        task.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+        a.submit(Command::CreateTask(Box::new(task))).unwrap();
+        id
+    });
+    eventually("tasks synced", WAIT, || {
+        converged(&a, &server) && converged(&b, &server)
+    })
+    .await;
+    let before = a.view();
+    let (cmd, label) = batch(&before, &ids, BulkTaskAction::Completion { done: true })
+        .unwrap()
+        .unwrap();
+    assert_eq!(label, "Completed 2 tasks");
+    let tracked = a.submit_tracked(cmd).unwrap();
+    eventually("both next occurrences synced", WAIT, || {
+        converged(&a, &server) && converged(&b, &server) && b.view().tasks.len() == 4
+    })
+    .await;
+    assert!(ids.iter().all(|id| b.view().tasks[id].is_done()));
+    assert!(matches!(
+        a.compensate_tracked(&tracked).unwrap(),
+        TrackedUndo::Queued(_)
+    ));
+    eventually("one undo restored the pre-batch data", WAIT, || {
+        converged(&a, &server) && converged(&b, &server) && before.data_eq(&b.view())
+    })
+    .await;
+    stop(&a, ha).await;
+    stop(&b, hb).await;
+    server.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn undo_can_cancel_the_latest_unsent_command() {
     let server = TestServer::start().await;
     let a = client(server.transport(TOKEN_A), MemoryStorage::new(), alpha());
