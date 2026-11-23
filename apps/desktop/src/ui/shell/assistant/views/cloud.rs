@@ -220,8 +220,19 @@ impl ShellView {
                 cx,
             ));
         }
-        card.when(!signed_in, |card| card.child(text(ty::META, p.ink_2,
-            "To-do keeps the account name or email and sign-in credentials protected on this PC. ChatGPT is a cloud service.")))
+        if signed_in {
+            // Signed in, the brand button would read as a second sign-in; adding an account is secondary.
+            return card.child(self.ai_button(
+                "assistant-chatgpt-continue",
+                "Add another ChatGPT account",
+                Tone::Quiet,
+                !running,
+                |this, _, cx| this.sign_in_chatgpt(None, false, cx),
+                cx,
+            ));
+        }
+        card.child(text(ty::META, p.ink_2,
+            "To-do keeps the account name or email and sign-in credentials protected on this PC. ChatGPT is a cloud service."))
             .child(
             self.ai_action(
                 "assistant-chatgpt-continue",
@@ -245,11 +256,7 @@ impl ShellView {
                 |this, _, cx| this.sign_in_chatgpt(None, false, cx),
                 cx,
             )
-            .aria_label(if signed_in {
-                "Continue with ChatGPT to add another account"
-            } else {
-                "Continue with ChatGPT"
-            }),
+            .aria_label("Continue with ChatGPT"),
         )
     }
 
