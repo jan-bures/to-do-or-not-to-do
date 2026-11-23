@@ -469,7 +469,13 @@ test("task shortcuts stay out of the composer and the open detail calendar", asy
   }
   await expect(add).toBeFocused();
   await expect(add).toHaveValue("pd ");
-  await dueButton.click();
+  await expect(priority).toHaveValue("Low");
+  // A key can arrive before the first animation frame moves focus to the active day.
+  await dueButton.evaluate((button) => {
+    button.focus();
+    button.click();
+    document.activeElement.dispatchEvent(new KeyboardEvent("keydown", { key: "p", bubbles: true }));
+  });
   await expect(calendar).toBeVisible();
   for (const key of ["p", "d", "Alt+ArrowUp", "Alt+ArrowDown"]) {
     await page.keyboard.press(key);

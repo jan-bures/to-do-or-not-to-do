@@ -271,8 +271,9 @@ pub(super) fn CalendarPopover(
         });
     };
     view! {
+        // Keep shell shortcuts out from the instant the popover opens, before focusing the day on the next frame.
         <div class="room-action-menu qa-calendar" popover="auto" id=popup.id node_ref=popup.node
-            role="dialog" aria-label="Choose due date" on:toggle=move |_| popup.toggle_event()
+            role="dialog" aria-label="Choose due date" tabindex="-1" autofocus on:toggle=move |_| popup.toggle_event()
             on:keydown=move |ev| popup.key(c, None, &ev)>
         <div class="qa-presets">{move || today.get().map(|today| calendar::presets(today).into_iter().map(|preset| view! {
             <button type="button" class="qa-preset" class:current=move || due.get() == preset.date
