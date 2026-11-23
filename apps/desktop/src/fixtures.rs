@@ -5,11 +5,11 @@
 //! screenshot renders it through the same derivation (`model::derive`) as the running app, so the gallery
 //! shows the real views, not a mock-up of them. No server is involved.
 
-use todo_core::command::{Command, NewTask, Placement, TaskPatch};
+use todo_core::command::{Command, ListFeaturesPatch, NewTask, Placement, TaskPatch};
 use todo_core::ids::{
     AttachmentId, CollectionId, LinkId, ListId, ReminderId, StepId, TagId, TaskId, uuid_v7,
 };
-use todo_core::model::{EmailLink, LinkKind, Priority};
+use todo_core::model::{EmailLink, LinkKind, ListView, Priority, WorkflowStatus};
 use todo_core::recurrence::{Recurrence, Rule};
 use todo_core::time::{Date, Timestamp, Weekday};
 use todo_core::{AccessLevel, Actor, AgentId, Grants, State, apply, decide};
@@ -107,6 +107,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(f)
         }
         "work" => Some(work()),
+        "list-status" | "list-settings" | "board" | "board-detail" => Some(workflow_room(name)),
         "quick-add-chips" | "quick-add-calendar" | "quick-add-priority" => Some(Fixture {
             quick_add_text: Some("Water the plants zítra !!"),
             ..my_day()
@@ -454,6 +455,8 @@ impl Builder {
         let mut new = NewTask::new(id, t.list, first);
         new.priority = t.priority;
         new.due = t.due.map(date);
+        new.start_date = t.start.map(date);
+        new.status = t.status;
         new.my_day = t.my_day.then(|| date("2026-11-21"));
         new.tags = t.tags.clone();
         new.notes = t.notes.into();
@@ -554,6 +557,8 @@ struct T {
     title: &'static str,
     priority: Priority,
     due: Option<&'static str>,
+    start: Option<&'static str>,
+    status: WorkflowStatus,
     reminder: Option<&'static str>,
     my_day: bool,
     tags: Vec<TagId>,
@@ -576,6 +581,8 @@ fn t(list: ListId, title: &'static str) -> T {
         title,
         priority: Priority::None,
         due: None,
+        start: None,
+        status: WorkflowStatus::Todo,
         reminder: None,
         my_day: false,
         tags: Vec::new(),
@@ -921,6 +928,167 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
         failed: Vec::new(),
         activity: activity_items(),
     }
+}
+
+fn workflow_room(name: &str) -> Fixture {
+    let mut b = Builder::new();
+    let home = b.collection("Home", "fern");
+    let renovation = b.list(home, "Home renovation", "clay");
+    let groceries = b.list(home, "Groceries", "teal");
+    let work = b.collection("Work", "lagoon");
+    let launch = b.list(work, "Q4 Launch", "azure");
+    let admin = b.list(work, "Admin", "cornflower");
+    b.run(
+        &owner(),
+        MORNING,
+        Command::UpdateList {
+            id: renovation,
+            name: None,
+            color: None,
+            features: Some(ListFeaturesPatch {
+                workflow: Some(true),
+                timeline: Some(true),
+                default_view: Some(if name == "list-status" {
+                    ListView::List
+                } else {
+                    ListView::Board
+                }),
+            }),
+        },
+    );
+    let hallway = b.tag("hallway");
+    let bathroom = b.tag("bathroom");
+    let permits = b.tag("permits");
+    let lights = b.tag("lighting");
+    let carpentry = b.tag("carpentry");
+    let materials = b.tag("materials");
+    let selected = b.task(T {
+        start: Some("2026-11-19"), due: Some("2026-11-23"), priority: Priority::High, my_day: true,
+        status: WorkflowStatus::InProgress, tags: vec![hallway], steps_done: 2,
+        steps: &["Remove coat rack and switch plates", "Steam and peel old hallway paper", "Fill plaster cracks and sand smooth", "Roll two coats of matte primer"],
+        notes: "Use low-VOC primer from the utility cupboard. Keep door trim taped until painting starts Tuesday.",
+        reminder: Some("2026-11-23T08:30:00Z"), created: "2026-11-15T08:00:00Z",
+        ..t(renovation, "Strip wallpaper and prime hallway walls")
+    });
+    b.task(T {
+        due: Some("2026-11-20"),
+        my_day: true,
+        status: WorkflowStatus::InProgress,
+        tags: vec![bathroom],
+        edited_by: Some(("codex", "2026-11-21T09:37:00Z")),
+        ..t(renovation, "Pick grout colour for bathroom tiles")
+    });
+    b.task(T {
+        start: Some("2026-11-20"),
+        due: Some("2026-11-26"),
+        status: WorkflowStatus::InProgress,
+        tags: vec![permits],
+        edited_by: Some(("claude", "2026-11-21T09:42:00Z")),
+        ..t(
+            renovation,
+            "Vyřídit ohlášení drobných stavebních úprav na úřadě",
+        )
+    });
+    b.task(T {
+        start: Some("2026-11-23"),
+        due: Some("2026-11-25"),
+        priority: Priority::Normal,
+        tags: vec![materials],
+        steps: &["Request oak", "Request walnut", "Compare finishes"],
+        steps_done: 1,
+        edited_by: Some(("claude", "2026-11-21T09:44:00Z")),
+        ..t(renovation, "Order matte oak flooring samples")
+    });
+    b.task(T {
+        due: Some("2026-11-24"),
+        priority: Priority::High,
+        my_day: true,
+        mail: Some((
+            "Kitchen outlet visit",
+            "you@example.com",
+            "2026-11-17T10:00:00Z",
+        )),
+        ..t(renovation, "Confirm electrician visit for kitchen outlets")
+    });
+    b.task(T {
+        start: Some("2026-11-26"),
+        due: Some("2026-11-27"),
+        tags: vec![bathroom],
+        steps: &["Measure mirror", "Measure alcove"],
+        ..t(renovation, "Measure bathroom vanity niche and mirror")
+    });
+    b.task(T {
+        status: WorkflowStatus::Backlog,
+        tags: vec![lights],
+        by: Some("pi"),
+        ..t(renovation, "Compare kitchen pendant lights")
+    });
+    b.task(T {
+        start: Some("2026-12-03"),
+        due: Some("2026-12-07"),
+        status: WorkflowStatus::Backlog,
+        tags: vec![carpentry],
+        ..t(renovation, "Get quote for hallway built-in wardrobe")
+    });
+    for (title, done) in [
+        ("Deliver old sofa to charity depot", "2026-11-21T09:15:00Z"),
+        (
+            "Shut off radiator valve in guest room",
+            "2026-11-21T08:40:00Z",
+        ),
+        ("Send floor plan PDF to contractor", "2026-11-20T10:00:00Z"),
+    ] {
+        b.task(T {
+            done: Some(done),
+            ..t(renovation, title)
+        });
+    }
+    for title in [
+        "Sketch the kitchen",
+        "Check the floor plan",
+        "Measure window trim",
+        "Catalogue paint samples",
+        "Map electrical outlets",
+        "Label storage boxes",
+        "Measure door frames",
+        "Clean the entryway",
+        "Book a delivery slot",
+        "Sort spare tiles",
+        "Find the tool manual",
+    ] {
+        b.task(T {
+            created: "2026-11-01T08:00:00Z",
+            done: Some("2026-11-12T09:00:00Z"),
+            ..t(renovation, title)
+        });
+    }
+    for title in ["Oats", "Lemons", "Chickpeas", "Yogurt", "Flour", "Coffee"] {
+        b.task(t(groceries, title));
+    }
+    for title in [
+        "Write the launch notes",
+        "Review the checklist",
+        "Prepare screenshots",
+        "Draft the announcement",
+    ] {
+        b.task(t(launch, title));
+    }
+    for title in ["Archive the invoices", "Renew the library card"] {
+        b.task(t(admin, title));
+    }
+    let mut f = fixture(
+        b,
+        UiState {
+            room: RoomKey::List(renovation),
+            task: matches!(name, "list-status" | "board-detail").then_some(selected),
+            ..UiState::default()
+        },
+        MORNING,
+    );
+    if name == "list-status" {
+        f.quick_add_text = Some("Install hallway sconces");
+    }
+    f
 }
 
 fn task_activity() -> Fixture {

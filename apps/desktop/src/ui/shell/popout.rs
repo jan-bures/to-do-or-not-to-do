@@ -471,7 +471,14 @@ impl ShellView {
                     .children(self.drag_preview(window))
                     .children(self.confirmation_scrim())
                     .children(self.popover(
-                        |k| matches!(k, super::MenuKind::Task { .. } | super::MenuKind::BulkMove),
+                        |k| {
+                            matches!(
+                                k,
+                                super::MenuKind::Task { .. }
+                                    | super::MenuKind::Status { at_row: true, .. }
+                                    | super::MenuKind::BulkMove
+                            )
+                        },
                         cx,
                     )),
             )

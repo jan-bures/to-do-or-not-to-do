@@ -101,6 +101,10 @@ pub(super) enum MenuKind {
     },
     Date(super::quick_pickers::Calendar),
     QuickPriority,
+    Status {
+        task: Option<TaskId>,
+        at_row: bool,
+    },
     /// The detail pane's priority picker.
     Priority {
         task: TaskId,
@@ -125,6 +129,7 @@ pub(super) enum MenuKind {
     },
     /// The list picker from the multi-selection bar.
     BulkMove,
+    BulkStatus,
     /// The sidebar footer's "N couldn't sync": the refused changes, to see and dismiss.
     SyncFailures,
 }
@@ -134,7 +139,11 @@ impl MenuKind {
     fn opens_up(self) -> bool {
         matches!(
             self,
-            Self::New | Self::Account { .. } | Self::SyncFailures | Self::BulkMove
+            Self::New
+                | Self::Account { .. }
+                | Self::SyncFailures
+                | Self::BulkMove
+                | Self::BulkStatus
         )
     }
 
@@ -148,7 +157,9 @@ impl MenuKind {
         match (self, other) {
             (Self::Account { .. }, Self::Account { .. })
             | (Self::Room { .. }, Self::Room { .. }) => true,
-            (Self::Date(a), Self::Date(b)) => a.task == b.task,
+            (Self::Date(a), Self::Date(b)) => {
+                a.task == b.task && (a.task.is_none() || a.starts == b.starts)
+            }
             (Self::List { id: a, .. }, Self::List { id: b, .. }) => a == b,
             (Self::Collection { id: a, .. }, Self::Collection { id: b, .. }) => a == b,
             (Self::Task { id: a, .. }, Self::Task { id: b, .. }) => a == b,
@@ -163,6 +174,7 @@ impl MenuKind {
     pub(super) fn task(self) -> Option<TaskId> {
         match self {
             Self::Task { id, .. } => Some(id),
+            Self::Status { task, .. } => task,
             _ => None,
         }
     }
@@ -183,6 +195,18 @@ impl MenuKind {
     }
 
     /// The same menu on another page (a confirmation, a picker, the colour swatches), where it has one.
+    fn settings(self) -> bool {
+        matches!(
+            self,
+            Self::Room {
+                page: Page::Settings
+            } | Self::List {
+                page: Page::Settings,
+                ..
+            }
+        )
+    }
+
     fn on_page(self, page: Page) -> Self {
         match self {
             Self::List { id, .. } => Self::List { id, page },
@@ -261,6 +285,15 @@ impl ShellView {
                 page: TaskPage::Links,
             } => menus::links_menu(&state, id),
             MenuKind::Date(_) => Vec::new(),
+            MenuKind::Status { task, .. } => match task {
+                Some(id) => self
+                    .task_stage(id)
+                    .map_or_else(Vec::new, |stage| menus::status_entries(task, stage)),
+                None if self.quick_features().workflow => {
+                    menus::status_entries(None, self.quick_stage())
+                }
+                None => Vec::new(),
+            },
             MenuKind::QuickPriority => menus::priority_entries(
                 self.quick_preview().priority.unwrap_or_default(),
                 MenuAction::QuickPriority,
@@ -309,6 +342,10 @@ impl ShellView {
                 id,
                 page: TaskPage::ConfirmMerge(target),
             } => menus::merge_confirmation(&state, id, target),
+            MenuKind::BulkStatus if self.on_board() && self.bulk_ids().len() >= 2 => {
+                menus::bulk_status_entries()
+            }
+            MenuKind::BulkStatus => Vec::new(),
             MenuKind::BulkMove => {
                 let filter = self
                     .menu
@@ -339,7 +376,13 @@ impl ShellView {
             crate::model::RoomKey::Activity(agent) if page == Page::Main => {
                 menus::activity_menu(&self.shell.sidebar.agents, agent)
             }
-            room => menus::room_menu(state, room, self.ui.show_completed, page),
+            room => {
+                let mut entries = menus::room_menu(state, room, self.ui.show_completed, page);
+                if self.on_board() {
+                    entries.retain(|e| !matches!(e, MenuEntry::Item(i) if i.action == MenuAction::ToggleCompleted));
+                }
+                entries
+            }
         }
     }
 
@@ -640,6 +683,9 @@ impl ShellView {
                     self.run_menu_action(action, true, window, cx);
                 }
             }
+            "escape" if menu.kind.settings() => {
+                self.run_menu_action(MenuAction::CloseListSettings, true, window, cx)
+            }
             "escape" | "tab" => self.close_menu(true, window, cx),
             _ => {}
         }
@@ -670,6 +716,38 @@ impl ShellView {
         match action {
             MenuAction::QuickPriority(level) => {
                 return self.quick_pick(super::quick_pickers::Pick::Priority(level), window, cx);
+            }
+            MenuAction::Status(task, stage) => {
+                if let Some(task) = task {
+                    self.close_menu(keyboard, window, cx);
+                    self.choose_status(task, stage, cx);
+                } else {
+                    self.quick_pick(
+                        super::quick_pickers::Pick::Status(super::workflow::open_stage(stage)),
+                        window,
+                        cx,
+                    );
+                }
+                return;
+            }
+            MenuAction::OpenListSettings | MenuAction::CloseListSettings => {
+                let page = if action == MenuAction::OpenListSettings {
+                    Page::Settings
+                } else {
+                    Page::Main
+                };
+                self.open_menu(menu.kind.on_page(page), menu.at, menu.trigger, window, cx);
+                if page == Page::Main {
+                    let entries = self.menu_entries(menu.kind.on_page(Page::Main));
+                    self.highlight(menus::index_of(&entries, "list-settings"));
+                } else if keyboard {
+                    self.highlight_first();
+                }
+                return;
+            }
+            MenuAction::ListSetting(id, setting) => {
+                self.apply_list_setting(id, setting, cx);
+                return;
             }
             // The menu turns into the confirmation, the collection picker or the swatches, in place.
             MenuAction::Repeat(task, a) => {
@@ -918,6 +996,13 @@ impl ShellView {
                 }
                 self.refresh(cx);
             }
+            MenuAction::BulkStatus(stage) => {
+                let action = super::workflow::open_stage(stage).map_or(
+                    todo_core::command::BulkTaskAction::Completion { done: true },
+                    |status| todo_core::command::BulkTaskAction::Status { status },
+                );
+                self.apply_bulk(action, window, cx);
+            }
             MenuAction::BulkMove(list) => {
                 self.apply_bulk(
                     todo_client::selection::BulkTaskAction::Move { list },
@@ -963,6 +1048,10 @@ impl ShellView {
             | MenuAction::ToggleTag(..)
             | MenuAction::CreateTag(_)
             | MenuAction::QuickPriority(_)
+            | MenuAction::Status(..)
+            | MenuAction::OpenListSettings
+            | MenuAction::CloseListSettings
+            | MenuAction::ListSetting(..)
             | MenuAction::Cancel => {}
         }
     }
@@ -1265,7 +1354,13 @@ impl ShellView {
     /// Keep a detail field visible while editing: hang its picker on the roomier side of the row.
     fn menu_opens_up(&self, kind: MenuKind) -> bool {
         let probe = match kind {
-            MenuKind::Date(c) if c.task.is_some() => Some("due-row"),
+            MenuKind::Date(c) if c.task.is_some() => {
+                Some(if c.starts { "starts-row" } else { "due-row" })
+            }
+            MenuKind::Status {
+                task: Some(_),
+                at_row: false,
+            } => Some("status-row"),
             MenuKind::Repeat { .. } => Some("repeat-row"),
             MenuKind::Reminder { .. } => Some("reminder-row"),
             _ => None,
@@ -1296,9 +1391,11 @@ impl ShellView {
         let kind = menu.kind;
         let footer_menu = match kind {
             MenuKind::BulkMove => Some("Move selected tasks to…"),
+            MenuKind::BulkStatus => Some("Set status for selected tasks"),
             MenuKind::New => Some("New"),
             MenuKind::Account { confirm: false } => Some("Settings"),
             MenuKind::QuickPriority => Some("Choose priority"),
+            MenuKind::Status { .. } => Some("Choose status"),
             _ => None,
         };
         let on = |item: &MenuItem| menu.highlight.as_ref() == Some(&item.key);
@@ -1411,6 +1508,22 @@ impl ShellView {
                     .style(ty::CAPS_LABEL)
                     .child(text.to_uppercase())
                     .into_any_element(),
+                MenuEntry::SettingToggle { item, description } => self
+                    .setting_toggle(item, description, on(item), live, cx)
+                    .into_any_element(),
+                MenuEntry::DefaultView(items) => self
+                    .default_view_choices(items, on, live, cx)
+                    .into_any_element(),
+                MenuEntry::Note(text) if kind.settings() => div()
+                    .mx(px(space::S2))
+                    .my(px(space::S1))
+                    .p(px(space::S2))
+                    .rounded(px(radius::MD))
+                    .bg(p.canvas)
+                    .style(ty::META)
+                    .text_color(p.ink_3)
+                    .child(text.clone())
+                    .into_any_element(),
                 MenuEntry::Note(text) => div()
                     .px(px(space::S3))
                     .py(px(space::S2))
@@ -1512,6 +1625,8 @@ impl ShellView {
         let shift = if opens_up { shift } else { -shift };
         let width = if kind == MenuKind::New {
             component::NEW_MENU
+        } else if kind.settings() {
+            desktop::CONFIRM + space::S4
         } else if matches!(kind, MenuKind::Date(_)) || menus::is_wide(&entries) {
             desktop::CONFIRM
         } else {
@@ -1558,8 +1673,14 @@ impl ShellView {
             )
             .children(filter)
             .child(contents)
-            .when(live && matches!(kind, MenuKind::Date(_)), |el| {
-                el.role(Role::Dialog).aria_label("Choose due date")
+            .when(live, |el| match kind {
+                MenuKind::Date(c) => el.role(Role::Dialog).aria_label(if c.starts {
+                    "Choose start date"
+                } else {
+                    "Choose due date"
+                }),
+                kind if kind.settings() => el.role(Role::Dialog).aria_label("List settings"),
+                _ => el,
             })
             .when_some(footer_menu.filter(|_| live), |d, label| {
                 d.role(Role::Menu).aria_label(label)
@@ -1579,11 +1700,13 @@ impl ShellView {
             });
         let popover = match menu.at {
             Some(at) => anchored()
-                .anchor(if kind == MenuKind::BulkMove {
-                    Anchor::BottomLeft
-                } else {
-                    Anchor::TopLeft
-                })
+                .anchor(
+                    if matches!(kind, MenuKind::BulkMove | MenuKind::BulkStatus) {
+                        Anchor::BottomLeft
+                    } else {
+                        Anchor::TopLeft
+                    },
+                )
                 .position(at)
                 .snap_to_window_with_margin(px(space::S2))
                 .child(body),

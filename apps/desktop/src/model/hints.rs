@@ -73,7 +73,10 @@ pub enum Stop {
     Undo,
     /// The room header's "more" button, in rooms that have a menu.
     RoomMenu,
+    View(usize),
     QuickInput,
+    QuickRemoveStatus,
+    QuickStatus,
     QuickRemoveDate,
     QuickRemovePriority,
     QuickDue,
@@ -91,6 +94,8 @@ pub enum Stop {
     DetailMyDay,
     /// Important toggle in the detail toolbar.
     DetailImportant,
+    Status,
+    Starts,
     /// The Due row, when a task is open.
     Due,
     /// Reminder, when a task is open.
@@ -107,8 +112,10 @@ pub enum Stop {
     Account,
 }
 
-pub const QUICK_ADD_STOPS: [Stop; 5] = [
+pub const QUICK_ADD_STOPS: [Stop; 7] = [
     Stop::QuickInput,
+    Stop::QuickRemoveStatus,
+    Stop::QuickStatus,
     Stop::QuickRemoveDate,
     Stop::QuickRemovePriority,
     Stop::QuickDue,
@@ -119,7 +126,7 @@ pub const QUICK_ADD_STOPS: [Stop; 5] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 29] = [
+pub const TAB_ORDER: [Stop; 37] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -128,12 +135,18 @@ pub const TAB_ORDER: [Stop; 29] = [
     Stop::Bulk(3),
     Stop::Bulk(4),
     Stop::Bulk(5),
+    Stop::Bulk(7),
     Stop::Bulk(6),
     Stop::Undo,
+    Stop::View(0),
+    Stop::View(1),
+    Stop::View(2),
     Stop::RoomMenu,
     Stop::QuickInput,
+    Stop::QuickRemoveStatus,
     Stop::QuickRemoveDate,
     Stop::QuickRemovePriority,
+    Stop::QuickStatus,
     Stop::QuickDue,
     Stop::QuickPriority,
     Stop::ActivityFilter,
@@ -142,6 +155,8 @@ pub const TAB_ORDER: [Stop; 29] = [
     Stop::DetailSplitter,
     Stop::DetailMyDay,
     Stop::DetailImportant,
+    Stop::Status,
+    Stop::Starts,
     Stop::Due,
     Stop::Reminder,
     Stop::Repeat,
@@ -165,6 +180,8 @@ pub enum ScrollPane {
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
         Stop::DetailMyDay | Stop::DetailImportant => Some((ScrollPane::Detail, "detail-toolbar")),
+        Stop::Status => Some((ScrollPane::Detail, "status-row")),
+        Stop::Starts => Some((ScrollPane::Detail, "starts-row")),
         Stop::Due => Some((ScrollPane::Detail, "due-row")),
         Stop::Reminder => Some((ScrollPane::Detail, "reminder-row")),
         Stop::Repeat => Some((ScrollPane::Detail, "repeat-row")),
@@ -175,7 +192,10 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::Undo
         | Stop::Bulk(_)
         | Stop::RoomMenu
+        | Stop::View(_)
         | Stop::QuickInput
+        | Stop::QuickStatus
+        | Stop::QuickRemoveStatus
         | Stop::QuickRemoveDate
         | Stop::QuickRemovePriority
         | Stop::QuickDue
@@ -615,12 +635,18 @@ mod tests {
                 Bulk(3),
                 Bulk(4),
                 Bulk(5),
+                Bulk(7),
                 Bulk(6),
                 Undo,
+                View(0),
+                View(1),
+                View(2),
                 RoomMenu,
                 QuickInput,
+                QuickRemoveStatus,
                 QuickRemoveDate,
                 QuickRemovePriority,
+                QuickStatus,
                 QuickDue,
                 QuickPriority,
                 ActivityFilter,
@@ -629,6 +655,8 @@ mod tests {
                 DetailSplitter,
                 DetailMyDay,
                 DetailImportant,
+                Status,
+                Starts,
                 Due,
                 Reminder,
                 Repeat,
@@ -651,6 +679,8 @@ mod tests {
                 Repeat,
                 Reminder,
                 Due,
+                Starts,
+                Status,
                 DetailImportant,
                 DetailMyDay,
                 DetailSplitter,
@@ -659,12 +689,18 @@ mod tests {
                 ActivityFilter,
                 QuickPriority,
                 QuickDue,
+                QuickStatus,
                 QuickRemovePriority,
                 QuickRemoveDate,
+                QuickRemoveStatus,
                 QuickInput,
                 RoomMenu,
+                View(2),
+                View(1),
+                View(0),
                 Undo,
                 Bulk(6),
+                Bulk(7),
                 Bulk(5),
                 Bulk(4),
                 Bulk(3),
@@ -686,7 +722,14 @@ mod tests {
         let extra_detail_control = |s| {
             matches!(
                 s,
-                DetailMyDay | DetailImportant | Due | Attachment(_) | Bulk(_)
+                DetailMyDay
+                    | DetailImportant
+                    | Status
+                    | Starts
+                    | Due
+                    | Attachment(_)
+                    | Bulk(_)
+                    | View(_)
             ) || QUICK_ADD_STOPS.contains(&s)
         };
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
@@ -829,11 +872,17 @@ mod tests {
     #[test]
     fn quick_add_tabs_past_absent_chips_and_both_picker_buttons_are_reachable() {
         use Stop::*;
-        let present = |s| !matches!(s, QuickRemoveDate | QuickRemovePriority);
+        let present = |s| {
+            !matches!(
+                s,
+                QuickRemoveDate | QuickRemovePriority | QuickRemoveStatus | QuickStatus
+            )
+        };
         assert_eq!(tab_stop(QuickInput, true, present), QuickDue);
         assert_eq!(tab_stop(QuickDue, true, present), QuickPriority);
         assert_eq!(tab_stop(QuickPriority, false, present), QuickDue);
-        assert_eq!(tab_stop(QuickDue, false, |_| true), QuickRemovePriority);
+        assert_eq!(tab_stop(QuickDue, false, |_| true), QuickStatus);
+        assert_eq!(tab_stop(QuickStatus, false, |_| true), QuickRemovePriority);
     }
 
     #[test]
@@ -858,10 +907,12 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_from_reminder_reveals_due_then_the_detail_toolbar() {
+    fn shift_tab_from_reminder_reveals_due_workflow_then_the_detail_toolbar() {
         let mut from = Stop::Reminder;
         for (expected, probe) in [
             (Stop::Due, "due-row"),
+            (Stop::Starts, "starts-row"),
+            (Stop::Status, "status-row"),
             (Stop::DetailImportant, "detail-toolbar"),
             (Stop::DetailMyDay, "detail-toolbar"),
         ] {
@@ -883,6 +934,9 @@ mod tests {
                     Undo | DetailSplitter
                         | DetailMyDay
                         | DetailImportant
+                        | Status
+                        | Starts
+                        | View(_)
                         | Due
                         | Reminder
                         | Repeat

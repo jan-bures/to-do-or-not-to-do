@@ -21,6 +21,7 @@ pub mod menus;
 pub mod motion;
 pub mod popouts;
 pub mod reminders;
+pub mod workflow;
 pub use todo_client::intent::{self as commands, quick_add};
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -268,6 +269,8 @@ pub struct UiState {
     pub leaving: BTreeMap<TaskId, todo_core::model::Task>,
     /// Collection IDs whose child lists are hidden in the sidebar.
     pub collapsed_collections: BTreeSet<CollectionId>,
+    /// Per-list override of the automatic Board Done rail collapse.
+    pub board_done: BTreeMap<ListId, bool>,
     /// Device-local preferred widths of the main window's side panes.
     pub panes: layout::PaneWidths,
 }
@@ -402,6 +405,14 @@ pub struct TaskRow {
     pub due: Due,
     pub from_mail: bool,
     pub done: bool,
+    pub status: Option<todo_core::query::QueryStatus>,
+    pub completed_when: Option<SharedString>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoardRows {
+    pub columns: [Vec<TaskRow>; 4],
+    pub total_done: usize,
 }
 
 /// The room the main pane shows.
@@ -412,6 +423,8 @@ pub struct Room {
     pub eyebrow: Eyebrow,
     pub hue: Hue,
     pub chips: Chips,
+    pub features: todo_core::model::ListFeatures,
+    pub board: Option<BoardRows>,
     /// Header progress: done of total (`todo_client::room_header` says what counts).
     pub done: u32,
     pub total: u32,
@@ -615,7 +628,9 @@ pub enum FieldKind {
 /// What a detail field edits when clicked. Fields without one are shown, not edited, here.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FieldEdit {
-    /// Typed in place (the D key).
+    Status,
+    Starts,
+    /// Picked from the calendar (the D key).
     Due,
     /// Picked from the four levels (the P key cycles them).
     Priority,
@@ -675,6 +690,7 @@ pub struct Detail {
     pub my_day: bool,
     pub important: bool,
     pub priority: todo_core::model::Priority,
+    pub status: Option<todo_core::query::QueryStatus>,
     pub steps: Vec<StepRow>,
     pub notes: SharedString,
     pub fields: Vec<Field>,

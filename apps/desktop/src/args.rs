@@ -18,7 +18,8 @@ Options:
   --screenshot      Render one hidden fixture window, save its PNG and exit.
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
-  --fixture         Fixture to render: my-day, work, room-menu, account-menu, device-settings,
+  --fixture         Fixture to render: my-day, work, list-status, list-settings, board, board-detail,
+                    room-menu, account-menu, device-settings,
                     device-invite, device-approve, priority-menu,
                     reminder-menu, reminder-custom, reminder-focus, reminder-none,
                     repeat-menu, repeat-custom, repeat-focus, repeat-none, repeat-weekly, repeat-monthly, delete-tag-confirm,
@@ -55,6 +56,10 @@ pub const FIXTURES: &[&str] = &[
     "toggle-states-on",
     "toggle-states-off",
     "work",
+    "list-status",
+    "list-settings",
+    "board",
+    "board-detail",
     "room-menu",
     "account-menu",
     "device-settings",

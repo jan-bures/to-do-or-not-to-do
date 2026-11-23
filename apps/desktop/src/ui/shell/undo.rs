@@ -22,6 +22,9 @@ pub(super) enum EditKind {
     ImportEmail,
     Bulk,
     Complete,
+    Reopen,
+    Status,
+    Start,
     Restore,
     Delete,
     Merge,
@@ -46,6 +49,14 @@ impl EditKind {
     pub(super) fn of(command: &Command) -> Option<(EntityId, Self)> {
         Some(match *command {
             Command::CompleteTask { id } => (id.into(), Self::Complete),
+            Command::UncompleteTask { id } => (id.into(), Self::Reopen),
+            Command::MoveTaskStatus { id, .. } => (id.into(), Self::Status),
+            Command::UpdateTask { id, ref patch } if patch.status.is_some() => {
+                (id.into(), Self::Status)
+            }
+            Command::UpdateTask { id, ref patch } if patch.start_date.is_some() => {
+                (id.into(), Self::Start)
+            }
             Command::Restore { id } => (id, Self::Restore),
             Command::Delete { id } => match id {
                 EntityId::Task(_) => (id, Self::Delete),
@@ -90,6 +101,9 @@ impl EditKind {
             Self::ImportEmail => "Created email task",
             Self::Bulk => "Changed selected tasks",
             Self::Complete => "Completed",
+            Self::Reopen => "Reopened",
+            Self::Status => "Moved",
+            Self::Start => "Changed start date for",
             Self::Restore => "Restored",
             Self::Delete => "Deleted",
             Self::Merge => "Merged",
@@ -117,6 +131,9 @@ impl EditKind {
                 Self::ImportEmail => "Undid email import",
                 Self::Bulk => unreachable!(),
                 Self::Complete => "Reopened",
+                Self::Reopen => "Completed",
+                Self::Status => "Moved back",
+                Self::Start => "Restored dates for",
                 Self::Restore => "Returned to Trash:",
                 Self::Delete | Self::Merge => "Restored",
                 Self::Move | Self::MoveList => "Moved back",
@@ -150,6 +167,14 @@ impl EditKind {
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
             (Self::Bulk, EntityId::Task(id)) => before.tasks.get(&id) != after.tasks.get(&id),
+            (Self::Status | Self::Start | Self::Reopen, EntityId::Task(id)) => before
+                .tasks
+                .get(&id)
+                .zip(after.tasks.get(&id))
+                .is_some_and(|(a, b)| {
+                    (a.status, a.completed_at, &a.position, a.start_date, a.due)
+                        != (b.status, b.completed_at, &b.position, b.start_date, b.due)
+                }),
             (Self::Repeat | Self::ClearDue, EntityId::Task(id)) => before
                 .tasks
                 .get(&id)
@@ -266,6 +291,19 @@ pub(super) fn toast_label(
             Some(list) => moved(&format!("to {}", one_line(&list.name))),
             None => kind.label(&title),
         },
+        (Command::MoveTaskStatus { status, .. }, EditKind::Status) => moved(&format!(
+            "to {}",
+            crate::model::workflow::status(crate::model::workflow::stage(*status)).0
+        )),
+        (Command::UpdateTask { patch, .. }, EditKind::Status) => patch.status.map_or_else(
+            || kind.label(&title),
+            |status| {
+                moved(&format!(
+                    "to {}",
+                    crate::model::workflow::status(crate::model::workflow::stage(status)).0
+                ))
+            },
+        ),
         // The link isn't in the state before it's added: the command names it.
         (Command::AddLink { kind: link, .. }, EditKind::AddLink) => {
             kind.label(&crate::model::menus::link_name(link))
@@ -351,6 +389,7 @@ pub(super) fn touches_task(command: &Command, id: TaskId, state: &State) -> bool
     match *command {
         Command::UpdateTask { id: task, .. }
         | Command::MoveTask { id: task, .. }
+        | Command::MoveTaskStatus { id: task, .. }
         | Command::CompleteTask { id: task }
         | Command::UncompleteTask { id: task }
         | Command::SetMyDay { id: task, .. }
@@ -580,7 +619,7 @@ impl ShellView {
         let p = self.palette;
         let open = self.ui.show_completed;
         let count = self.shell.room.completed_count;
-        let completed = (count > 0).then(|| {
+        let completed = (count > 0 && !self.on_board()).then(|| {
             div()
                 .id("completed-toggle")
                 .h_full()
@@ -622,6 +661,19 @@ impl ShellView {
             .border_t_1()
             .border_color(p.line)
             .children(completed)
+            .when(self.on_board(), |footer| {
+                footer.child(
+                    div()
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(px(space::S2))
+                        .style(ty::CAPS_LABEL)
+                        .text_color(p.ink_3)
+                        .child(kit::icon(Icon::Columns3, component::ICON_SMALL, p.ink_3))
+                        .child("DONE SHOWS LAST 7 DAYS"),
+                )
+            })
             .child(
                 div()
                     .flex_1()

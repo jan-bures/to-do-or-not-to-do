@@ -3,6 +3,7 @@
 use gpui::{
     ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Role, Window, div, prelude::*, px,
 };
+pub(super) use quick_add::Pick;
 use todo_client::intent::{calendar, quick_add};
 use todo_core::{ids::TaskId, model::Priority, time::Date};
 
@@ -43,15 +44,11 @@ impl Controls {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Pick {
-    Due(Option<Date>),
-    Priority(Priority),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct Calendar {
     /// None for a composer draft; otherwise the task whose due date is being edited.
     pub(super) task: Option<TaskId>,
+    pub(super) starts: bool,
+    range: bool,
     today: Date,
     selected: Option<Date>,
     month: calendar::Month,
@@ -62,11 +59,18 @@ impl Calendar {
     pub(super) fn new(task: Option<TaskId>, today: Date, selected: Option<Date>) -> Self {
         Self {
             task,
+            starts: false,
+            range: false,
             today,
             selected,
             month: calendar::Month::new(selected.unwrap_or(today)),
             focus: 0,
         }
+    }
+
+    pub(super) fn for_start(mut self) -> Self {
+        self.starts = true;
+        self
     }
 
     fn activate(self) -> CalendarAction {
@@ -75,14 +79,16 @@ impl Calendar {
             0 => CalendarAction::Pick(Some(self.month.cursor)),
             i if i <= presets.len() => CalendarAction::Pick(presets[i - 1].date),
             i if i == presets.len() + 1 => CalendarAction::Shift(-1),
-            _ => CalendarAction::Shift(1),
+            i if i == presets.len() + 2 => CalendarAction::Shift(1),
+            i => CalendarAction::Endpoint(i == presets.len() + 3),
         }
     }
 
     fn navigate(&mut self, key: &str, reverse: bool) {
         match key {
             "tab" => {
-                let stops = calendar::presets(self.today).len() + 3;
+                let stops =
+                    calendar::presets(self.today).len() + 3 + if self.range { 2 } else { 0 };
                 self.focus = (self.focus + if reverse { stops - 1 } else { 1 }) % stops;
             }
             "pageup" => self.shift(-1),
@@ -112,23 +118,45 @@ impl Calendar {
 enum CalendarAction {
     Pick(Option<Date>),
     Shift(i32),
+    Endpoint(bool),
 }
 
 impl ShellView {
     pub(super) fn quick_preview(&self) -> quick_add::Parsed {
-        self.quick_draft.parsed(&self.store.now().eval())
+        self.quick_draft
+            .parsed_with_features(&self.store.now().eval(), self.quick_features())
+    }
+
+    pub(super) fn quick_date_label(&self, draft: &quick_add::Parsed) -> Option<String> {
+        let today = self.store.now().today();
+        match (draft.start_date, draft.due) {
+            (Some(start), Some(due)) => Some(crate::model::workflow::span(start, due, today)),
+            (Some(start), None) => Some(format!("Starts {}", quick_add::short_date(start, today))),
+            (None, due) => due.map(|d| quick_add::short_date(d, today)),
+        }
     }
 
     pub(super) fn quick_calendar(&self) -> Calendar {
         let now = self.store.now().eval();
-        Calendar::new(None, now.today, self.quick_draft.parsed(&now).due)
+        let mut calendar = Calendar::new(None, now.today, self.quick_preview().due);
+        calendar.range = self.quick_features().timeline;
+        calendar
     }
 
     pub(super) fn quick_pick(&mut self, pick: Pick, window: &mut Window, cx: &mut Context<Self>) {
+        self.quick_picks([pick], window, cx);
+    }
+
+    fn quick_picks(
+        &mut self,
+        picks: impl IntoIterator<Item = Pick>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let now = self.store.now().eval();
-        match pick {
-            Pick::Due(date) => self.quick_draft.pick_due(date, &now),
-            Pick::Priority(level) => self.quick_draft.pick_priority(level, &now),
+        let features = self.quick_features();
+        for pick in picks {
+            self.quick_draft.pick(pick, &now, features);
         }
         let text = &self.quick_draft.text;
         if self.quick_add.read(cx).content.as_ref() != text.as_str() {
@@ -303,7 +331,13 @@ impl ShellView {
             })
             .child(label)
             .child(kit::icon(Icon::X, component::ICON_SMALL, ink))
-            .on_click(cx.listener(move |this, _, window, cx| this.quick_pick(pick, window, cx)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                if date {
+                    this.quick_picks([Pick::Start(None), pick], window, cx);
+                } else {
+                    this.quick_pick(pick, window, cx);
+                }
+            }))
     }
 
     pub(super) fn calendar_key(
@@ -345,11 +379,44 @@ impl ShellView {
             return;
         };
         match action {
+            CalendarAction::Endpoint(starts) if calendar.range => {
+                let parsed = self.quick_preview();
+                let today = self.store.now().today();
+                let mut next = Calendar::new(
+                    None,
+                    today,
+                    if starts {
+                        parsed.start_date
+                    } else {
+                        parsed.due
+                    },
+                );
+                next.range = true;
+                next.starts = starts;
+                if let Some(menu) = &mut self.menu {
+                    menu.kind = MenuKind::Date(next);
+                }
+                cx.notify();
+            }
+            CalendarAction::Endpoint(_) => {}
             CalendarAction::Pick(date) => {
+                let starts = calendar.starts;
                 if let Some(task) = calendar.task {
-                    self.choose_task_due(task, date, window, cx);
+                    if starts {
+                        self.choose_task_start(task, date, window, cx);
+                    } else {
+                        self.choose_task_due(task, date, window, cx);
+                    }
                 } else {
-                    self.quick_pick(Pick::Due(date), window, cx);
+                    self.quick_pick(
+                        if starts {
+                            Pick::Start(date)
+                        } else {
+                            Pick::Due(date)
+                        },
+                        window,
+                        cx,
+                    );
                 }
             }
             CalendarAction::Shift(by) => {
@@ -360,7 +427,7 @@ impl ShellView {
     }
 
     fn calendar_repeat_note(&self, c: Calendar) -> Option<&'static str> {
-        let task = c.task?;
+        let task = c.task.filter(|_| !c.starts)?;
         self.store.view().tasks.get(&task)?.recurrence.as_ref()?;
         Some(calendar::REPEAT_CLEAR_NOTE)
     }
@@ -382,7 +449,11 @@ impl ShellView {
                         self.calendar_control(
                             CalendarAction::Pick(preset.date),
                             ("date-preset", i),
-                            preset.label.to_owned(),
+                            if c.starts && preset.date.is_none() {
+                                "Clear".to_owned()
+                            } else {
+                                preset.label.to_owned()
+                            },
                             c.focus == i,
                             selected == preset.date,
                             live,
@@ -455,37 +526,66 @@ impl ShellView {
                     .text_color(p.ink_3)
                     .child(name)
             }));
-        let rows = c.month.rows().into_iter().enumerate().map(|(row, days)| {
-            div()
-                .flex()
-                .children(days.into_iter().enumerate().map(|(col, day)| {
-                    let cell = div().flex_1().min_w_0();
-                    if let Some(day) = day {
-                        let label = calendar::day_label(day);
-                        let focused = c.focus == 0 && day == c.month.cursor;
-                        cell.child(
-                            self.calendar_control(
-                                CalendarAction::Pick(Some(day)),
-                                ("calendar-day", row * 7 + col),
-                                label,
-                                focused,
-                                selected == Some(day),
-                                live,
-                                cx,
+        let rows = c
+            .month
+            .rows()
+            .into_iter()
+            .enumerate()
+            .map(|(row, days)| {
+                div()
+                    .flex()
+                    .children(days.into_iter().enumerate().map(|(col, day)| {
+                        let cell = div().flex_1().min_w_0();
+                        if let Some(day) = day {
+                            let label = calendar::day_label(day);
+                            let focused = c.focus == 0 && day == c.month.cursor;
+                            cell.child(
+                                self.calendar_control(
+                                    CalendarAction::Pick(Some(day)),
+                                    ("calendar-day", row * 7 + col),
+                                    label,
+                                    focused,
+                                    selected == Some(day),
+                                    live,
+                                    cx,
+                                )
+                                .w_full()
+                                .style(ty::COUNT)
+                                .when(!focused && day == c.today, |el| el.border_color(p.control))
+                                .child(day.day().to_string()),
                             )
-                            .w_full()
-                            .style(ty::COUNT)
-                            .when(!focused && day == c.today, |el| el.border_color(p.control))
-                            .child(day.day().to_string()),
-                        )
-                    } else {
-                        cell
-                    }
-                }))
-        });
+                        } else {
+                            cell
+                        }
+                    }))
+            })
+            .collect::<Vec<_>>();
         div()
             .px(px(space::S2))
             .pb(px(space::S2))
+            .when(c.range, |d| {
+                d.child(
+                    div().flex().gap(px(space::S1)).pb(px(space::S1)).children(
+                        [(true, "Starts"), (false, "Due")]
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, (starts, label))| {
+                                self.calendar_control(
+                                    CalendarAction::Endpoint(starts),
+                                    ("calendar-endpoint", i),
+                                    label.into(),
+                                    c.focus == preset_count + 3 + i,
+                                    c.starts == starts,
+                                    live,
+                                    cx,
+                                )
+                                .flex_1()
+                                .style(ty::BUTTON_SMALL)
+                                .child(label)
+                            }),
+                    ),
+                )
+            })
             .children(presets)
             .child(
                 div()

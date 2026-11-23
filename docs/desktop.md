@@ -214,7 +214,7 @@ into the app**: it is learnt here and saved in the user's config. Alternatively,
 | `device-token.bin` | same | the device token, sealed with DPAPI (`CryptProtectData`, current user, with app-specific entropy) |
 | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 | `pairings\<pairing ID>\cache.sqlite.revoked` | same | empty marker: the server replied 401 to an authenticated request |
-| `pairings\<pairing ID>\ui.json` | same | collapsed collections and preferred pane widths (never synced) |
+| `pairings\<pairing ID>\ui.json` | same | collapsed collections, preferred pane widths and explicit Done rail choices (never synced) |
 | `pairings\<pairing ID>\popouts.json` | same | list-window placement, pin and open state by room ID (never synced) |
 | `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
@@ -303,6 +303,38 @@ corrected. Adding a link can be undone like removing one. A link's remove button
 | Header | The sky, hills and sun from real counts: *done of total* and open. No estimate (tasks don't have one). The "more" button opens the room's menu with only what applies there (`model::menus`): in a list, Rename list (in place in the sidebar), Colour…, Move to… (where there is somewhere to go), Show or Hide completed and Delete list (after asking, with Undo); in a collection, Rename collection, Colour…, the Completed toggle and Delete collection (after asking, with Undo); in My Day, Important, Planned and All, the Completed toggle. All six smart lists and user lists also offer **Pop out**, in the header and on right-click in the sidebar. There is no view options button until there are sort or view options. In a narrow window the counts go on a line of their own under the title, which keeps its full size. My Day all done turns the sky to dusk (once the last row has left) and hands over to tomorrow. Its tasks open in the detail pane, by click or with **J/K**, and their boxes (or Space) complete them with the row's choreography, in place (the first one's card too: it dims, is struck through, fades and closes), and the hand-over scrolls when it's taller than the pane; with none selected, the pane is left out rather than shown empty. With nothing due tomorrow there is no hand-over, but planning is still offered: "Nothing is due on Sunday yet." and **Plan Sunday**, which opens Planned (as on Android). While a filter narrows the finished day, neither shows, and the room says nothing matches. |
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
+
+### Workflow lists and Board
+
+Open **List settings…** in a list's header or sidebar menu. **Workflow & Board** adds task status
+and Board view; **Timeline & Start dates** adds Starts. Both are off on new lists. Turning either off
+hides its controls without clearing task data. **Default view** syncs with the list, while a switch
+made in the header applies only to the current visit. **V** cycles available views and **1** or **2**
+chooses List or Board while the room has focus. Timeline may be saved as the synced default, but its
+segment is disabled on desktop for now; a Timeline default opens as List here. Pop-outs stay in List.
+
+The workflow glyph appears beside a task's metadata, after the list chip in cross-list rooms. Those
+rooms only show Backlog and In progress marks. Click the mark or press **S** for Status, or **Shift+S**
+to cycle it. **Shift+D** opens Starts, above Due in Detail. Setting Starts after Due moves Due to match
+in the same undoable edit. In the composer, pick Status or use `status:backlog`, `status:todo`,
+`status:wip` or `stav:rozpracovano`. On a list with start dates, choose **Starts** or **Due** in the
+composer calendar, or type a range such as `today..+4d`. Date and non-default status chips can be
+cleared separately.
+
+The Board has three open columns, each with its own **+ Add** footer, and a Done column. Done shows
+at most 20 completions from today and the previous six local dates; **View all** opens this list's
+Completed section. Done automatically folds into a drop rail beside docked Detail. An explicit rail
+choice is remembered locally. Drag a card above or below another to place it there, or drop into an
+empty column. Drop on Done to complete, or drag out of Done to reopen in a particular stage. One Undo
+reverses both the stage and the placement. Completing a repeat still creates the next occurrence in
+To do.
+
+Use **H/L** or **←/→** to move between columns, and **J/K** or **↓/↑** to move between cards.
+**Alt+←/→** moves a card to the neighbouring stage; **Alt+↑/↓** reorders it within the current stage.
+**Enter** opens the focused card (or expands the focused Done rail), **E** edits its title, **Space**
+completes or reopens, and **N** opens the active column's composer. **Ctrl+click** and **Shift+click**
+select several cards, with a **Status** action in the selection strip. Choosing an open status there
+leaves completed cards alone.
 
 ### Task activity
 
@@ -727,6 +759,8 @@ opened" screen after a recovery that can't finish, before and while confirming *
 while the footer stays pinned. `short-sidebar-new-list` and `short-sidebar-new-collection` show the
 new room's focused editor scrolled into view. `sidebar-footer` and `sidebar-footer-min` show the footer
 at default and minimum widths; `sidebar-new-menu` opens the menu.
+`list-status`, `list-settings`, `board` and `board-detail` show the same workflow list with a staged
+composer, the settings page, the full board, and the board with the collapsed Done rail beside Detail.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
 menu and the detail pane's priority picker. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared

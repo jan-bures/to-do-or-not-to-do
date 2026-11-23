@@ -125,6 +125,8 @@ impl ShellView {
         let count = self.bulk_ids().len();
         if index == 6 {
             count > 0
+        } else if index == 7 {
+            self.on_board() && count >= 2 && self.edit.due.is_none()
         } else {
             count >= 2 && self.edit.due.is_none()
         }
@@ -191,7 +193,13 @@ impl ShellView {
                 .child(clear),
             );
         }
-        let tools = selection::tools(&self.store.view(), &ids, self.store.now().today());
+        let mut tools = selection::tools(&self.store.view(), &ids, self.store.now().today());
+        if self.on_board() && ids.len() >= 2 {
+            // Render the entry alongside the other bulk actions; the actual stage comes from its picker.
+            tools.push(Tool::Apply(BulkTaskAction::Status {
+                status: todo_core::model::WorkflowStatus::Todo,
+            }));
+        }
         let available = self.room_width(window)
             - 2. * desktop::LIST_PAD_X
             - component::ICON_BUTTON
@@ -218,9 +226,20 @@ impl ShellView {
             } else {
                 None
             };
+            let is_status = matches!(tool, Tool::Apply(BulkTaskAction::Status { .. }));
+            let index = if is_status { 7 } else { index };
             self.bulk_button(index, tool_icon(tool), tool.label(), label, window, cx)
                 .on_click(
                     cx.listener(move |this, e: &gpui::ClickEvent, window, cx| match tool {
+                        Tool::Apply(BulkTaskAction::Status { .. }) => {
+                            let kind = MenuKind::BulkStatus;
+                            if e.mouse_position().is_some() && this.menu_press.swallows(kind) {
+                                return;
+                            }
+                            let at = this.probes.borrow().get("bulk-status").map(|b| b.origin);
+                            this.open_menu(kind, at, Some(hints::Stop::Bulk(index)), window, cx);
+                            this.highlight_first();
+                        }
                         Tool::Apply(action) => {
                             this.apply_bulk(action, window, cx);
                         }
@@ -255,6 +274,7 @@ impl ShellView {
                     }),
                 )
                 .when(tool == Tool::Move, |el| el.child(self.probe("bulk-move")))
+                .when(is_status, |el| el.child(self.probe("bulk-status")))
         });
         let actions = div()
             .flex_1()
@@ -447,6 +467,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Due => Icon::Calendar,
         Tool::Apply(BulkTaskAction::Delete) => Icon::TrashTwo,
         Tool::Apply(BulkTaskAction::Reorder { .. }) => Icon::GripVertical,
+        Tool::Apply(BulkTaskAction::Status { .. }) => Icon::CircleProgress,
         Tool::Apply(_) => unreachable!("picker tools don't carry a value"),
     }
 }

@@ -23,7 +23,7 @@
 //! to work through a `pairings` directory (or app directory) that is a junction, symlink or other
 //! reparse point, and removes a reparse point found inside as a link, never following it.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
@@ -236,6 +236,7 @@ impl DataDir {
 #[serde(default)]
 pub struct UiPreferences {
     pub collapsed_collections: BTreeSet<CollectionId>,
+    pub board_done: BTreeMap<todo_core::ids::ListId, bool>,
     #[serde(deserialize_with = "read_pane_widths")]
     pub panes: PaneWidths,
 }
@@ -649,6 +650,10 @@ mod tests {
         let mut prefs = UiPreferences {
             collapsed_collections: BTreeSet::from([id]),
             panes: PaneWidths::default().with(Pane::Sidebar, desktop::SIDEBAR_MAX),
+            board_done: BTreeMap::from([(
+                todo_core::ids::ListId::from_uuid(todo_core::ids::uuid_v7(2, [0; 10])),
+                true,
+            )]),
         };
         data.save_ui(&prefs).expect("save preferences");
         assert_eq!(data.load_ui(), prefs);
@@ -783,6 +788,7 @@ mod tests {
                 UiPreferences {
                     collapsed_collections: BTreeSet::from([id]),
                     panes: PaneWidths::default(),
+                    ..Default::default()
                 }
             );
         }

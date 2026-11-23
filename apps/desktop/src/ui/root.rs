@@ -335,6 +335,7 @@ impl RootView {
         let prefs = data.load_ui();
         let ui = UiState {
             collapsed_collections: prefs.collapsed_collections,
+            board_done: prefs.board_done,
             panes: prefs.panes,
             ..UiState::default()
         };

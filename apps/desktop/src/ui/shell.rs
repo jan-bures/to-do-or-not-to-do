@@ -4,6 +4,7 @@
 
 mod activity;
 mod attachments;
+mod board;
 mod bulk;
 mod detail;
 mod device_pairing;
@@ -17,6 +18,7 @@ mod sidebar;
 mod task_drag;
 mod trash;
 mod undo;
+mod workflow;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -92,6 +94,7 @@ actions!(
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     use gpui::KeyBinding;
     let list = Some("TaskList");
+    let board = Some("TaskBoard");
     vec![
         KeyBinding::new("ctrl-n", FocusQuickAdd, Some("Shell")),
         KeyBinding::new("ctrl-k", FocusFilter, Some("Shell")),
@@ -119,6 +122,10 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-up", ExtendTasksUp, list),
         KeyBinding::new("shift-down", ExtendTasksDown, list),
         KeyBinding::new("escape", Escape, list),
+        KeyBinding::new("ctrl-a", SelectAllTasks, board),
+        KeyBinding::new("cmd-a", SelectAllTasks, board),
+        KeyBinding::new("shift-up", ExtendTasksUp, board),
+        KeyBinding::new("shift-down", ExtendTasksDown, board),
     ]
 }
 
@@ -253,11 +260,13 @@ pub struct ShellView {
     quick_add: Entity<TextInput>,
     quick_draft: quick_add::Draft,
     quick_focus: quick_pickers::Controls,
+    workflow: workflow::Controls,
+    board: board::BoardUi,
     list_focus: FocusHandle,
     multi: todo_client::selection::Selection,
     task_drag: Option<task_drag::Gesture>,
     task_settle: Option<task_drag::Settle>,
-    bulk_focus: [FocusHandle; 7],
+    bulk_focus: [FocusHandle; 8],
     rows: UniformListScrollHandle,
     trash_selected: Option<todo_core::ids::EntityId>,
     /// The finished day's hand-over, which scrolls when it's taller than the pane.
@@ -387,7 +396,19 @@ impl ShellView {
             window,
             |this, input, event: &InputEvent, window, cx| match event {
                 InputEvent::Submit => {
-                    let draft = this.quick_draft.clone();
+                    let mut draft = this.quick_draft.clone();
+                    if let Some(status) = this
+                        .board
+                        .composer
+                        .and_then(workflow::open_stage)
+                        .filter(|_| this.on_board())
+                    {
+                        draft.pick(
+                            quick_add::Pick::Status(Some(status)),
+                            &this.store.now().eval(),
+                            this.quick_features(),
+                        );
+                    }
                     if this.add_draft(&draft, this.ui.room, cx) {
                         this.quick_draft = quick_add::Draft::default();
                         input.update(cx, |i, cx| i.reset(window, cx));
@@ -395,6 +416,12 @@ impl ShellView {
                     }
                 }
                 InputEvent::Cancel => {
+                    if this.on_board() {
+                        this.board.composer = None;
+                        this.quick_draft = quick_add::Draft::default();
+                        input.update(cx, |i, cx| i.reset(window, cx));
+                        cx.notify();
+                    }
                     if this.ui.compact {
                         this.close_popout(window);
                     } else {
@@ -402,8 +429,12 @@ impl ShellView {
                     }
                 }
                 InputEvent::Changed => {
-                    this.quick_draft
-                        .edit(input.read(cx).content.to_string(), &this.store.now().eval());
+                    let features = this.quick_features();
+                    this.quick_draft.edit_with_features(
+                        input.read(cx).content.to_string(),
+                        &this.store.now().eval(),
+                        features,
+                    );
                     cx.notify();
                 }
             },
@@ -453,6 +484,8 @@ impl ShellView {
             },
             quick_focus: quick_pickers::Controls::new(quick_add.read(cx).focus_handle.clone(), cx),
             quick_add,
+            workflow: workflow::Controls::new(cx),
+            board: board::BoardUi::default(),
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
             multi: todo_client::selection::Selection::default(),
@@ -535,6 +568,9 @@ impl ShellView {
             this.menu_lost_focus(window, cx);
         })
         .detach();
+        if let Some(id) = this.ui.task {
+            this.aim_board_cursor(id);
+        }
         this.load_detail(cx);
         this.settle_detail();
         let _ = this.follow_shell();
@@ -597,6 +633,7 @@ impl ShellView {
             }
         }
         let room_changed = room != self.shell.room.key;
+        let was_board = self.on_board();
         let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
         if self
             .last_undo
@@ -606,6 +643,7 @@ impl ShellView {
             self.clear_undo();
         }
         if room_changed {
+            self.board.reset_room();
             self.multi.clear();
             self.motion.settle_all();
             self.row_lifts.clear();
@@ -615,7 +653,9 @@ impl ShellView {
             MenuKind::Room { .. }
             | MenuKind::Task { .. }
             | MenuKind::BulkMove
-            | MenuKind::QuickPriority => room_changed,
+            | MenuKind::BulkStatus
+            | MenuKind::QuickPriority
+            | MenuKind::Status { .. } => room_changed,
             MenuKind::Date(c) => {
                 room_changed || c.task.is_some_and(|task| self.ui.task != Some(task))
             }
@@ -692,6 +732,13 @@ impl ShellView {
                 .any(|r| r.id == *id && r.blocked.is_none())
         });
         self.shell = shell;
+        if !room_changed && was_board != self.on_board() {
+            self.board.reset_view();
+            self.board.start_swap(self.now(), self.pace(), self.animate);
+            if let Some(id) = self.ui.task {
+                self.aim_board_cursor(id);
+            }
+        }
         if self.multi.cursor().is_some() {
             self.multi.retain_visible(&self.nav_tasks());
         }
@@ -767,7 +814,16 @@ impl ShellView {
             now,
             pace,
         );
-        let shown: std::collections::HashSet<TaskId> = self.shell.shown_tasks().collect();
+        let shown: std::collections::HashSet<TaskId> = if self.on_board() {
+            self.shell
+                .room
+                .board
+                .iter()
+                .flat_map(|b| b.columns.iter().flatten().map(|r| r.id))
+                .collect()
+        } else {
+            self.shell.shown_tasks().collect()
+        };
         self.motion.retain_shown(now, |id| shown.contains(&id))
     }
 
@@ -1026,9 +1082,20 @@ impl ShellView {
         // A menu whose subject went away (a list or task deleted on another device) has nothing left to
         // offer: it closes at once, and the keyboard goes back to the list, so Escape and Tab still work.
         if self.menu.as_ref().is_some_and(|m| match m.kind {
-            MenuKind::Date(c) => c
-                .task
-                .is_some_and(|task| self.repeat_target() != Some(task)),
+            MenuKind::Date(c) => c.task.is_some_and(|task| {
+                self.repeat_target() != Some(task) || c.starts && !self.task_has_start(task)
+            }),
+            MenuKind::Status {
+                task: Some(task),
+                at_row,
+            } => {
+                self.task_stage(task).is_none()
+                    || if at_row {
+                        !self.task_is_visible(task)
+                    } else {
+                        self.repeat_target() != Some(task)
+                    }
+            }
             _ => self.menu_entries(m.kind).is_empty(),
         }) {
             self.menu = None;
@@ -1042,6 +1109,15 @@ impl ShellView {
         let menu_focused = self.menu_focus.is_focused(window);
         if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
             || (menu_focused && !menu_open)
+            || [
+                hints::Stop::Status,
+                hints::Stop::Starts,
+                hints::Stop::View(0),
+                hints::Stop::View(1),
+                hints::Stop::View(2),
+            ]
+            .into_iter()
+            .any(|stop| self.stop_handle(stop).is_focused(window) && !self.has_stop(stop))
             || (self.due_focus.is_focused(window) && !self.has_stop(hints::Stop::Due))
             || (self.repeat_focus.is_focused(window) && !self.has_stop(hints::Stop::Repeat))
             || (self.reminder_focus.is_focused(window) && !self.has_stop(hints::Stop::Reminder))
@@ -1075,6 +1151,42 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        match fixture {
+            "board" => {
+                if let Some(id) = self
+                    .shell
+                    .room
+                    .board
+                    .as_ref()
+                    .and_then(|b| b.columns[2].first())
+                    .map(|r| r.id)
+                {
+                    self.aim_board_cursor(id);
+                }
+                self.toast.show(
+                    "Moved “Strip wallpaper…” to In progress".into(),
+                    Duration::ZERO,
+                    Pace::FULL,
+                );
+                self.clock = Clock::Frozen(Duration::from_millis(
+                    u64::from(theme::motion::UNDO_WINDOW) / 3,
+                ));
+                return;
+            }
+            "list-status" => {
+                let today = self.store.now().today();
+                self.quick_draft.status = Some(todo_core::model::WorkflowStatus::InProgress);
+                self.quick_draft.start_date = todo_core::time::add_days(today, 5);
+                self.quick_draft.due = todo_core::time::add_days(today, 7)
+                    .map_or(quick_add::DueChoice::Default, quick_add::DueChoice::Date);
+                return;
+            }
+            "list-settings" => {
+                self.board.view_override = Some(todo_core::model::ListView::List);
+                self.settle_detail();
+            }
+            _ => {}
+        }
         if matches!(fixture, "drag-reorder" | "drag-destination") {
             self.preview_task_drag(fixture, window, cx);
             return;
@@ -1294,6 +1406,9 @@ impl ShellView {
         let tags = |page| task.map(|task| MenuKind::Tags { task, page });
         let kind = match fixture {
             "room-menu" | "activity-menu" => Some(MenuKind::Room { page: Page::Main }),
+            "list-settings" => Some(MenuKind::Room {
+                page: Page::Settings,
+            }),
             "account-menu" => Some(MenuKind::Account { confirm: false }),
             "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
@@ -1356,7 +1471,12 @@ impl ShellView {
             self.highlight(Some(1));
         } else if !matches!(
             fixture,
-            "room-menu" | "account-menu" | "sync-failures" | "priority-menu" | "reminder-custom"
+            "room-menu"
+                | "list-settings"
+                | "account-menu"
+                | "sync-failures"
+                | "priority-menu"
+                | "reminder-custom"
         ) {
             self.highlight_first();
         }
@@ -1548,7 +1668,10 @@ impl ShellView {
 
     fn submit(&mut self, cmds: Vec<todo_core::Command>) -> bool {
         for cmd in cmds {
-            let result = if let Some((entity, kind)) = undo::EditKind::of(&cmd) {
+            let edit = undo::EditKind::of(&cmd).filter(|(entity, kind)| {
+                *kind != undo::EditKind::Reopen || matches!(entity, todo_core::ids::EntityId::Task(id) if self.task_stage(*id).is_some())
+            });
+            let result = if let Some((entity, kind)) = edit {
                 let state = self.store.view();
                 let label = undo::toast_label(&state, &cmd, entity, kind);
                 let room = self.shell.room.key;
@@ -1691,7 +1814,9 @@ impl ShellView {
         let now = self.store.now();
         let store = self.store.clone();
         let (id, cmds) =
-            commands::submit_draft(&store.view(), room, draft, &now.eval(), || store.new_uuid());
+            commands::submit_workflow_draft(&store.view(), room, draft, &now.eval(), || {
+                store.new_uuid()
+            });
         let ok = id.is_some() && self.submit(cmds);
         self.refresh(cx);
         ok
@@ -1727,7 +1852,11 @@ impl ShellView {
         self.multi.clear();
         self.ui.task = id;
         self.refresh(cx);
-        if let Some(i) = self.shell.selected_task {
+        if self.on_board() {
+            if let Some(id) = id {
+                self.aim_board_cursor(id);
+            }
+        } else if let Some(i) = self.shell.selected_task {
             self.rows.scroll_to_item(i, gpui::ScrollStrategy::Center);
         } else if let (Some(next), Some(id)) = (self.shell.room.handover(), id)
             && let Some(child) = next.child(id)
@@ -1745,7 +1874,7 @@ impl ShellView {
         let Some(task) = state.tasks.get(&id) else {
             return;
         };
-        let (was_done, completed_at) = (task.is_done(), task.completed_at);
+        let was_done = task.is_done();
         if was_done
             && self.motion.completing(id)
             && self
@@ -1759,22 +1888,29 @@ impl ShellView {
         let Some(cmd) = commands::toggle_complete(&state, id) else {
             return;
         };
-        if self.submit(vec![cmd]) && self.animate {
-            let (now, pace) = (self.now(), self.pace());
-            let keep = if was_done {
-                self.motion.reopen(id, now, pace)
-            } else {
-                self.motion.complete(id, now, pace)
-            };
-            if keep == Keep::Holding {
-                self.ui.held_updates.insert(id, task.updated.clone());
-            } else if keep == Keep::Reopening
-                && let Some(at) = completed_at
-            {
-                self.ui.reopening.insert(id, at);
-            }
+        if self.submit(vec![cmd]) {
+            self.play_completion(task);
         }
         self.refresh(cx);
+    }
+
+    fn play_completion(&mut self, task: &todo_core::model::Task) {
+        if !self.animate {
+            return;
+        }
+        let (now, pace) = (self.now(), self.pace());
+        let keep = if task.is_done() {
+            self.motion.reopen(task.id, now, pace)
+        } else {
+            self.motion.complete(task.id, now, pace)
+        };
+        if keep == Keep::Holding {
+            self.ui.held_updates.insert(task.id, task.updated.clone());
+        } else if keep == Keep::Reopening
+            && let Some(at) = task.completed_at
+        {
+            self.ui.reopening.insert(task.id, at);
+        }
     }
 
     fn toggle_task_glyph(&mut self, id: TaskId, icon: Icon, cx: &mut Context<Self>) {
@@ -2384,6 +2520,7 @@ impl ShellView {
                             .items_center()
                             .gap(px(space::S2))
                             .child(eyebrow)
+                            .children(self.view_switcher(window, cx))
                             .children(more.map(|d| d.flex_none().mr(px(-space::S2)))),
                     )
                     .child(if self.columns(window).counts_under_title() {
@@ -2419,11 +2556,14 @@ impl ShellView {
         let p = &self.palette;
         let focused = self.quick_focus.input.is_focused(window);
         let typed = !self.quick_draft.text.is_empty();
-        let now = self.store.now();
-        let parsed = self.quick_draft.parsed(&now.eval());
-        let date = parsed.due.map(|d| quick_add::short_date(d, now.today()));
+        let parsed = self.quick_preview();
+        let date = self.quick_date_label(&parsed);
+        let has_date = date.is_some();
         let priority = parsed.priority.unwrap_or_default();
-        let has_chips = date.is_some() || priority != Priority::None;
+        let workflow = self.shell.room.features.workflow;
+        let stage = self.quick_stage();
+        let status_chip = workflow && stage != todo_core::query::QueryStatus::Todo;
+        let has_chips = has_date || priority != Priority::None || status_chip;
         // On the finished day the field stays, but quietly: on the pane with a hairline, so the hand-over
         // to tomorrow leads. Ctrl+N or a click wakes it up.
         let quiet = self.shell.room.finished_day() && !focused && !typed;
@@ -2451,11 +2591,17 @@ impl ShellView {
                 if quiet { p.ink_3 } else { p.accent_strong },
             ))
             .child(div().flex_1().min_w_0().child(self.quick_add.clone()))
+            .when(status_chip, |field| {
+                field.child(self.quick_status_chip(stage, window, cx))
+            })
             .children(date.map(|label| self.quick_date_chip(label, window, cx)))
             .when(priority != Priority::None, |field| {
                 field.child(self.quick_priority_chip(priority, window, cx))
             })
-            .child(self.quick_picker_button(true, parsed.due.is_some(), window, cx))
+            .when(workflow, |field| {
+                field.child(self.quick_status_button(window, cx))
+            })
+            .child(self.quick_picker_button(true, has_date, window, cx))
             .child(self.quick_picker_button(false, priority != Priority::None, window, cx))
             .when(!has_chips, |field| {
                 field.child(kit::kbd(p, if typed { "Enter" } else { "Ctrl N" }))
@@ -2546,7 +2692,9 @@ impl ShellView {
         DetailPane::at(
             self.width,
             self.shell.detail.is_some(),
-            self.shell.room.leaves_detail_out(),
+            self.shell.room.leaves_detail_out()
+                || self.shell.room.features.workflow
+                || self.shell.room.features.timeline,
         )
     }
 
@@ -2621,7 +2769,14 @@ impl ShellView {
     /// counted as "+N", and when the line is narrower still, the mail mark, the step meter and the step
     /// count give way in turn before the chip narrows to its minimum, ending in an ellipsis. The line is
     /// never wider than its column and nothing is clipped, so no descender is either.
-    fn meta(p: &Palette, task: &TaskRow, chips: Chips, room: f32, window: &Window) -> Div {
+    fn meta(
+        p: &Palette,
+        task: &TaskRow,
+        chips: Chips,
+        room: f32,
+        mark: Option<(f32, AnyElement)>,
+        window: &Window,
+    ) -> Div {
         let t = p.theme;
         let with_collection = match chips {
             Chips::None => None,
@@ -2653,7 +2808,13 @@ impl ShellView {
                 .collect(),
         };
         let more_width = |n: usize| kit::text_width(window, ty::TAG, &fit::more_label(n));
-        let fit = fit::fit_meta(room, &items, more_width);
+        let fit = fit::fit_meta(
+            room - mark
+                .as_ref()
+                .map_or(0., |(width, _)| width.ceil() + items.gap),
+            &items,
+            more_width,
+        );
         let tag = |s: SharedString| {
             div()
                 .flex_none()
@@ -2671,6 +2832,7 @@ impl ShellView {
             .when_some(fit.chip.zip(with_collection), |m, (width, w)| {
                 m.child(kit::chip(t, &task.list, w).w(px(width)))
             })
+            .children(mark.map(|(_, mark)| mark))
             .when_some(
                 steps.filter(|_| fit.meter || fit.count),
                 |m, (d, n, label)| {
@@ -2737,7 +2899,21 @@ impl ShellView {
         }
         title_width -= 2. * desktop::ROW_GAP + component::ICON_BUTTON;
         let meta_width = fit::row_meta_width(room_width, title_width);
-        let meta = Self::meta(p, task, chips, meta_width, window);
+        let status = task.status.filter(|stage| {
+            chips == Chips::None
+                || matches!(
+                    stage,
+                    todo_core::query::QueryStatus::Backlog
+                        | todo_core::query::QueryStatus::InProgress
+                )
+        });
+        let mark = status.map(|stage| {
+            (
+                workflow::mark_width(window, stage),
+                self.row_status_mark(stage, selected, room.map(|r| (r, id)), p, cx),
+            )
+        });
+        let meta = Self::meta(p, task, chips, meta_width, mark, window);
         let (meta, compact_meta) = if meta_width > title_width {
             // The trailing columns occupy only the title line. Fit metadata under them when
             // docked detail leaves the room too narrow for the regular layout.
@@ -3336,6 +3512,10 @@ impl ShellView {
                             this.trash_key(e, window, cx);
                             return;
                         }
+                        if this.workflow_key(e, window, cx) {
+                            cx.stop_propagation();
+                            return;
+                        }
                         let Some((key, act)) = list_key(e) else {
                             return;
                         };
@@ -3442,7 +3622,7 @@ impl ShellView {
                         div()
                             .relative()
                             .size_full()
-                            .opacity(swap.incoming)
+                            .opacity(swap.incoming * self.board.opacity(self.frame))
                             .child(body)
                             // Overlay in the task rows' existing right padding.
                             .when(has_rows, |d| {
@@ -3550,13 +3730,26 @@ impl ShellView {
     }
 
     fn task_is_visible(&self, id: TaskId) -> bool {
-        self.shell
-            .reachable(id, || self.row_is_visible(id), |c| self.handover_entered(c))
+        if self.on_board() {
+            self.shell
+                .room
+                .board
+                .as_ref()
+                .is_some_and(|b| b.columns.iter().flatten().any(|r| r.id == id))
+                && self.row_is_visible(id)
+        } else {
+            self.shell
+                .reachable(id, || self.row_is_visible(id), |c| self.handover_entered(c))
+        }
     }
 
     /// The tasks J and K walk, and Space can reach: only ones that can be seen (`Shell::nav_tasks_shown`).
     fn nav_tasks(&self) -> Vec<TaskId> {
-        let mut tasks = self.shell.nav_tasks_shown(|c| self.handover_entered(c));
+        let mut tasks = if self.on_board() {
+            self.board_nav_ids()
+        } else {
+            self.shell.nav_tasks_shown(|c| self.handover_entered(c))
+        };
         tasks.retain(|&id| self.row_is_visible(id));
         tasks
     }
@@ -3861,6 +4054,11 @@ impl ShellView {
             || on(&self.account_focus)
             || on(&self.sync_focus)
             || on(&self.new_focus)
+            || on(&self.workflow.status)
+            || on(&self.workflow.starts)
+            || on(&self.workflow.quick)
+            || on(&self.workflow.clear)
+            || self.workflow.view.iter().any(on)
             || self.quick_focus.button_focused(window)
         {
             Focus::Control
@@ -3896,6 +4094,37 @@ impl ShellView {
                 || (!self.animate && self.toast.look(self.frame).is_some_and(|t| t.active)),
             activity: self.activity_hints(),
         });
+        if self.list_focus.is_focused(window) && self.on_board() {
+            keys = vec![
+                ("H L", "columns"),
+                ("J K", "cards"),
+                ("V", "view"),
+                ("N", "add"),
+            ];
+            if let Some(task) = self.board_task() {
+                let done = self.task_stage(task) == Some(todo_core::query::QueryStatus::Done);
+                keys.extend([
+                    ("Alt ←/→", "move status"),
+                    ("S", "status"),
+                    ("Space", if done { "reopen" } else { "done" }),
+                ]);
+            }
+            if self.last_undo.is_some() {
+                keys.push(("Ctrl Z", "undo"));
+            }
+        } else if self.list_focus.is_focused(window) {
+            if self.shell.room.features.workflow {
+                keys.insert(0, ("V", "view"));
+            }
+            if let Some(task) = self.ui.task {
+                if self.task_stage(task).is_some() {
+                    keys.insert(0, ("S", "status"));
+                }
+                if self.task_has_start(task) {
+                    keys.insert(0, ("⇧D", "start date"));
+                }
+            }
+        }
         if self.list_focus.is_focused(window) && !self.nav_tasks().is_empty() {
             if self.multi.cursor().is_some() {
                 keys.insert(0, ("Esc", "clear selection"));
@@ -4052,6 +4281,11 @@ impl ShellView {
             Stop::Undo => &self.undo_focus,
             Stop::Bulk(index) => &self.bulk_focus[index],
             Stop::RoomMenu => &self.room_menu_focus,
+            Stop::View(i) => &self.workflow.view[i],
+            Stop::QuickStatus => &self.workflow.quick,
+            Stop::QuickRemoveStatus => &self.workflow.clear,
+            Stop::Status => &self.workflow.status,
+            Stop::Starts => &self.workflow.starts,
             Stop::QuickInput => &self.quick_focus.input,
             Stop::QuickDue => &self.quick_focus.date,
             Stop::QuickPriority => &self.quick_focus.priority,
@@ -4096,11 +4330,33 @@ impl ShellView {
             }
             Stop::Bulk(index) => self.bulk_stop(index),
             Stop::RoomMenu => self.has_room_menu(),
+            Stop::View(i) => {
+                (self.shell.room.features.workflow || self.shell.room.features.timeline)
+                    && model::workflow::available(
+                        self.shell.room.features,
+                        model::workflow::VIEWS[i],
+                    )
+            }
+            Stop::Status => self
+                .repeat_target()
+                .and_then(|id| self.task_stage(id))
+                .is_some(),
+            Stop::Starts => self
+                .repeat_target()
+                .is_some_and(|id| self.task_has_start(id)),
+            Stop::QuickStatus => self.shell.room.features.workflow && !self.on_board(),
+            Stop::QuickRemoveStatus => {
+                self.has_stop(Stop::QuickStatus)
+                    && self.quick_stage() != todo_core::query::QueryStatus::Todo
+            }
             Stop::QuickInput | Stop::QuickDue | Stop::QuickPriority => {
-                !self.in_activity() && self.ui.room != RoomKey::Trash
+                !self.in_activity()
+                    && self.ui.room != RoomKey::Trash
+                    && (!self.on_board() || self.board_composer_open())
             }
             Stop::QuickRemoveDate => {
-                self.has_stop(Stop::QuickInput) && self.quick_preview().due.is_some()
+                self.has_stop(Stop::QuickInput)
+                    && self.quick_date_label(&self.quick_preview()).is_some()
             }
             Stop::QuickRemovePriority => {
                 self.has_stop(Stop::QuickInput)
@@ -4204,6 +4460,8 @@ impl Render for ShellView {
         self.drive_motion(window, cx);
         self.drive_email_drop(window, cx);
         self.drive_task_drag(window);
+        self.drive_board(window);
+        self.board.clear_geometry();
         self.row_bounds.borrow_mut().clear();
         self.task_toggles
             .retain(|_, a| self.frame.saturating_sub(a.start) < a.span);
@@ -4227,12 +4485,19 @@ impl Render for ShellView {
                 .style(ty::BODY)
                 .text_color(p.ink_2)
                 .child(todo_client::trash::DESCRIPTION)
+        } else if self.on_board() {
+            div()
         } else {
             self.quick_add_field(window, cx)
         };
         let detail = self.docked().then(|| self.detail_pane(window, cx));
         let overlay = self.detail_overlay(window, cx);
         let footer = self.list_footer(overlay.is_none(), cx);
+        let room_body = if self.on_board() {
+            self.board_view(window, cx)
+        } else {
+            self.list(window, cx)
+        };
         div()
             .id("shell")
             .when(self.pairing_panel.is_none(), |shell| {
@@ -4273,9 +4538,13 @@ impl Render for ShellView {
                 if this.shell.room.key.is_history() {
                     this.select_room(RoomKey::default(), cx);
                 }
-                let handle = this.quick_add.read(cx).focus_handle.clone();
-                window.focus(&handle, cx);
-                cx.notify();
+                if this.on_board() {
+                    this.board_add(window, cx);
+                } else {
+                    let handle = this.quick_add.read(cx).focus_handle.clone();
+                    window.focus(&handle, cx);
+                    cx.notify();
+                }
             }))
             // A click that no field takes (the sidebar, the header, a button) leaves the keyboard on the
             // task list, so its keys keep working.
@@ -4321,7 +4590,7 @@ impl Render for ShellView {
                                     .flex_col()
                                     .child(self.header(window, cx))
                                     .child(quick_add)
-                                    .child(self.list(window, cx))
+                                    .child(room_body)
                                     .children(overlay.into_iter().flatten()),
                             )
                             .children(self.bulk_bar(window, cx))
@@ -4340,7 +4609,9 @@ impl Render for ShellView {
             })
             .child(self.press_counter(cx))
             .child(self.drag_events(cx))
+            .child(self.board_capture(cx))
             .children(self.drag_preview(window))
+            .children(self.board_preview(window, cx))
             .children(self.confirmation_scrim())
             .children(self.pairing_overlay())
             // Context menus open at the pointer; the others hang from their buttons.
@@ -4352,7 +4623,9 @@ impl Render for ShellView {
                             | MenuKind::Smart(_)
                             | MenuKind::Collection { .. }
                             | MenuKind::Task { .. }
+                            | MenuKind::Status { at_row: true, .. }
                             | MenuKind::BulkMove
+                            | MenuKind::BulkStatus
                     )
                 },
                 cx,

@@ -108,6 +108,7 @@ impl ShellView {
         if let Some(session) = self.store.session()
             && let Err(e) = session.data().save_ui(&UiPreferences {
                 collapsed_collections: self.ui.collapsed_collections.clone(),
+                board_done: self.ui.board_done.clone(),
                 panes: self.ui.panes,
             })
         {

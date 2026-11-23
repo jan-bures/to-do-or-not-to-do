@@ -30,6 +30,7 @@ pub enum Page {
     Confirm,
     Move,
     Colour,
+    Settings,
 }
 
 /// What the tag picker shows: every tag to put on the task or take off, one tag's own page (rename,
@@ -79,6 +80,10 @@ pub enum MenuAction {
     SignOut,
     SetPriority(TaskId, Priority),
     QuickPriority(Priority),
+    Status(Option<TaskId>, todo_core::query::QueryStatus),
+    OpenListSettings,
+    CloseListSettings,
+    ListSetting(ListId, super::workflow::Setting),
     /// A task's context menu: complete or reopen it.
     ToggleDone(TaskId),
     ToggleMyDay(TaskId),
@@ -91,6 +96,7 @@ pub enum MenuAction {
     MoveTask(TaskId, ListId),
     /// Move the selected tasks to a list.
     BulkMove(ListId),
+    BulkStatus(todo_core::query::QueryStatus),
     PickMerge(TaskId),
     AskMerge(TaskId, TaskId),
     Merge(TaskId, TaskId),
@@ -216,6 +222,11 @@ pub enum MenuEntry {
         value: Option<String>,
         buttons: Vec<MenuItem>,
     },
+    SettingToggle {
+        item: MenuItem,
+        description: &'static str,
+    },
+    DefaultView(Vec<MenuItem>),
     /// A quiet line that wraps, such as "No list matches".
     Note(SharedString),
     /// A change the server refused: what it was and why, beside its Dismiss button.
@@ -230,10 +241,12 @@ impl MenuEntry {
     /// The items it offers, in the order the keyboard walks them.
     pub fn items(&self) -> &[MenuItem] {
         match self {
-            Self::Item(item) => std::slice::from_ref(item),
+            Self::Item(item) | Self::SettingToggle { item, .. } => std::slice::from_ref(item),
             Self::Failure { dismiss, .. } => std::slice::from_ref(dismiss),
             Self::Confirm { buttons, .. } => buttons,
-            Self::Swatches(items) | Self::Controls { buttons: items, .. } => items,
+            Self::Swatches(items)
+            | Self::Controls { buttons: items, .. }
+            | Self::DefaultView(items) => items,
             Self::Separator
             | Self::Caption { .. }
             | Self::Heading(_)
@@ -667,6 +680,7 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
             .into_iter()
             .collect();
         }
+        (RoomKey::List(id), Page::Settings) => return list_settings(state, id),
         (RoomKey::List(id), Page::Move) => return move_list_menu(state, id),
         (RoomKey::List(id), Page::Colour) => return colour_menu(state, id.into()),
         (RoomKey::Collection(id), Page::Colour) => return colour_menu(state, id.into()),
@@ -707,6 +721,7 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
                     MenuAction::AskMoveList(id),
                 ));
             }
+            entries.push(list_settings_item());
         }
         RoomKey::Collection(id) if state.is_live(id.into()) => {
             entries.push(item(
@@ -845,6 +860,7 @@ pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
                 .collect();
         }
         Page::Move => return move_list_menu(state, id),
+        Page::Settings => return list_settings(state, id),
         Page::Colour => return colour_menu(state, id.into()),
         Page::Main => {}
     }
@@ -865,6 +881,7 @@ pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
         ));
     }
     entries.extend([
+        list_settings_item(),
         pop_out_item(PopoutRoom::List(id)),
         item(
             "list-up",
@@ -887,6 +904,123 @@ pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
         ),
     ]);
     entries
+}
+
+fn list_settings_item() -> MenuEntry {
+    item(
+        "list-settings",
+        Icon::Settings,
+        "List settings…",
+        MenuAction::OpenListSettings,
+    )
+}
+
+fn list_settings(state: &State, id: ListId) -> Vec<MenuEntry> {
+    use super::workflow::{self, Setting};
+    let Some(list) = state
+        .lists
+        .get(&id)
+        .filter(|_| commands::list_live(state, id))
+    else {
+        return Vec::new();
+    };
+    let features = list.features;
+    let toggle = |key, label, description, setting, checked| {
+        let entry = item(
+            key,
+            Icon::Settings,
+            label,
+            MenuAction::ListSetting(id, setting),
+        );
+        match entry {
+            MenuEntry::Item(mut item) => {
+                item.checked = checked;
+                MenuEntry::SettingToggle { item, description }
+            }
+            other => other,
+        }
+    };
+    let mut entries = vec![
+        item(
+            "settings-back",
+            Icon::ChevronLeft,
+            "List settings",
+            MenuAction::CloseListSettings,
+        ),
+        MenuEntry::Separator,
+        toggle(
+            "settings-workflow",
+            "Workflow & Board",
+            "Track Backlog, To do, In progress and Done, and unlock Board view.",
+            Setting::Workflow,
+            features.workflow,
+        ),
+        toggle(
+            "settings-timeline",
+            "Timeline & Start dates",
+            "Add start dates to tasks and view them over time.",
+            Setting::Timeline,
+            features.timeline,
+        ),
+    ];
+    if features.workflow || features.timeline {
+        entries.push(MenuEntry::Separator);
+        entries.push(MenuEntry::DefaultView(
+            workflow::VIEWS
+                .into_iter()
+                .filter(|&v| features.allows(v))
+                .filter_map(|view| {
+                    let (label, icon) = workflow::view_label(view);
+                    let MenuEntry::Item(mut item) = item(
+                        label,
+                        icon,
+                        label,
+                        MenuAction::ListSetting(id, Setting::Default(view)),
+                    ) else {
+                        return None;
+                    };
+                    item.checked = view == features.default_view;
+                    Some(item)
+                })
+                .collect(),
+        ));
+    }
+    entries.push(MenuEntry::Note(
+        "Turning a feature off hides its view. Your task statuses and start dates are kept.".into(),
+    ));
+    entries
+}
+
+pub fn status_entries(
+    task: Option<TaskId>,
+    current: todo_core::query::QueryStatus,
+) -> Vec<MenuEntry> {
+    use super::workflow;
+    workflow::STAGES
+        .into_iter()
+        .filter(|&s| task.is_some() || workflow::open_stage(s).is_some())
+        .map(|stage| {
+            let (label, icon) = workflow::status(stage);
+            with(
+                item(label, icon, label, MenuAction::Status(task, stage)),
+                |i| MenuItem {
+                    checked: stage == current,
+                    ..i
+                },
+            )
+        })
+        .collect()
+}
+
+pub fn bulk_status_entries() -> Vec<MenuEntry> {
+    use super::workflow;
+    workflow::STAGES
+        .into_iter()
+        .map(|stage| {
+            let (label, icon) = workflow::status(stage);
+            item(label, icon, label, MenuAction::BulkStatus(stage))
+        })
+        .collect()
 }
 
 /// The collection picker that moves a list (its menu's Move to…): every collection, as the sidebar
@@ -959,6 +1093,7 @@ pub fn collection_menu(
             .collect();
         }
         Page::Colour => return colour_menu(state, id.into()),
+        Page::Settings => return Vec::new(),
         Page::Move | Page::Main => {}
     }
     let (icon, label) = if collapsed {
@@ -1577,6 +1712,7 @@ mod tests {
                 MenuAction::RenameList(office),
                 MenuAction::AskColour(office.into()),
                 MenuAction::AskMoveList(office),
+                MenuAction::OpenListSettings,
                 MenuAction::PopOut(super::super::popouts::Room::List(office)),
                 MenuAction::ToggleCompleted,
                 MenuAction::AskDeleteList(office),
@@ -1618,6 +1754,45 @@ mod tests {
         assert!(buttons[0].danger && !buttons[1].danger);
         // From the keyboard it starts on Cancel: a second Enter never deletes.
         assert_eq!(first_highlight(&confirm), Some(1));
+    }
+
+    #[test]
+    fn list_settings_only_offers_defaults_for_enabled_features() {
+        use todo_core::model::ListView;
+        let f = fixtures::list_room();
+        let RoomKey::List(id) = f.ui.room else {
+            panic!("list fixture")
+        };
+        assert!(
+            actions(&list_menu(&f.state, id, Page::Main)).contains(&MenuAction::OpenListSettings)
+        );
+        let menu = room_menu(&f.state, f.ui.room, false, Page::Settings);
+        assert_eq!(items(&menu).count(), 3);
+        assert!(!menu.iter().any(|e| matches!(e, MenuEntry::DefaultView(_))));
+
+        let f = fixtures::by_name("board").expect("workflow fixture");
+        let RoomKey::List(id) = f.ui.room else {
+            panic!("list fixture")
+        };
+        let menu = room_menu(&f.state, f.ui.room, false, Page::Settings);
+        let defaults: Vec<_> = items(&menu)
+            .filter_map(|i| match i.action {
+                MenuAction::ListSetting(list, super::super::workflow::Setting::Default(view))
+                    if list == id =>
+                {
+                    Some((view, i.checked))
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            defaults,
+            [
+                (ListView::List, false),
+                (ListView::Board, true),
+                (ListView::Timeline, false)
+            ]
+        );
     }
 
     #[test]

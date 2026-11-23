@@ -108,11 +108,23 @@ fn agent_of(task: &Task) -> Option<crate::theme::Agent> {
 }
 
 fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
+    use todo_core::query::QueryStatus;
+    let features = state.lists.get(&task.list).map_or_default(|l| l.features);
+    let span = features
+        .timeline
+        .then_some(task.start_date)
+        .flatten()
+        .zip(task.due)
+        .map(|(start, end)| super::workflow::span(start, end, now.today()));
     let due = match labels::due(task.due, ix.reminder.get(&task.id).copied(), now) {
         DueLabel::None => Due::None,
-        DueLabel::Soon(s) => Due::Soon(s.into()),
-        DueLabel::Plain(s) => Due::Plain(s.into()),
-        DueLabel::Overdue(s) => Due::Overdue(s.into()),
+        DueLabel::Soon(s) => Due::Soon(span.unwrap_or(s).into()),
+        DueLabel::Plain(s) => Due::Plain(span.unwrap_or(s).into()),
+        DueLabel::Overdue(s) => Due::Overdue(if features.workflow && s == "yesterday" {
+            "1d overdue".into()
+        } else {
+            s.into()
+        }),
     };
     TaskRow {
         id: task.id,
@@ -131,6 +143,8 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
         due: if task.is_done() { Due::None } else { due },
         from_mail: ix.mail.contains(&task.id),
         done: task.is_done(),
+        status: features.workflow.then(|| QueryStatus::of(task)),
+        completed_when: task.completed_at.map(|at| labels::when(at, now).into()),
     }
 }
 
@@ -274,6 +288,11 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
         eyebrow: eyebrow(header.eyebrow.clone()),
         hue,
         chips,
+        features: match key {
+            RoomKey::List(id) => state.lists[&id].features,
+            _ => Default::default(),
+        },
+        board: None,
         done: as_u32(header.progress_done),
         total: as_u32(header.progress_total),
         score: header.summary,
@@ -575,6 +594,44 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
             edit: Some(FieldEdit::Priority),
         },
     ];
+    let features = state
+        .lists
+        .get(&task.list)
+        .map_or_default(|list| list.features);
+    let status = features
+        .workflow
+        .then(|| todo_core::query::QueryStatus::of(task));
+    if features.timeline {
+        fields.insert(
+            0,
+            Field {
+                icon: Icon::CalendarRange,
+                label: "Starts",
+                value: task
+                    .start_date
+                    .map_or_else(|| "–".into(), |d| labels::short_date(d, today).into()),
+                kind: if task.start_date.is_some() {
+                    FieldKind::Date
+                } else {
+                    FieldKind::Empty
+                },
+                edit: Some(FieldEdit::Starts),
+            },
+        );
+    }
+    if let Some(stage) = status {
+        let (label, _) = super::workflow::status(stage);
+        fields.insert(
+            0,
+            Field {
+                icon: Icon::Columns3,
+                label: "Status",
+                value: label.into(),
+                kind: FieldKind::Words,
+                edit: Some(FieldEdit::Status),
+            },
+        );
+    }
     // Always there, like Repeat: the picker sets, moves or removes the reminder it shows (the first
     // from today, else the latest; `intent::reminder::shown`).
     let reminder = super::commands::reminder::shown(state, id, &now.eval());
@@ -706,6 +763,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         my_day: task.my_day == Some(today),
         important: task.priority == Priority::High,
         priority: task.priority,
+        status,
         steps: steps
             .iter()
             .map(|s| StepRow {
@@ -810,7 +868,26 @@ pub fn derive(state: &State, ui: &UiState, sync: &SyncInfo, now: &Now) -> Shell 
         in_sidebar = as_placed(state, ui, true);
         &in_sidebar
     };
-    let room = room(room_state, &ix, ui, now, &ctx);
+    let mut room = room(room_state, &ix, ui, now, &ctx);
+    if let RoomKey::List(list) = room.key
+        && !ui.compact
+        && let Some(board) = todo_client::board::project(sidebar_state, list, &ctx)
+    {
+        room.board = Some(super::BoardRows {
+            total_done: board.total_done,
+            columns: board.columns.map(|column| {
+                let tasks = column
+                    .cards
+                    .iter()
+                    .filter_map(|id| room_state.tasks.get(id))
+                    .collect();
+                filter(room_state, &ui.filter, &ctx, tasks, &ui.held_updates)
+                    .into_iter()
+                    .map(|task| row(room_state, &ix, task, now))
+                    .collect()
+            }),
+        });
+    }
     let mut sidebar = sidebar(sidebar_state, &ix, ui, sync, now, &ctx);
     sidebar.selected = room.key;
     let detail = ui.task.and_then(|id| detail(state, &ix, id, now));

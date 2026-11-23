@@ -944,6 +944,9 @@ impl ShellView {
                             .child(f.value.clone())
                             .into_any_element()
                     }
+                    _ if f.edit == Some(FieldEdit::Status) && d.status.is_some() => {
+                        div().children(d.status.map(|stage| super::workflow::status_mark(&p, stage, false))).into_any_element()
+                    }
                     _ if tags && !d.tags.is_empty() => {
                         self.tag_chips(&d.tags, window).into_any_element()
                     }
@@ -975,8 +978,9 @@ impl ShellView {
                             .child(f.label),
                     )
                     .child(value)
+                    .when_some(f.edit.filter(|edit| live && matches!(edit, FieldEdit::Status | FieldEdit::Starts)), |el, edit| self.workflow_property(el, task, edit, cx))
                     .when(due && live, |el| {
-                        let belongs = |kind: &MenuKind| matches!(kind, MenuKind::Date(c) if c.task == Some(task));
+                        let belongs = |kind: &MenuKind| matches!(kind, MenuKind::Date(c) if !c.starts && c.task == Some(task));
                         let open = self.menu.as_ref().is_some_and(|m| belongs(&m.kind) && m.overlay.look(self.frame).open);
                         el.track_focus(&self.due_focus)
                             .role(gpui::Role::Button)
@@ -1097,6 +1101,8 @@ impl ShellView {
                         el.tooltip(kit::tooltip(p, "Shown here; not editable in this app yet"))
                     });
                 let focus = match f.edit {
+                    Some(FieldEdit::Status) => Some(&self.workflow.status),
+                    Some(FieldEdit::Starts) => Some(&self.workflow.starts),
                     Some(FieldEdit::Due) => Some(&self.due_focus),
                     Some(FieldEdit::Repeat) => Some(&self.repeat_focus),
                     Some(FieldEdit::Reminder) => Some(&self.reminder_focus),
