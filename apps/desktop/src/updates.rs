@@ -601,7 +601,7 @@ const MAX_REJECTIONS: usize = 32;
 fn read_rejections(dir: &Path) -> Vec<Rejection> {
     File::open(dir.join(REJECTIONS))
         .ok()
-        .and_then(|file| release::read_bounded(file, 8192).ok())
+        .and_then(|file| release::read_bounded(file, 16 * 1024).ok())
         .and_then(|bytes| serde_json::from_slice::<Vec<Rejection>>(&bytes).ok())
         .filter(|versions| versions.len() <= MAX_REJECTIONS)
         .unwrap_or_default()

@@ -85,7 +85,9 @@ packages (and the desktop signature) before the manifest. Neither overwrites ass
 partway, inspect GitHub before retrying.
 
 Prefer publishing both platforms from the same commit. Either order works. Clients check up to five
-recent build tags and skip releases that don't have their platform's manifest. Keep old tagged assets
+recent build tags and skip releases that don't have their platform's manifest. If five or more newer
+releases lack one platform's manifest, that platform's clients report that they're up to date, so never
+publish five single-platform releases in a row. Keep old tagged assets
 available for clients that have already fetched a manifest. Serialize publishing, and don't enable
 immutable releases if the second platform still needs to add its assets.
 

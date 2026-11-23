@@ -118,8 +118,9 @@ try {
     }
     # Reading each ZIP entry catches paths in Rust read-only data and DEX strings, not just debug symbols.
     $python = if ($IsWindows) { 'python' } else { 'python3' }
-    $verification | & $python -B (Join-Path $PSScriptRoot 'scan-release-apk.py') $apk --certificate-stdin
-    if ($LASTEXITCODE -ne 0) { throw 'APK contains local or denied data, or could not be scanned.' }
+    # The release notes become public too, so scan them with the certificate output.
+    (@($verification) + @($Notes)) | & $python -B (Join-Path $PSScriptRoot 'scan-release-apk.py') $apk --certificate-stdin
+    if ($LASTEXITCODE -ne 0) { throw 'APK or release notes contain local or denied data, or could not be scanned.' }
     $verification | Write-Output
     $certs = @($verification | ForEach-Object {
         if ($_ -match '^(?:Signer #[0-9]+|V3\.0 Signer:) certificate SHA-256 digest: ([0-9a-fA-F]{64})$') { $Matches[1].ToLowerInvariant() }

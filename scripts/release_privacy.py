@@ -220,7 +220,7 @@ def scan(path, patterns, cert_info=b"", *, label="APK", metadata_label=None, arc
 def apk_main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("apk", type=Path)
-    parser.add_argument("--certificate-stdin", action="store_true", help="scan apksigner's certificate output too")
+    parser.add_argument("--certificate-stdin", action="store_true", help="scan apksigner's certificate output and the release notes too")
     args = parser.parse_args()
     try:
         cert = sys.stdin.buffer.read() if args.certificate_stdin else b""

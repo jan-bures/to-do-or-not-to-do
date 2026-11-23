@@ -34,11 +34,13 @@ private const val ATOM = "http://www.w3.org/2005/Atom"
 private val releaseId = Regex("tag:github\\.com,2008:Repository/[0-9]+/(v(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)-build\\.([1-9][0-9]*))")
 private const val MAX_REDIRECTS = 5
 private const val DOWNLOAD_TIMEOUT_MS = 3 * 60_000L
+// Release history and indexes are small; don't let a slow redirect target hold the worker.
+private const val METADATA_TIMEOUT_MS = 60_000L
 
 private fun deadlineProblem() = FeedProblem("The download took too long. Try again.", retry = true)
 
-private class DownloadDeadline {
-    private val until = SystemClock.elapsedRealtime() + DOWNLOAD_TIMEOUT_MS
+private class DownloadDeadline(timeoutMs: Long = DOWNLOAD_TIMEOUT_MS) {
+    private val until = SystemClock.elapsedRealtime() + timeoutMs
     fun remaining(): Long = (until - SystemClock.elapsedRealtime()).takeIf { it > 0 } ?: throw deadlineProblem()
 }
 
@@ -186,17 +188,23 @@ internal suspend fun fetchIndex(
     return null
 }
 
-private suspend fun readOptionalText(address: URI, limit: Int): String? = get(address, optional = true) { input ->
+private suspend fun readOptionalText(address: URI, limit: Int): String? {
+    val deadline = DownloadDeadline(METADATA_TIMEOUT_MS)
+    return get(address, optional = true, deadline = deadline) { input -> readText(input, limit, deadline) }
+}
+
+private suspend fun readText(input: InputStream, limit: Int, deadline: DownloadDeadline): String {
     val buffer = ByteArray(limit + 1)
     var used = 0
     while (used < buffer.size) {
         currentCoroutineContext().ensureActive()
+        deadline.remaining()
         val count = input.read(buffer, used, buffer.size - used)
         if (count < 0) break
         used += count
     }
     if (used > limit) throw invalidInformation()
-    try {
+    return try {
         Charsets.UTF_8.newDecoder().decode(ByteBuffer.wrap(buffer, 0, used)).toString()
     } catch (_: CharacterCodingException) {
         throw invalidInformation()
