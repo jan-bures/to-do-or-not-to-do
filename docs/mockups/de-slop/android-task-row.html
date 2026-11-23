@@ -1,0 +1,385 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-room-hue="my-day">
+<head>
+  <meta charset="utf-8" />
+  <title>Android Task Row, Compact Header & Room Pills — Before / After</title>
+  <link rel="stylesheet" href="../../../crates/todo-design/generated/tokens.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .phone-frame {
+      width: 412px;
+      background: var(--pane);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-xl);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .compact-header {
+      position: relative;
+      height: 36px;
+      padding: 0 20px;
+      background: var(--sky);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+    }
+    .compact-header::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 25%;
+      height: 2px;
+      background: var(--sun-ink);
+    }
+    .compact-title {
+      font-size: 18px;
+      line-height: 20px;
+      font-weight: 600;
+      letter-spacing: -0.023em;
+      color: var(--ink);
+    }
+    .compact-cues {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 12px;
+      line-height: 16px;
+      color: var(--ink-2);
+    }
+    .cue-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .sun-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--sun-ink);
+      flex: none;
+    }
+
+    .phone-row {
+      display: grid;
+      grid-template-columns: 22px 1fr 20px 24px 20px;
+      align-items: start;
+      column-gap: 10px;
+      padding: 11px 16px 11px 20px;
+      min-height: 64px;
+      border-bottom: 1px solid var(--line);
+    }
+    .phone-row:last-child { border-bottom: none; }
+    .phone-row-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .phone-title {
+      font-size: 16px;
+      line-height: 22px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .phone-meta {
+      grid-column: 2 / 6;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: -2px;
+      flex-wrap: nowrap;
+      overflow: hidden;
+    }
+    .due-slot {
+      min-width: 92px;
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 12.5px;
+      line-height: 16px;
+      font-weight: 500;
+      color: var(--ink-2);
+      flex: none;
+    }
+    .due-slot.soon { color: var(--accent-strong); font-weight: 600; }
+
+    .bottom-dock {
+      background: var(--canvas);
+      border-top: 1px solid var(--line);
+      padding: 10px 14px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .pill-strip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow: hidden;
+    }
+    .room-pill {
+      height: 32px;
+      padding: 0 10px;
+      border-radius: 16px;
+      border: 1px solid var(--line);
+      background: var(--pane);
+      color: var(--ink-2);
+      font-size: 12.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+      flex: none;
+    }
+    .room-pill.active {
+      background: var(--list-strong);
+      border-color: var(--list-strong);
+      color: var(--list-on-strong);
+    }
+    .pill-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--list-dot);
+      flex: none;
+    }
+    .utility-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .rooms-btn {
+      position: relative;
+      height: 36px;
+      padding: 0 12px;
+      border-radius: var(--radius-md);
+      background: var(--pane);
+      border: 1px solid var(--line);
+      color: var(--ink);
+      font-size: 13.5px;
+      font-weight: 500;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .sync-pip {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: var(--success);
+      position: absolute;
+      top: 5px;
+      left: 25px;
+      box-shadow: 0 0 0 2px var(--pane);
+    }
+    .util-icons {
+      display: inline-flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--ink-2);
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="sheet-header">
+      <h1 class="sheet-title">Android cover screen — compact header, task rows &amp; bottom dock</h1>
+      <p class="sheet-subtitle">412 dp phone frames · My Day · Light · Real tokens from todo-design</p>
+    </div>
+
+    <div class="compare-grid">
+      <!-- BEFORE -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag">Before — dots in header, rows, smart-list pills &amp; Rooms button</span>
+        </div>
+        <div class="phone-frame">
+          <div class="compact-header">
+            <span class="compact-title">My Day</span>
+            <span class="compact-cues">
+              <span class="cue-item" style="color:var(--danger-ink);font-weight:600"><span class="legacy-diamond"></span>1</span>
+              <span class="cue-item"><span class="sun-dot"></span>3/12</span>
+            </span>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone overdue"></span>
+            <div class="phone-row-main"><div class="phone-title">Pay quarterly VAT filing</div></div>
+            <div></div>
+            <div style="display:flex;justify-content:flex-end;margin-top:3px"><span class="prio high">!!!</span></div>
+            <div style="margin-top:3px;color:var(--important-fill)"><span class="ic ic-16" data-lucide="star-filled"></span></div>
+            <div class="phone-meta">
+              <span class="legacy-overdue-pill"><span class="legacy-diamond"></span>2d overdue</span>
+              <span class="legacy-list-pill" data-list-hue="teal"><span class="legacy-dot"></span>Finance</span>
+              <span class="mono" style="font-size:12px;color:var(--ink-3)">#tax</span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Prepare Q4 launch checklist</div></div>
+            <div style="margin-top:1px"><span class="agent-mark" data-agent="codex">X</span></div>
+            <div style="display:flex;justify-content:flex-end;margin-top:3px"><span class="prio med">!!</span></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="due-slot soon">Today 17:00</span>
+              <span class="legacy-list-pill" data-list-hue="lagoon"><span class="legacy-dot"></span>Planning</span>
+              <span class="step-meter"><span class="step-pip done"></span><span class="step-pip done"></span><span class="step-pip"></span><span class="step-pip"></span><span class="step-pip"></span></span>
+              <span class="mono" style="font-size:12px;color:var(--ink-3)">2/5</span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Pick grout colour for tiles</div></div>
+            <div></div>
+            <div></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="due-slot">Thu 26 Nov</span>
+              <span class="legacy-status-chip"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
+              <span class="legacy-list-pill" data-list-hue="coral"><span class="legacy-dot"></span>Home</span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Buy oat milk and lemons</div></div>
+            <div></div>
+            <div></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="legacy-list-pill" data-list-hue="fern"><span class="legacy-dot"></span>Groceries</span>
+              <span class="mono" style="font-size:12px;color:var(--ink-3)">#errands</span>
+            </div>
+          </div>
+
+          <div class="bottom-dock">
+            <div class="pill-strip">
+              <span class="room-pill active" data-list-hue="my-day">My Day</span>
+              <span class="room-pill" data-list-hue="important"><span class="pill-dot"></span>Important</span>
+              <span class="room-pill" data-list-hue="planned"><span class="pill-dot"></span>Planned</span>
+              <span class="room-pill" data-list-hue="lagoon"><span class="ic ic-14" data-glyph="flag" style="color:var(--list-glyph)"></span>Planning</span>
+            </div>
+            <div class="utility-bar">
+              <span class="rooms-btn">
+                <span class="ic ic-16" data-lucide="menu"></span>
+                <span class="sync-pip"></span>
+                <span>Rooms</span>
+              </span>
+              <span class="util-icons">
+                <span class="ic ic-18" data-lucide="search"></span>
+                <span class="ic ic-18" data-lucide="ellipsis"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag after">After — zero dots, list glyphs, smart-list Lucide icons</span>
+        </div>
+        <div class="phone-frame">
+          <div class="compact-header">
+            <span class="compact-title">My Day</span>
+            <span class="compact-cues">
+              <span style="color:var(--danger-ink);font-weight:600">1 overdue</span>
+              <span style="color:var(--ink-4)">·</span>
+              <span>3/12</span>
+            </span>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone overdue"></span>
+            <div class="phone-row-main"><div class="phone-title">Pay quarterly VAT filing</div></div>
+            <div></div>
+            <div style="display:flex;justify-content:flex-end;margin-top:3px"><span class="prio high">!!!</span></div>
+            <div style="margin-top:3px;color:var(--important-fill)"><span class="ic ic-16" data-lucide="star-filled"></span></div>
+            <div class="phone-meta">
+              <span class="due-slot"><span class="overdue-text">2d overdue</span></span>
+              <span class="list-ref" data-list-hue="teal"><span class="ic ic-14" data-glyph="coin"></span><span class="list-name">Finance</span></span>
+              <span class="tag-tinted" data-list-hue="azure">#tax</span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Prepare Q4 launch checklist</div></div>
+            <div style="margin-top:1px"><span class="agent-mark" data-agent="codex">X</span></div>
+            <div style="display:flex;justify-content:flex-end;margin-top:3px"><span class="prio med">!!</span></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="due-slot soon">Today 17:00</span>
+              <span class="list-ref" data-list-hue="lagoon"><span class="ic ic-14" data-glyph="flag"></span><span class="list-name">Planning</span></span>
+              <span class="step-meter"><span class="step-pip done"></span><span class="step-pip done"></span><span class="step-pip"></span><span class="step-pip"></span><span class="step-pip"></span></span>
+              <span class="mono" style="font-size:12px;color:var(--ink-3)">2/5</span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Pick grout colour for tiles</div></div>
+            <div></div>
+            <div></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="due-slot">Thu 26 Nov</span>
+              <span class="status-inline"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
+              <span class="list-ref" data-list-hue="coral"><span class="ic ic-14" data-glyph="house"></span><span class="list-name">Home</span></span>
+            </div>
+          </div>
+
+          <div class="phone-row">
+            <span class="check phone"></span>
+            <div class="phone-row-main"><div class="phone-title">Buy oat milk and lemons</div></div>
+            <div></div>
+            <div></div>
+            <div style="margin-top:3px;color:var(--ink-3)"><span class="ic ic-16" data-lucide="star"></span></div>
+            <div class="phone-meta">
+              <span class="list-ref" data-list-hue="fern"><span class="ic ic-14" data-glyph="basket"></span><span class="list-name">Groceries</span></span>
+              <span class="tag-tinted" data-list-hue="clay">#errands</span>
+            </div>
+          </div>
+
+          <div class="bottom-dock">
+            <div class="pill-strip">
+              <span class="room-pill active" data-list-hue="my-day"><span class="ic ic-14" data-lucide="sun"></span>My Day</span>
+              <span class="room-pill" data-list-hue="important"><span class="ic ic-14" data-lucide="star" style="color:var(--list-glyph)"></span>Important</span>
+              <span class="room-pill" data-list-hue="planned"><span class="ic ic-14" data-lucide="calendar" style="color:var(--list-glyph)"></span>Planned</span>
+              <span class="room-pill" data-list-hue="lagoon"><span class="ic ic-14" data-glyph="flag" style="color:var(--list-glyph)"></span>Planning</span>
+            </div>
+            <div class="utility-bar">
+              <span class="rooms-btn">
+                <span class="ic ic-16" data-lucide="menu"></span>
+                <span>Rooms</span>
+              </span>
+              <span class="util-icons">
+                <span class="ic ic-18" data-lucide="search"></span>
+                <span class="ic ic-18" data-lucide="ellipsis"></span>
+              </span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script>
+    for (const el of document.querySelectorAll("[data-lucide]")) {
+      el.innerHTML = window.TODO_ICONS.lucide[el.dataset.lucide] || "";
+    }
+    for (const el of document.querySelectorAll("[data-glyph]")) {
+      el.innerHTML = window.TODO_ICONS.glyphs[el.dataset.glyph] || "";
+    }
+  </script>
+</body>
+</html>

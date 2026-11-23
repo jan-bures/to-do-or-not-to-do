@@ -1,0 +1,420 @@
+@font-face {
+  font-family: "Geist";
+  src: url("../../../assets/fonts/Geist-400.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("../../../assets/fonts/Geist-500.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist";
+  src: url("../../../assets/fonts/Geist-600.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../../assets/fonts/GeistMono-400.ttf") format("truetype");
+  font-weight: 400;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../../assets/fonts/GeistMono-500.ttf") format("truetype");
+  font-weight: 500;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../../assets/fonts/GeistMono-600.ttf") format("truetype");
+  font-weight: 600;
+  font-style: normal;
+}
+@font-face {
+  font-family: "Geist Mono";
+  src: url("../../../assets/fonts/GeistMono-700.ttf") format("truetype");
+  font-weight: 700;
+  font-style: normal;
+}
+
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+
+/* Alias todo-design's --color-* custom properties for concise styling */
+[data-room-hue] {
+  --canvas: var(--color-canvas);
+  --pane: var(--color-pane);
+  --raised: var(--color-raised);
+  --hover: var(--color-hover);
+  --wash: var(--color-wash);
+  --selection-wash: var(--color-selection-wash);
+  --tint: var(--color-tint);
+  --line: var(--color-line);
+  --line-strong: var(--color-line-strong);
+  --control: var(--color-control);
+  --ink: var(--color-ink);
+  --ink-2: var(--color-ink-2);
+  --ink-3: var(--color-ink-3);
+  --ink-4: var(--color-ink-4);
+  --accent: var(--color-accent);
+  --check-selected: var(--color-check-selected);
+  --selection-check: var(--color-selection-check);
+  --accent-strong: var(--color-accent-strong);
+  --accent-fill: var(--color-accent-fill);
+  --on-accent: var(--color-on-accent);
+  --danger: var(--color-danger);
+  --danger-bg: var(--color-danger-bg);
+  --danger-ink: var(--color-danger-ink);
+  --toast: var(--color-toast);
+  --toast-ink: var(--color-toast-ink);
+  --toast-ink-2: var(--color-toast-ink-2);
+  --toast-accent: var(--color-toast-accent);
+  --success: var(--color-success);
+  --sky: var(--color-sky);
+  --hill-far: var(--color-hill-far);
+  --hill-near: var(--color-hill-near);
+  --arc: var(--color-arc);
+  --horizon: var(--color-horizon);
+  --sun: var(--color-sun);
+  --sun-ink: var(--color-sun-ink);
+  --important-fill: var(--color-important-fill);
+  --star: var(--color-star);
+}
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: "Geist", system-ui, sans-serif;
+  color: var(--ink);
+  background: var(--canvas);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.mono {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Comparison canvas */
+.sheet {
+  padding: 28px 32px 32px;
+  background: var(--canvas);
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.sheet-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.sheet-title {
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin: 0;
+}
+
+.sheet-subtitle {
+  font-size: 13px;
+  line-height: 18px;
+  color: var(--ink-3);
+  margin: 0;
+}
+
+.compare-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+.compare-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  align-items: start;
+}
+
+.panel-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.state-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.state-tag {
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.state-tag.after {
+  color: var(--accent-strong);
+}
+
+.state-note {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink-3);
+}
+
+.frame {
+  background: var(--pane);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+/* Icons */
+.ic {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  line-height: 0;
+}
+.ic svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+.ic-14 { width: 14px; height: 14px; }
+.ic-16 { width: 16px; height: 16px; }
+.ic-18 { width: 18px; height: 18px; }
+
+/* Shared Playful atoms */
+.check {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: 1.5px solid var(--control);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.check.overdue {
+  border-color: var(--danger);
+}
+.check.phone {
+  width: 22px;
+  height: 22px;
+}
+.check.checked {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: var(--on-accent);
+}
+
+.agent-mark {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background: var(--agent-bg);
+  color: var(--agent-ink);
+  box-shadow: inset 0 0 0 1px var(--agent-ring);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10px;
+  line-height: 10px;
+  font-weight: 600;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+}
+
+.prio {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 13px;
+  line-height: 16px;
+  font-weight: 700;
+  letter-spacing: -0.115em;
+  text-align: right;
+  width: 24px;
+  flex: none;
+}
+.prio.high { color: var(--ink); }
+.prio.med { color: var(--ink-2); }
+.prio.low { color: var(--ink-3); font-weight: 600; }
+
+.step-meter {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.step-pip {
+  width: 3px;
+  height: 10px;
+  border-radius: 1px;
+  background: var(--line-strong);
+}
+.step-pip.done {
+  background: var(--accent);
+}
+
+.keycap {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--ink-3);
+  background: var(--canvas);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  padding: 0 5px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+/* Legacy "Before" slop tokens */
+.legacy-list-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--list-tint);
+  color: var(--list-ink);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.legacy-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--list-dot);
+  flex: none;
+}
+.legacy-overdue-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--danger-bg);
+  color: var(--danger-ink);
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.legacy-diamond {
+  width: 5px;
+  height: 5px;
+  background: var(--danger-ink);
+  transform: rotate(45deg);
+  flex: none;
+}
+.legacy-status-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  padding: 0 6px;
+  border-radius: 4px;
+  background: var(--tint);
+  color: var(--accent-strong);
+  font-size: 12px;
+  line-height: 20px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.legacy-caps {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--ink-3);
+}
+
+/* New "After" Playful atoms */
+.list-ref {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  white-space: nowrap;
+}
+.list-ref .ic {
+  color: var(--list-glyph);
+}
+.list-ref .col-prefix {
+  color: var(--ink-3);
+  font-weight: 400;
+}
+.list-ref .list-name {
+  color: var(--list-ink);
+}
+
+.tag-tinted {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--list-ink);
+  white-space: nowrap;
+}
+
+.overdue-text {
+  font-family: "Geist Mono", ui-monospace, monospace;
+  font-size: 12.5px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--danger-ink);
+  white-space: nowrap;
+}
+
+.status-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.status-inline .ic {
+  color: var(--accent-strong);
+}
+
+.section-heading {
+  font-family: "Geist", system-ui, sans-serif;
+  font-size: 12.5px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--ink-2);
+}

@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-room-hue="my-day">
+<head>
+  <meta charset="utf-8" />
+  <title>Sidebar Footer & Activity Row — Before / After</title>
+  <link rel="stylesheet" href="../../../crates/todo-design/generated/tokens.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .sidebar-card {
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-lg);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar-section-label {
+      padding: 8px 14px 4px;
+      font-size: 11.5px;
+      color: var(--ink-3);
+      font-weight: 500;
+    }
+    .nav-row {
+      height: 36px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--ink);
+    }
+    .nav-left {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .pip-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 11.5px;
+      color: var(--accent-strong);
+      font-weight: 500;
+    }
+    .footer-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px 14px 16px;
+      background: var(--pane);
+      border-top: 1px solid var(--line);
+    }
+    .footer-case {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .case-caption {
+      font-size: 11.5px;
+      color: var(--ink-3);
+    }
+    .sb-footer {
+      width: 248px;
+      height: 44px;
+      padding: 0 12px;
+      background: var(--canvas);
+      border: 1px solid var(--line);
+      border-radius: var(--radius-md);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .sb-footer.narrow {
+      width: 200px;
+    }
+    .sb-new {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink-2);
+      flex: none;
+    }
+    .sb-sync {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 11.5px;
+      line-height: 16px;
+      color: var(--ink-3);
+      min-width: 0;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .sb-sync.syncing { color: var(--accent-strong); }
+    .sb-sync.offline { color: var(--ink-2); }
+    .sb-sync.error { color: var(--danger-ink); font-weight: 500; }
+    .dot-sm {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex: none;
+    }
+    .dot-sm.ok { background: var(--success); }
+    .dot-sm.syncing { background: var(--accent); }
+    .dot-sm.offline { background: var(--ink-4); }
+    .dot-sm.error { background: var(--danger); }
+    .gear { color: var(--ink-3); flex: none; }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="sheet-header">
+      <h1 class="sheet-title">Sidebar footer sync states &amp; Agent activity row</h1>
+      <p class="sheet-subtitle">My Day · Light · 248 px default &amp; 200 px min sidebar width</p>
+    </div>
+
+    <div class="compare-grid">
+      <!-- BEFORE -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag">Before — green LED at rest, dots on every state, sparkles</span>
+        </div>
+        <div class="sidebar-card">
+          <div class="sidebar-section-label">Sidebar smart list row</div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <span class="nav-left">
+              <span class="ic ic-16" data-lucide="sparkles" style="color:var(--list-glyph)"></span>
+              <span>Agent activity</span>
+            </span>
+            <span class="pip-right"><span class="dot-sm syncing"></span>6 new</span>
+          </div>
+
+          <div class="footer-stack">
+            <div class="footer-case">
+              <span class="case-caption">1. Synced (resting default — bright green LED)</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync"><span class="dot-sm ok"></span>10:34</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">2. Syncing</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync syncing"><span class="dot-sm syncing"></span>Syncing…</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">3. Offline with queued edits</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync"><span class="dot-sm offline"></span>Offline · 3</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">4. Sync error</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync error"><span class="dot-sm error"></span>3 not synced</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">5. Minimum sidebar width (200 px)</span>
+              <div class="sb-footer narrow">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync"><span class="dot-sm ok"></span>10:34</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag after">After — silence when healthy, icons only on faults</span>
+        </div>
+        <div class="sidebar-card">
+          <div class="sidebar-section-label">Sidebar smart list row</div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <span class="nav-left">
+              <span class="ic ic-16" style="color:var(--list-glyph)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><polyline points="4 17 10 11 4 5"/><line x1="12" x2="20" y1="19" y2="19"/></svg></span>
+              <span>Agent activity</span>
+            </span>
+            <span class="pip-right">6 new</span>
+          </div>
+
+          <div class="footer-stack">
+            <div class="footer-case">
+              <span class="case-caption">1. Synced (quiet mono timestamp — no green LED)</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync">Synced 10:34</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">2. Syncing (accent text alone — no dot, no spinner)</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync syncing">Syncing…</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">3. Offline (meaningful cloud-off icon replaces grey dot)</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync offline"><span class="ic ic-14" data-lucide="cloud-off"></span>Offline · 3</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">4. Sync error (meaningful circle-alert replaces red dot)</span>
+              <div class="sb-footer">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync error"><span class="ic ic-14" data-lucide="circle-alert"></span>3 not synced</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+
+            <div class="footer-case">
+              <span class="case-caption">5. Minimum sidebar width (200 px — compact timestamp)</span>
+              <div class="sb-footer narrow">
+                <span class="sb-new"><span class="ic ic-14" data-lucide="plus"></span>New</span>
+                <span class="sb-sync">10:34</span>
+                <span class="gear ic ic-16" data-lucide="settings"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script>
+    for (const el of document.querySelectorAll("[data-lucide]")) {
+      el.innerHTML = window.TODO_ICONS.lucide[el.dataset.lucide] || "";
+    }
+  </script>
+</body>
+</html>

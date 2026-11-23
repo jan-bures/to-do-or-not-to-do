@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-room-hue="my-day">
+<head>
+  <meta charset="utf-8" />
+  <title>Desktop Task Row — Before / After</title>
+  <link rel="stylesheet" href="../../../crates/todo-design/generated/tokens.css" />
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    .task-list {
+      background: var(--pane);
+    }
+    .task-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: 20px 1fr 20px 24px 104px 20px;
+      align-items: start;
+      gap: 12px;
+      padding: 8px 24px 8px 24px;
+      min-height: 56px;
+      border-bottom: 1px solid var(--line);
+    }
+    .task-row:last-child { border-bottom: none; }
+    .task-row.selected {
+      background: var(--wash);
+    }
+    .task-row.selected::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0;
+      bottom: 0;
+      width: 3px;
+      background: var(--accent-strong);
+    }
+    .after-list .task-row.selected::before {
+      /* Inset 4 px top/bottom so the selection bar never meets a rounded frame corner */
+      top: 6px;
+      bottom: 6px;
+      left: 3px;
+      border-radius: 1.5px;
+    }
+    .task-row .check { margin-top: 1px; }
+    .task-main {
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+    .task-title {
+      font-size: 15px;
+      line-height: 20px;
+      font-weight: 500;
+      color: var(--ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .task-meta {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 20px;
+      font-size: 12px;
+      line-height: 16px;
+      color: var(--ink-3);
+      flex-wrap: nowrap;
+    }
+    .task-agent { margin-top: 1px; display: flex; justify-content: center; }
+    .task-prio { margin-top: 2px; display: flex; justify-content: flex-end; }
+    .task-due {
+      margin-top: 1px;
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      font-family: "Geist Mono", ui-monospace, monospace;
+      font-size: 12.5px;
+      line-height: 20px;
+      font-weight: 500;
+      color: var(--ink-2);
+      white-space: nowrap;
+    }
+    .task-due.soon {
+      color: var(--accent-strong);
+      font-weight: 600;
+    }
+    .task-star {
+      margin-top: 2px;
+      color: var(--ink-3);
+      display: flex;
+      justify-content: center;
+    }
+    .task-star.on { color: var(--important-fill); }
+
+    .detail-strip {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 10px 24px;
+      background: var(--canvas);
+      border-top: 1px solid var(--line);
+      font-size: 13px;
+      line-height: 18px;
+    }
+    .detail-strip-group {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .detail-label {
+      color: var(--ink-3);
+      font-size: 12px;
+      font-weight: 500;
+    }
+    .dot-tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 13px;
+      color: var(--ink);
+    }
+  </style>
+</head>
+<body>
+  <div class="sheet">
+    <div class="sheet-header">
+      <h1 class="sheet-title">Desktop task rows, detail breadcrumb &amp; tags</h1>
+      <p class="sheet-subtitle">My Day · Light · Real tokens from todo-design</p>
+    </div>
+
+    <div class="compare-stack">
+      <!-- BEFORE -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag">Before — pill + dot confetti on every row and detail tag</span>
+          <span class="state-note">5 pastel list pills, 5 dots, 1 diamond overdue pill, 1 status chip, detail tags drop # for dots</span>
+        </div>
+        <div class="frame">
+          <div class="task-list">
+            <div class="task-row selected">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Prepare Q4 launch checklist</div>
+                <div class="task-meta">
+                  <span class="legacy-list-pill" data-list-hue="lagoon"><span class="legacy-dot"></span>Work · Planning</span>
+                  <span class="step-meter"><span class="step-pip done"></span><span class="step-pip done"></span><span class="step-pip"></span><span class="step-pip"></span><span class="step-pip"></span></span>
+                  <span class="mono">2/5</span>
+                  <span class="ic ic-14" data-lucide="mail"></span>
+                  <span class="mono">#planning</span>
+                  <span class="mono">#q4</span>
+                </div>
+              </div>
+              <div class="task-agent"><span class="agent-mark" data-agent="codex">X</span></div>
+              <div class="task-prio"><span class="prio med">!!</span></div>
+              <div class="task-due">Today 17:00</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check overdue"></span>
+              <div class="task-main">
+                <div class="task-title">Pay quarterly VAT filing</div>
+                <div class="task-meta">
+                  <span class="legacy-list-pill" data-list-hue="teal"><span class="legacy-dot"></span>Work · Finance</span>
+                  <span class="mono">#tax</span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"><span class="prio high">!!!</span></div>
+              <div class="task-due"><span class="legacy-overdue-pill"><span class="legacy-diamond"></span>2d overdue</span></div>
+              <div class="task-star on"><span class="ic ic-16" data-lucide="star-filled"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Send venue booking confirmation</div>
+                <div class="task-meta">
+                  <span class="legacy-list-pill" data-list-hue="fern"><span class="legacy-dot"></span>Work · Events</span>
+                  <span class="ic ic-14" data-lucide="mail"></span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"></div>
+              <div class="task-due soon">in 1h 25m</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení</div>
+                <div class="task-meta">
+                  <span class="legacy-list-pill" data-list-hue="rose"><span class="legacy-dot"></span>Home · Health</span>
+                  <span class="mono">#pojištění</span>
+                </div>
+              </div>
+              <div class="task-agent"><span class="agent-mark" data-agent="pi">π</span></div>
+              <div class="task-prio"><span class="prio low">!</span></div>
+              <div class="task-due">Mon 23 Nov</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Pick up parcel from post office</div>
+                <div class="task-meta">
+                  <span class="legacy-list-pill" data-list-hue="clay"><span class="legacy-dot"></span>Home · Errands</span>
+                  <span class="legacy-status-chip"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
+                  <span class="mono">#errands</span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"></div>
+              <div class="task-due">Today 18:30</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+          </div>
+          <div class="detail-strip">
+            <div class="detail-strip-group">
+              <span class="detail-label">Detail breadcrumb:</span>
+              <span class="legacy-list-pill" data-list-hue="lagoon"><span class="legacy-dot"></span>Work</span>
+              <span style="color:var(--ink-4)">/</span>
+              <span style="font-weight:500;color:var(--ink)">Planning</span>
+            </div>
+            <div class="detail-strip-group">
+              <span class="detail-label">Detail tags row:</span>
+              <span class="dot-tag" data-list-hue="orchid"><span class="legacy-dot"></span>planning</span>
+              <span class="dot-tag" data-list-hue="jade"><span class="legacy-dot"></span>q4</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- AFTER -->
+      <div class="panel-col">
+        <div class="state-heading">
+          <span class="state-tag after">After — hand-drawn list glyphs, tinted mono #tags, typographic overdue</span>
+          <span class="state-note">Zero dots · Zero pills · --list-glyph + --list-ink (≥ 6.9:1)</span>
+        </div>
+        <div class="frame">
+          <div class="task-list after-list">
+            <div class="task-row selected">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Prepare Q4 launch checklist</div>
+                <div class="task-meta">
+                  <span class="list-ref" data-list-hue="lagoon"><span class="ic ic-14" data-glyph="flag"></span><span class="col-prefix">Work ·</span><span class="list-name">Planning</span></span>
+                  <span class="step-meter"><span class="step-pip done"></span><span class="step-pip done"></span><span class="step-pip"></span><span class="step-pip"></span><span class="step-pip"></span></span>
+                  <span class="mono">2/5</span>
+                  <span class="ic ic-14" data-lucide="mail"></span>
+                  <span class="tag-tinted" data-list-hue="orchid">#planning</span>
+                  <span class="tag-tinted" data-list-hue="jade">#q4</span>
+                </div>
+              </div>
+              <div class="task-agent"><span class="agent-mark" data-agent="codex">X</span></div>
+              <div class="task-prio"><span class="prio med">!!</span></div>
+              <div class="task-due">Today 17:00</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check overdue"></span>
+              <div class="task-main">
+                <div class="task-title">Pay quarterly VAT filing</div>
+                <div class="task-meta">
+                  <span class="list-ref" data-list-hue="teal"><span class="ic ic-14" data-glyph="coin"></span><span class="col-prefix">Work ·</span><span class="list-name">Finance</span></span>
+                  <span class="tag-tinted" data-list-hue="azure">#tax</span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"><span class="prio high">!!!</span></div>
+              <div class="task-due"><span class="overdue-text">2d overdue</span></div>
+              <div class="task-star on"><span class="ic ic-16" data-lucide="star-filled"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Send venue booking confirmation</div>
+                <div class="task-meta">
+                  <span class="list-ref" data-list-hue="fern"><span class="ic ic-14" data-glyph="calendar-star"></span><span class="col-prefix">Work ·</span><span class="list-name">Events</span></span>
+                  <span class="ic ic-14" data-lucide="mail"></span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"></div>
+              <div class="task-due soon">in 1h 25m</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení</div>
+                <div class="task-meta">
+                  <span class="list-ref" data-list-hue="rose"><span class="ic ic-14" data-glyph="heart"></span><span class="col-prefix">Home ·</span><span class="list-name">Health</span></span>
+                  <span class="tag-tinted" data-list-hue="rose">#pojištění</span>
+                </div>
+              </div>
+              <div class="task-agent"><span class="agent-mark" data-agent="pi">π</span></div>
+              <div class="task-prio"><span class="prio low">!</span></div>
+              <div class="task-due">Mon 23 Nov</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+
+            <div class="task-row">
+              <span class="check"></span>
+              <div class="task-main">
+                <div class="task-title">Pick up parcel from post office</div>
+                <div class="task-meta">
+                  <span class="list-ref" data-list-hue="clay"><span class="ic ic-14" data-glyph="basket"></span><span class="col-prefix">Home ·</span><span class="list-name">Errands</span></span>
+                  <span class="status-inline"><span class="ic ic-14" data-lucide="status-progress"></span>In progress</span>
+                  <span class="tag-tinted" data-list-hue="clay">#errands</span>
+                </div>
+              </div>
+              <div class="task-agent"></div>
+              <div class="task-prio"></div>
+              <div class="task-due">Today 18:30</div>
+              <div class="task-star"><span class="ic ic-16" data-lucide="star"></span></div>
+            </div>
+          </div>
+          <div class="detail-strip">
+            <div class="detail-strip-group">
+              <span class="detail-label">Detail breadcrumb:</span>
+              <span class="list-ref" data-list-hue="lagoon" style="font-size:13px"><span class="ic ic-16" data-glyph="flag"></span><span class="col-prefix">Work /</span><span class="list-name">Planning</span></span>
+            </div>
+            <div class="detail-strip-group">
+              <span class="detail-label">Detail tags row:</span>
+              <span class="tag-tinted" data-list-hue="orchid" style="font-size:12.5px">#planning</span>
+              <span class="tag-tinted" data-list-hue="jade" style="font-size:12.5px">#q4</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script>
+    for (const el of document.querySelectorAll("[data-lucide]")) {
+      el.innerHTML = window.TODO_ICONS.lucide[el.dataset.lucide] || "";
+    }
+    for (const el of document.querySelectorAll("[data-glyph]")) {
+      el.innerHTML = window.TODO_ICONS.glyphs[el.dataset.glyph] || "";
+    }
+  </script>
+</body>
+</html>
