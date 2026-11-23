@@ -1409,7 +1409,7 @@ test("a frozen assistant approval survives an IndexedDB reload without being reb
       submitted_at: "2030-01-01T00:00:00Z",
       op: { op: "assistant_approval", batch: {
         schema: 1, revision: { epoch: log.epoch, cursor: log.head_seq - 1 },
-        scope_revision: 7, allowed_lists: [], at: "2030-01-01T00:00:00Z",
+        scope_revision: 7, allowed_lists: ["00000000-0000-7000-8000-000000000046"], at: "2030-01-01T00:00:00Z",
         commands: [{ cmd: "complete_task", id: "00000000-0000-7000-8000-000000000045" }],
         digest: Array(32).fill(42),
       } },

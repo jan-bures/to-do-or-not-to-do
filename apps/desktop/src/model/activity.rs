@@ -279,7 +279,7 @@ pub fn days(
                         event: entry.target.id,
                         what: super::labels::one_line(&entry.what).into(),
                         mark: Mark::of(&entry.actor),
-                        who: activity::actor_name(&entry.actor).into(),
+                        who: entry.actor_name().into(),
                         when: activity::relative_time(entry.at, now.at).into(),
                         clock: super::labels::clock(entry.at, &now.tz).into(),
                         action: activity::undo_action(entry, confirmed, pending, group),
@@ -447,6 +447,7 @@ mod tests {
                 command_len: Some(1),
             },
             summary: format!("Change\n{seq}"),
+            approved_by: None,
             undone,
             can_undo: !undone,
         }

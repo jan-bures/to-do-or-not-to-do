@@ -8,17 +8,19 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use todo_core::actor::ASSISTANT_AGENT_ID;
 use todo_core::command::{Command, NewTask, Placement, TaskPatch};
-use todo_core::decide::decide_seeded;
+use todo_core::decide::{MAX_TITLE, decide_seeded};
 use todo_core::event::{Change, EventPayload, FieldChange};
 use todo_core::ids::{EntityId, ListId, TaskId};
 use todo_core::model::{Entity, Priority, Task, WorkflowStatus};
 use todo_core::time::{Date, Timestamp};
-use todo_core::{AccessLevel, Actor, Event, Grants, State, apply};
+use todo_core::{AccessLevel, Actor, DeviceId, Event, Grants, State, apply};
 use unicode_general_category::{GeneralCategory, get_general_category};
+use unicode_normalization::{UnicodeNormalization, is_nfc};
 use uuid::Uuid;
 
 pub const PROPOSAL_SCHEMA: u16 = 1;
 pub const MAX_COMMANDS: usize = 12;
+pub const MAX_ALLOWED_LISTS: usize = 64;
 const MAX_EVENTS: usize = 32;
 const SEED_SCHEME: &str = "assistant-batch/v1";
 
@@ -37,6 +39,14 @@ macro_rules! opaque_debug {
 pub struct Revision {
     pub epoch: Uuid,
     pub cursor: u64,
+}
+
+/// Server-recorded provenance, not part of the request or the effect digest. Owner-only metadata.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "source", rename_all = "snake_case")]
+pub enum ApprovalOrigin {
+    Device { device: DeviceId },
+    Session { session_hash: String },
 }
 
 /// Frozen wire body. The command ID doubles as the proposal ID and retry key.
@@ -193,6 +203,7 @@ pub enum BatchError {
 }
 
 opaque_debug!(
+    ApprovalOrigin,
     ApprovalRequest,
     ApprovedBatch,
     ApprovalCommand,
@@ -379,6 +390,12 @@ impl Batch {
         allowed: BTreeSet<ListId>,
         at: Timestamp,
     ) -> Result<Self, BatchError> {
+        if allowed.len() > MAX_ALLOWED_LISTS {
+            return Err(BatchError::Limit);
+        }
+        if allowed.iter().any(|id| !state.is_live((*id).into())) {
+            return Err(BatchError::NotFound);
+        }
         let actor = Actor::agent(ASSISTANT_AGENT_ID).map_err(|_| BatchError::InvalidDraft)?;
         let mut scratch = state.clone();
         let agent = actor.agent_id().ok_or(BatchError::InvalidDraft)?;
@@ -414,10 +431,38 @@ impl Batch {
 
     /// Callers must discard the entire simulation if this returns an error.
     pub fn push(&mut self, command: Command, index: usize) -> Result<bool, BatchError> {
+        let mut approved = ApprovalCommand::try_from(&command)?;
+        if let Some(title) = approved.title_mut() {
+            // Validate raw input before normalization, including characters at the edges.
+            title_characters(title)?;
+            if !is_nfc(title) {
+                *title = title.nfc().collect();
+            }
+        }
+        approved.check_shape(&self.allowed)?;
+        self.push_checked(&approved, index)
+    }
+
+    fn push_checked(
+        &mut self,
+        approved: &ApprovalCommand,
+        index: usize,
+    ) -> Result<bool, BatchError> {
         if self.commands.len() >= MAX_COMMANDS {
             return Err(BatchError::Limit);
         }
-        self.validate(&command)?;
+        match approved {
+            ApprovalCommand::CreateTask { .. } => {}
+            ApprovalCommand::UpdateTask { id, .. } => {
+                self.task(*id)?;
+            }
+            ApprovalCommand::CompleteTask { id } | ApprovalCommand::UncompleteTask { id } => {
+                if self.task(*id)?.recurrence.is_some() {
+                    return Err(BatchError::UnsupportedTool);
+                }
+            }
+        }
+        let command = Command::from(approved);
         let events = decide_seeded(&self.scratch, &self.actor, &command, self.at, &self.seed())
             .map_err(|_| BatchError::InvalidDraft)?;
         if events.is_empty() {
@@ -443,43 +488,6 @@ impl Batch {
         self.commands.push(command);
         self.items.push(ProposalItem { index, effects });
         Ok(true)
-    }
-
-    fn validate(&self, command: &Command) -> Result<(), BatchError> {
-        fn title(text: &str) -> Result<(), BatchError> {
-            if text.chars().any(|c| {
-                matches!(
-                    get_general_category(c),
-                    GeneralCategory::Control
-                        | GeneralCategory::Format
-                        | GeneralCategory::LineSeparator
-                        | GeneralCategory::ParagraphSeparator
-                )
-            }) {
-                return Err(BatchError::InvalidDraft);
-            }
-            Ok(())
-        }
-        match ApprovalCommand::try_from(command)? {
-            ApprovalCommand::CreateTask {
-                list, title: text, ..
-            } => {
-                title(&text)?;
-                self.list_ref(list)?;
-            }
-            ApprovalCommand::UpdateTask { id, patch } => {
-                if let Some(text) = &patch.title {
-                    title(text)?;
-                }
-                self.task(id)?;
-            }
-            ApprovalCommand::CompleteTask { id } | ApprovalCommand::UncompleteTask { id } => {
-                if self.task(id)?.recurrence.is_some() {
-                    return Err(BatchError::UnsupportedTool);
-                }
-            }
-        }
-        Ok(())
     }
 
     fn list_ref(&self, id: ListId) -> Result<ListRef, BatchError> {
@@ -605,19 +613,92 @@ impl Batch {
     }
 }
 
+fn title_characters(text: &str) -> Result<(), BatchError> {
+    // Reject invisible controls/formats (including ZWJ in emoji sequences), private-use and
+    // unassigned code points. Scope these rules to assistant-authored titles, not old task data.
+    if text.len() > 8 * 1024 {
+        return Err(BatchError::Limit);
+    }
+    if text.chars().any(|c| {
+        matches!(
+            get_general_category(c),
+            GeneralCategory::Control
+                | GeneralCategory::Format
+                | GeneralCategory::PrivateUse
+                | GeneralCategory::Unassigned
+                | GeneralCategory::LineSeparator
+                | GeneralCategory::ParagraphSeparator
+        )
+    }) {
+        return Err(BatchError::InvalidDraft);
+    }
+    Ok(())
+}
+
+impl ApprovalCommand {
+    fn title_mut(&mut self) -> Option<&mut String> {
+        match self {
+            Self::CreateTask { title, .. } => Some(title),
+            Self::UpdateTask { patch, .. } => patch.title.as_mut(),
+            _ => None,
+        }
+    }
+
+    fn check_shape(&self, allowed: &BTreeSet<ListId>) -> Result<(), BatchError> {
+        let title = match self {
+            Self::CreateTask { list, title, .. } => {
+                if !allowed.contains(list) {
+                    return Err(BatchError::NotFound);
+                }
+                Some(title)
+            }
+            Self::UpdateTask { patch, .. } => patch.title.as_ref(),
+            _ => None,
+        };
+        if let Some(title) = title {
+            title_characters(title)?;
+            let trimmed = title.trim();
+            if trimmed.is_empty() || trimmed.chars().count() > MAX_TITLE || !is_nfc(title) {
+                return Err(BatchError::InvalidDraft);
+            }
+        }
+        Ok(())
+    }
+}
+
+/// An approval that passed all checks independent of the current event head.
+#[derive(Debug)]
+pub struct CheckedApproval<'a>(&'a ApprovalRequest);
+
 impl ApprovalRequest {
-    /// Re-decide against the exact head checked by the writer and compare against the review.
-    /// The caller commits events onto the original state, never to the scratch grants.
-    pub fn redecide(&self, base: &State) -> Result<Vec<Event>, BatchError> {
+    /// Bound and validate the request before contending for the writer. Live lists and targets
+    /// are checked later, against the exact head. The wire accepts only already normalized titles.
+    pub fn preflight(&self) -> Result<CheckedApproval<'_>, BatchError> {
         let payload = &self.batch;
-        if payload.schema != PROPOSAL_SCHEMA || payload.commands.is_empty() {
+        if payload.schema != PROPOSAL_SCHEMA
+            || payload.commands.is_empty()
+            || payload.allowed_lists.is_empty()
+        {
             return Err(BatchError::InvalidDraft);
         }
-        if payload.commands.len() > MAX_COMMANDS {
+        if payload.commands.len() > MAX_COMMANDS || payload.allowed_lists.len() > MAX_ALLOWED_LISTS
+        {
             return Err(BatchError::Limit);
         }
+        for command in &payload.commands {
+            command.check_shape(&payload.allowed_lists)?;
+        }
+        Ok(CheckedApproval(self))
+    }
+}
+
+impl CheckedApproval<'_> {
+    /// Re-decide against the exact head checked by the writer and compare against the review.
+    /// The caller commits events onto the original state, never to the scratch grants.
+    pub fn redecide(self, base: &State) -> Result<Vec<Event>, BatchError> {
+        let payload = &self.0.batch;
         let mut batch = Batch::new(
-            self.command_id,
+            self.0.command_id,
             payload.revision,
             payload.scope_revision,
             base,
@@ -625,7 +706,7 @@ impl ApprovalRequest {
             payload.at,
         )?;
         for (index, command) in payload.commands.iter().enumerate() {
-            if !batch.push(Command::from(command), index)? {
+            if !batch.push_checked(command, index)? {
                 return Err(BatchError::InvalidDraft);
             }
         }

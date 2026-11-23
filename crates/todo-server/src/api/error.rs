@@ -453,6 +453,11 @@ impl From<EngineError> for ApiError {
                 format!("command id {id} was already used for a different request"),
             ),
             EngineError::EpochMismatch { current } => Self::epoch_mismatch(current),
+            EngineError::ApprovalTime => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "approval_time",
+                e.to_string(),
+            ),
             EngineError::ApprovalStale => {
                 Self::new(StatusCode::CONFLICT, "approval_stale", e.to_string())
             }

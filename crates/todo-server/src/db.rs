@@ -21,6 +21,7 @@ use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::model::{Entity, LinkKind};
 use todo_core::time::Timestamp;
 use todo_core::{Actor, State, apply};
+use todo_tools::assistant::approval::ApprovalOrigin;
 use uuid::Uuid;
 
 /// Storage errors.
@@ -839,7 +840,16 @@ pub fn events_before(conn: &Connection, before: Option<u64>, limit: usize) -> Re
     )
 }
 
-/// The event with this sequence number.
+/// Read just the timestamp, without loading the event payload.
+pub fn event_time(conn: &Connection, seq: u64) -> Result<Option<Timestamp>> {
+    conn.prepare_cached("SELECT at FROM events WHERE seq = ?1")?
+        .query_row([from_seq(seq)], |row| row.get::<_, String>(0))
+        .optional()?
+        .map(|at| at.parse().map_err(corrupt("event time")))
+        .transpose()
+}
+
+/// The event at `seq`, if there is one.
 pub fn event_by_seq(conn: &Connection, seq: u64) -> Result<Option<Event>> {
     Ok(query_events(
         conn,
@@ -941,6 +951,17 @@ pub fn find_command(conn: &Connection, command_id: &str) -> Result<Option<Comman
             })
         })
         .optional()?)
+}
+
+/// Read the server-recorded approval provenance, not the rest of the receipt. A historical
+/// external agent event (even with the same slug) has no approval metadata.
+pub fn approval_origin(conn: &Connection, command_id: Uuid) -> Result<Option<ApprovalOrigin>> {
+    let json: Option<String> = conn.prepare_cached(
+        "SELECT json_extract(result, '$.approved_by') FROM commands WHERE command_id = ?1 AND kind = 'assistant_approval'",
+    )?.query_row([command_id.to_string()], |row| row.get(0)).optional()?.flatten();
+    json.as_deref()
+        .map(|value| serde_json::from_str(value).map_err(StoreError::from))
+        .transpose()
 }
 
 /// A stored command of a given actor: its kind, result and when it was handled.

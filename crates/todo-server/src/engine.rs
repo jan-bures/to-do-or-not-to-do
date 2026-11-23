@@ -45,7 +45,7 @@ use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::time::Timestamp;
 use todo_core::undo::{UndoOptions, undo_batch};
 use todo_core::{Actor, AgentId, Grants, State, apply, decide};
-use todo_tools::assistant::approval::{ApprovalRequest, BatchError};
+use todo_tools::assistant::approval::{ApprovalOrigin, ApprovalRequest, BatchError};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -88,6 +88,10 @@ pub struct CommandResult {
     pub events: Vec<EventRef>,
     /// One-line description for the activity feed.
     pub summary: String,
+    /// Original owner who approved the batch, if this is an assistant receipt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub approved_by: Option<ApprovalOrigin>,
 }
 
 /// A command result plus whether it was replayed from an earlier identical request.
@@ -125,6 +129,11 @@ pub enum EngineError {
     /// Another write landed since the owner reviewed the approval.
     #[error("the task snapshot changed; request a new proposal")]
     ApprovalStale,
+    /// New approval's frozen decision time lies outside the accepted window or predates the head.
+    #[error(
+        "The proposal time is out of date or the device clock is out of sync. Check the clock and request a new proposal."
+    )]
+    ApprovalTime,
     /// A restricted approval failed validation or did not reproduce the reviewed effects.
     #[error(transparent)]
     ApprovalInvalid(#[from] BatchError),
@@ -356,6 +365,7 @@ struct Pending<'a> {
     now: Timestamp,
     kind: &'static str,
     request_hash: String,
+    approved_by: Option<ApprovalOrigin>,
     cancel: &'a Cancel,
 }
 
@@ -710,6 +720,23 @@ impl Engine {
         db::events_before_capped(&*self.reader()?, before, limit, max_bytes, actor)
     }
 
+    /// Load owner-only attribution for the batches on an Activity page.
+    pub(crate) fn approval_origins(
+        &self,
+        ids: BTreeSet<Uuid>,
+    ) -> Result<BTreeMap<Uuid, ApprovalOrigin>, StoreError> {
+        let mut origins = BTreeMap::new();
+        if !ids.is_empty() {
+            let conn = self.reader()?;
+            for id in ids {
+                if let Some(origin) = db::approval_origin(&conn, id)? {
+                    origins.insert(id, origin);
+                }
+            }
+        }
+        Ok(origins)
+    }
+
     /// Events before `before` (or the newest), newest first.
     pub fn events_before(
         &self,
@@ -797,6 +824,7 @@ impl Engine {
                 now,
                 kind: "command",
                 request_hash: hash,
+                approved_by: None,
                 cancel,
             },
             events,
@@ -810,28 +838,39 @@ impl Engine {
     pub fn approve_assistant(
         &self,
         req: &ApprovalRequest,
+        origin: ApprovalOrigin,
         cancel: &Cancel,
     ) -> Result<Outcome, EngineError> {
         const KIND: &str = "assistant_approval";
-        let mut w = self.writer(cancel)?;
         if req.batch.revision.epoch != self.epoch {
             return Err(EngineError::EpochMismatch {
                 current: self.epoch,
             });
         }
+        let checked = req.preflight()?;
         let actor = Actor::agent(todo_core::actor::ASSISTANT_AGENT_ID)
             .map_err(|_| BatchError::InvalidDraft)?;
         let hash = request_hash(KIND, &actor, &req.batch)?;
+        let mut w = self.writer(cancel)?;
         if let Some(outcome) = self.replay(w.conn()?, req.command_id, KIND, &hash)? {
             return Ok(outcome);
         }
-        if req.batch.revision.cursor != self.head_seq() {
+        let head = self.head_seq();
+        if req.batch.revision.cursor != head {
             return Err(EngineError::ApprovalStale);
         }
+        const MINUTE_NS: i128 = 60_000_000_000;
+        let now = self.now();
+        let at = req.batch.at;
+        let skew = at.as_nanosecond() - now.as_nanosecond();
+        if !(-24 * 60 * MINUTE_NS..=5 * MINUTE_NS).contains(&skew)
+            || db::event_time(w.conn()?, head)?.is_some_and(|last| at < last)
+        {
+            return Err(EngineError::ApprovalTime);
+        }
         let base = self.state();
-        let events = req.redecide(&base)?;
-        let now = self.next_now(&mut w);
-        self.commit(
+        let events = checked.redecide(&base)?;
+        let outcome = self.commit(
             &mut w,
             &base,
             Pending {
@@ -840,12 +879,16 @@ impl Engine {
                 now,
                 kind: KIND,
                 request_hash: hash,
+                approved_by: Some(origin),
                 cancel,
             },
             events,
             |_, _| "Approved in-app assistant changes".to_owned(),
             |_| Ok(()),
-        )
+        )?;
+        // Keep ordinary writes monotonic after accepting a slightly fast client clock.
+        w.last_ms = w.last_ms.max(millis(at));
+        Ok(outcome)
     }
 
     /// Stores the commands of `plan` as one undoable group, at most once per `key`.
@@ -908,6 +951,7 @@ impl Engine {
                 now,
                 kind: "unique",
                 request_hash: hash,
+                approved_by: None,
                 cancel,
             },
             events,
@@ -1044,6 +1088,7 @@ impl Engine {
                 now,
                 kind: "undo",
                 request_hash: hash,
+                approved_by: None,
                 cancel,
             },
             comp,
@@ -1170,6 +1215,7 @@ impl Engine {
                     .filter_map(|e| e.seq.map(|seq| EventRef { seq, id: e.id }))
                     .collect(),
                 summary: summarize(&next, &events),
+                approved_by: p.approved_by,
             };
             let record = CommandRecord {
                 kind: p.kind.to_owned(),

@@ -294,7 +294,7 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
             <div class="activity-copy">
                 <p class="activity-summary">{move || entry.with(|item| item.as_ref().map(|row| row.what.clone()))}</p>
                 <div class="activity-meta">
-                    <span>{move || entry.with(|item| item.as_ref().map(|row| activity::actor_name(&row.actor)))}</span>
+                    <span>{move || entry.with(|item| item.as_ref().map(activity::Entry::actor_name))}</span>
                     <span aria-hidden="true">"·"</span>
                     <time datetime=move || entry.with(|item| item.as_ref().map(|row| row.at.to_string()))
                         title=move || entry.with(|item| item.as_ref().map(|row| {

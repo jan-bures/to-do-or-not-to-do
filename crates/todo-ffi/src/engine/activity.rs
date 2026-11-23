@@ -250,7 +250,7 @@ impl TodoEngine {
                             id: e.target.id.to_string(),
                             seq: e.target.seq,
                             summary: e.what.clone(),
-                            actor: activity::actor_name(&e.actor),
+                            actor: e.actor_name(),
                             relative: activity::relative_time(e.at, now.at),
                             note: note.map(str::to_owned),
                             undo_label: (action == UndoAction::Undo).then(|| action.label().into()),

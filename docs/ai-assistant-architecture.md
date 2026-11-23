@@ -124,19 +124,22 @@ become an oracle for omitted note text. Local cursors bind to scope and resolve 
    admission/deadline/size/CSRF/session rules, using the normal engine and command receipts—not a
    broader MCP grant or N calls to `/commands`. Authorize the paired owner or owner browser session
    first; reject agent tokens. Assign a **reserved, server-selected** `Actor::Agent` displayed as
-   **In-app assistant**. Reject provisioning an external agent with the reserved identity. The
-   authenticated owner and attributed actor are distinct; record non-content approval provenance
-   (owner device, proposal ID) if auditing it. For v1 the client owns list choices; bind the approved
-   list IDs into the operation and have the server derive explicit list grants for the reserved actor
-   in the scratch state only (`None` by default). Independently allowlist supported command forms and
+   **In-app assistant**. Reject provisioning the reserved identity or confusable external IDs. The
+   authenticated owner is distinct from the event actor. Store the first approving device ID or
+   a domain-separated hash for a browser session in the receipt and expose it only to the owner in
+   Activity. For v1 the client owns list choices; bind at most 64 live list IDs into the operation
+   and derive explicit list grants for the reserved actor in the scratch state only (`None` by
+   default). Cheap structural validation runs before acquiring the writer. Independently allowlist supported command forms and
    enforce target/effect scope, including both sides of any future cross-list move. Never accept an
    actor, elevated grant, or write scope from model output. The route trusts the authenticated first-party
    client to report a human approval; owner auth alone is not cryptographic user presence and does
    not protect against a compromised owner session/device. No provider/tool code can call the route.
 5. **Check at the writer and acknowledge.** Under the single writer, check the epoch, then look up a
    committed command ID and verify its canonical payload hash (same bytes/meaning, same result);
-   only for a new command, require `expected_head == head`, re-decide the whole batch as the reserved
-   actor, and compare the computed effect digest. Check normal access, hidden-target, commit and
+   only for a new command, require `expected_head == head` and accept the frozen timestamp only if
+   it is no older than 24 hours, no more than five minutes ahead of the server, and no earlier than
+   the latest event. Re-decide the whole batch as the reserved actor and compare the computed
+   effect digest. Check normal access, hidden-target, commit and
    cancellation rules. Use distinct server event seeds per command (e.g. batch ID + index) or distinct
    writer timestamps: current `decide` seeds IDs from actor, command and time, so identical commands
    within one timestamp must not collide. Give all events one group and write it, projections and
@@ -300,7 +303,10 @@ BYOK can be added for providers that support it, with scoped keys, where the own
 - **Data is not instructions.** Task/title/note/step/link/model text, including signed email ingest,
   is untrusted. Delimit it in typed tool results, render it safely without executing HTML, remote
   images or automatic links/navigation, and do not let it name new tools, hosts, secrets or actions.
-  Permission and length checks are independent of the prompt. Approve protects integrity, not
+  Permission and length checks are independent of the prompt. Assistant-authored titles normalize
+  to NFC and reject control, format, private-use, unassigned and line/paragraph separator characters.
+  This rejects emoji sequences containing a zero-width joiner (ZWJ), not standalone emoji.
+  Approve protects integrity, not
   confidentiality: reads sent to the chosen provider cannot be undone, and a misleading proposal can
   still induce consent. Show the actual effects and never put a model-supplied approval affordance
   in control of the command path. No file/shell/web tools, hosted MCP, analytics or autonomous jobs.

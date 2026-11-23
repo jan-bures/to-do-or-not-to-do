@@ -429,8 +429,8 @@ fn stale(e: intent::reminder::Stale) -> FfiError {
 /// (`todo_client::failure::what`) for a command, and for an undo this engine queued, what it reverses
 /// ([`Undone`]).
 fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
-    match (entry.command(), undone) {
-        (None, Some(undone)) => undone.what(),
+    match (entry.is_undo(), undone) {
+        (true, Some(undone)) => undone.what(),
         _ => todo_client::failure::what(entry),
     }
 }
@@ -438,10 +438,10 @@ fn describe(entry: &OutboxEntry, undone: Option<Undone>) -> &'static str {
 /// Why the server refused a change, in the app's own words: from the rejection's code, never the
 /// server's message, which can be technical or quote task content.
 fn reason(failed: &todo_client::FailedEntry, undone: Option<Undone>) -> String {
-    if failed.entry.command().is_some() {
-        todo_client::failure::why(failed).to_owned()
-    } else {
+    if failed.entry.is_undo() {
         undo_failure_message(&failed.rejection.code, undone)
+    } else {
+        todo_client::failure::why(failed).to_owned()
     }
 }
 
@@ -2007,6 +2007,24 @@ mod tests {
         assert_eq!(
             reason(&failed(delete, "deleted"), None),
             "It was deleted elsewhere."
+        );
+        let digest = [0u8; 32];
+        let approval = serde_json::from_value(serde_json::json!({
+            "op":"assistant_approval", "batch": {
+                "schema":1, "revision":{"epoch":Uuid::nil(), "cursor":0},
+                "scope_revision":0, "allowed_lists":[], "at":Timestamp::UNIX_EPOCH,
+                "commands":[], "digest":digest,
+            }
+        }))
+        .unwrap();
+        let refusal = failed(approval, "approval_time");
+        assert_eq!(
+            reason(&refusal, Some(Undone::Step)),
+            todo_client::failure::approval_message("approval_time")
+        );
+        assert_eq!(
+            describe(&refusal.entry, Some(Undone::Step)),
+            "Apply in-app assistant changes"
         );
         let undo = todo_client::Operation::UndoAfter {
             original: Uuid::from_u128(1),

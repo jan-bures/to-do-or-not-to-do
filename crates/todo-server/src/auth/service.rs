@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
-use todo_core::{AccessLevel, AgentId, DeviceId, Grants, actor::ASSISTANT_AGENT_ID};
+use todo_core::{AccessLevel, AgentId, DeviceId, Grants, actor::is_reserved_assistant_slug};
 use tokio::sync::watch;
 use webauthn_rs::prelude::{
     CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
@@ -638,8 +638,8 @@ impl AuthService {
         }
         let mut grants = BTreeMap::new();
         for a in self.store.agents()? {
-            // A database from an older deployment might already contain this once-valid slug.
-            if a.revoked_at.is_some() || a.agent.as_str() == ASSISTANT_AGENT_ID {
+            // Legacy databases may contain once-valid slugs that now impersonate the assistant.
+            if a.revoked_at.is_some() || is_reserved_assistant_slug(a.agent.as_str()) {
                 continue;
             }
             if let Some(h) = crate::config::decode_hash(&a.token_hash) {
@@ -1750,7 +1750,7 @@ impl AuthService {
         expires_in_days: Option<u32>,
         ip: Option<IpAddr>,
     ) -> Result<(i64, String), ApiError> {
-        if agent.as_str() == ASSISTANT_AGENT_ID {
+        if is_reserved_assistant_slug(agent.as_str()) {
             return Err(ApiError::new(
                 StatusCode::CONFLICT,
                 "reserved_agent",

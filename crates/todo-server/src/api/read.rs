@@ -712,6 +712,23 @@ pub async fn activity(
         // The oldest event read (visible or not) is where the next page continues.
         let scanned = page.events.last().and_then(|e| e.event.seq);
         let scopes = page.scopes;
+        // At most one provenance lookup per batch on the page. Never expose it to an agent.
+        let origins = if auth.actor.is_owner() {
+            engine.approval_origins(
+                page.events
+                    .iter()
+                    .filter(|e| {
+                        e.event
+                            .actor
+                            .agent_id()
+                            .is_some_and(|id| id.as_str() == todo_core::actor::ASSISTANT_AGENT_ID)
+                    })
+                    .map(|e| e.command_id)
+                    .collect(),
+            )?
+        } else {
+            Default::default()
+        };
         let items: Vec<ActivityItem> = page
             .events
             .into_iter()
@@ -725,6 +742,7 @@ pub async fn activity(
                     // See `visibility::log_event_for`.
                     event.command_len = None;
                 }
+                let approved_by = origins.get(&event.command_id).cloned();
                 let root = j.root_of(event.event.id);
                 let head = j.head_of(root);
                 let undone = if event.event.undoes.is_none() {
@@ -738,6 +756,7 @@ pub async fn activity(
                 }
                 ActivityItem {
                     summary,
+                    approved_by,
                     undone,
                     can_undo: head == event.event.id,
                     event,

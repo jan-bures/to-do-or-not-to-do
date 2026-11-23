@@ -11,11 +11,12 @@ use axum::body::Bytes;
 use axum::extract::{FromRequestParts, State};
 use axum::http::{HeaderValue, StatusCode, request::Parts};
 use axum::response::{IntoResponse, Response};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use todo_core::Actor;
 use todo_core::error::{UndoConflict, UndoError};
 use todo_core::ids::EventId;
-use todo_tools::assistant::approval::ApprovalRequest;
+use todo_tools::assistant::approval::{ApprovalOrigin, ApprovalRequest};
 
 /// Header set on a response that replays the stored result of a retried command.
 pub const REPLAYED_HEADER: &str = "idempotent-replayed";
@@ -88,24 +89,33 @@ pub async fn post_command(
 
 /// Authorize before consuming the request body, using the already-admitted REST principal.
 #[derive(Debug)]
-pub struct ApprovalOwner;
+pub struct ApprovalOwner(ApprovalOrigin);
 
 impl FromRequestParts<AppState> for ApprovalOwner {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, app: &AppState) -> Result<Self, ApiError> {
         let auth = Authenticated::from_request_parts(parts, app).await?;
-        if !matches!(
-            auth.principal,
-            Principal::Owner { .. } | Principal::Session { .. }
-        ) {
-            return Err(ApiError::new(
-                StatusCode::FORBIDDEN,
-                "owner_required",
-                "only the owner can approve assistant changes",
-            ));
-        }
-        Ok(Self)
+        let origin = match auth.principal {
+            Principal::Owner { device } => ApprovalOrigin::Device { device },
+            Principal::Session { session, .. } => {
+                // Not the cookie or its database lookup key. This hash serves only attribution.
+                let mut h = Sha256::new();
+                h.update(b"assistant-approval-session\0");
+                h.update(session);
+                ApprovalOrigin::Session {
+                    session_hash: hex::encode(h.finalize()),
+                }
+            }
+            Principal::Agent { .. } => {
+                return Err(ApiError::new(
+                    StatusCode::FORBIDDEN,
+                    "owner_required",
+                    "only the owner can approve assistant changes",
+                ));
+            }
+        };
+        Ok(Self(origin))
     }
 }
 
@@ -120,13 +130,13 @@ impl FromRequestParts<AppState> for ApprovalOwner {
         (status = 409, description = "Stale revision, epoch, effect digest, or reused command ID", body = ErrorBody),
         (status = 408, description = "Write deadline elapsed before commit; nothing stored", body = ErrorBody),
         (status = 413, description = "Body too large", body = ErrorBody),
-        (status = 422, description = "Invalid approval; nothing stored", body = ErrorBody),
+        (status = 422, description = "Invalid approval or decision timestamp (`approval_time`); nothing stored", body = ErrorBody),
         (status = 503, description = "Overloaded or outcome unknown; retry the same frozen command ID and payload", body = ErrorBody),
     ),
     security(("bearer" = []), ("web_session" = [], "csrf" = []))
 )]
 pub async fn post_approval(
-    _owner: ApprovalOwner,
+    ApprovalOwner(origin): ApprovalOwner,
     State(app): State<AppState>,
     RequestCancel(cancel): RequestCancel,
     body: Result<ApiJson<ApprovalRequest>, ApiError>,
@@ -143,7 +153,7 @@ pub async fn post_approval(
     })?;
     let engine = app.engine.clone();
     let outcome = blocking(&app, Work::Write, move || {
-        engine.approve_assistant(&req, &cancel)
+        engine.approve_assistant(&req, origin, &cancel)
     })
     .await??;
     Ok(outcome_response(outcome, app.engine.epoch()))

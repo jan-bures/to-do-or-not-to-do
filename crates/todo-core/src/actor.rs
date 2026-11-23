@@ -7,6 +7,14 @@ use std::fmt;
 /// Reserved for owner-approved in-app assistant batches; never a provisionable agent token.
 pub const ASSISTANT_AGENT_ID: &str = "assistant";
 
+/// Reserve the native identity and look-alike slugs. Agent IDs use ASCII, so removing their two
+/// separators catches `in-app-assistant`, `in_app_assistant` and suffixed variants consistently.
+#[must_use]
+pub fn is_reserved_assistant_slug(id: &str) -> bool {
+    let compact: String = id.chars().filter(|c| !matches!(c, '-' | '_')).collect();
+    compact.starts_with(ASSISTANT_AGENT_ID) || compact.starts_with("inappassistant")
+}
+
 fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -136,6 +144,22 @@ mod tests {
         assert!(AgentId::new("Bad Name").is_err());
         assert!(AgentId::new("").is_err());
         assert!(serde_json::from_str::<AgentId>("\"A\"").is_err());
+    }
+
+    #[test]
+    fn assistant_aliases_are_reserved() {
+        for reserved in [
+            "assistant",
+            "in-app-assistant",
+            "in_app_assistant",
+            "assistant-worker",
+            "in--app-assistant_2",
+        ] {
+            assert!(is_reserved_assistant_slug(reserved), "{reserved}");
+        }
+        for other in ["claude", "codex", "editor-assistant"] {
+            assert!(!is_reserved_assistant_slug(other), "{other}");
+        }
     }
 
     #[test]

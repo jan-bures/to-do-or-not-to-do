@@ -16,6 +16,7 @@ use todo_core::actor::AgentId;
 use todo_core::ids::EventId;
 use todo_core::state::Journal;
 use todo_core::time::{Date, Timestamp};
+pub use todo_tools::assistant::approval::ApprovalOrigin;
 
 /// Paging and filtering for [`crate::SyncClient::activity`].
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -63,6 +64,9 @@ pub struct ActivityItem {
     /// Plain description prepared by the server, which has the historical payload and the entity's
     /// current name. Render as text, not markup.
     pub summary: String,
+    /// Available for assistant batches on the owner's Activity feed.
+    #[serde(default)]
+    pub approved_by: Option<ApprovalOrigin>,
     /// This event's effect is currently undone.
     pub undone: bool,
     /// The server can attempt to undo this event; it may still refuse a conflicting change.
@@ -140,6 +144,9 @@ pub fn actor_name(actor: &Actor) -> String {
 pub fn agent_name(id: &str) -> String {
     if id == todo_core::actor::ASSISTANT_AGENT_ID {
         return "In-app assistant".to_owned();
+    }
+    if todo_core::actor::is_reserved_assistant_slug(id) {
+        return format!("External agent · {id}");
     }
     let mut chars = id.chars();
     chars.next().map_or_else(String::new, |first| {
@@ -268,6 +275,8 @@ pub struct Entry {
     /// The original command's batch: one undo covers every event of it.
     pub group: EventId,
     pub actor: Actor,
+    /// Non-content provenance, separate from the actor that made the change.
+    pub approved_by: Option<ApprovalOrigin>,
     pub at: Timestamp,
     /// What happened, in plain words ([`ActivityItem::what_happened`]).
     pub what: String,
@@ -280,6 +289,21 @@ pub struct Entry {
 }
 
 impl Entry {
+    /// Legacy events may use the exact slug without an owner-approved receipt; never label
+    /// those as the native assistant.
+    #[must_use]
+    pub fn actor_name(&self) -> String {
+        if self.approved_by.is_none()
+            && self
+                .actor
+                .agent_id()
+                .is_some_and(|id| id.as_str() == todo_core::actor::ASSISTANT_AGENT_ID)
+        {
+            return "Agent · assistant (unverified)".into();
+        }
+        actor_name(&self.actor)
+    }
+
     /// The row for an item; `None` for an event without a sequence number (never in a served page).
     #[must_use]
     pub fn from_item(item: ActivityItem) -> Option<Self> {
@@ -290,6 +314,7 @@ impl Entry {
             target,
             group: event.group,
             actor: event.actor,
+            approved_by: item.approved_by,
             at: event.at,
             what,
             compensating: event.undoes.is_some(),
@@ -785,6 +810,31 @@ mod tests {
             "summary": format!("Change {seq}"), "undone": undone, "can_undo": !undone
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn only_provenanced_assistant_entries_use_the_native_name() {
+        let mut row = item(1, "2030-01-01T00:00:00Z", false);
+        for id in ["in-app-assistant", "in_app_assistant", "assistant-worker"] {
+            row.event.event.actor = Actor::agent(id).unwrap();
+            assert_eq!(
+                Entry::from_item(row.clone()).unwrap().actor_name(),
+                format!("External agent · {id}")
+            );
+        }
+        row.event.event.actor = Actor::agent("assistant").unwrap();
+        assert_eq!(
+            Entry::from_item(row.clone()).unwrap().actor_name(),
+            "Agent · assistant (unverified)"
+        );
+        let source = ApprovalOrigin::Device {
+            device: todo_core::DeviceId::new("test-device").unwrap(),
+        };
+        row.approved_by = Some(source.clone());
+        let entry = Entry::from_item(row).unwrap();
+        assert_eq!(entry.actor_name(), "In-app assistant");
+        assert_eq!(entry.approved_by, Some(source));
+        assert!(!format!("{entry:?}").contains("test-device"));
     }
 
     fn page(items: Vec<ActivityItem>, next_before: Option<u64>) -> ActivityPage {

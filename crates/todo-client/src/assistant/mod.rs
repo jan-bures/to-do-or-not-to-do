@@ -687,7 +687,7 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
                 snapshot.revision,
                 chat.generation,
                 &snapshot.state,
-                chat.allowed.clone(),
+                live_scope(&snapshot.state, &chat.allowed),
                 at,
             )
             .map_err(|_| ReviewError::InvalidSelection)?;
@@ -862,6 +862,14 @@ fn reviewed<P>(chat: &Chat<P>, id: CommandId, digest: [u8; 32]) -> Result<&Pendi
     }
 }
 
+fn live_scope(state: &State, allowed: &BTreeSet<ListId>) -> BTreeSet<ListId> {
+    allowed
+        .iter()
+        .copied()
+        .filter(|id| state.is_live((*id).into()))
+        .collect()
+}
+
 fn start_history(turns: &VecDeque<MemoryTurn>, prompt: &str) -> Vec<Message> {
     let mut history = vec![Message::User {
         text: prompt.to_owned(),
@@ -958,7 +966,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
                 s.revision,
                 job.generation,
                 &s.state,
-                job.allowed.clone(),
+                live_scope(&s.state, &job.allowed),
                 job.now,
             )
         })

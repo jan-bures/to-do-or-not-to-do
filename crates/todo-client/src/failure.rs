@@ -197,6 +197,10 @@ pub fn why(failed: &FailedEntry) -> &'static str {
 pub fn approval_message(code: &str) -> &'static str {
     match code {
         "approval_stale" => "Tasks changed since the review. Request a new proposal.",
+        "approval_time" => {
+            "The proposal time is out of date or the device clock is out of sync. Check the clock and request a new proposal."
+        }
+        "endpoint_not_found" | "not_found" => "This server does not support assistant approval.",
         "epoch_mismatch" => "The server’s history changed. Request a new proposal.",
         "approval_digest_mismatch" => {
             "The changes no longer match the review. Request a new proposal."

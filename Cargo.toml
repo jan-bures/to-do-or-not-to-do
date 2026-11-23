@@ -95,6 +95,7 @@ schemars = { version = "1", features = ["uuid1"] }
 # todo-ffi: Kotlin bindings for the Android app. `cli` only for its `uniffi-bindgen` binary.
 uniffi = "0.32"
 unicode-general-category = "1.1"
+unicode-normalization = { version = "0.1", default-features = false }
 # todo-ffi on Android: initialises the platform TLS verifier that reqwest uses (versions as in reqwest).
 jni = { version = "0.22", default-features = false }
 rustls-platform-verifier = "0.7"

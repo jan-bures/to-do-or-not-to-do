@@ -148,7 +148,7 @@ proptest! {
         let at = Timestamp::from_millisecond(at_ms).unwrap();
         let req = ApprovalRequest { command_id: pending.preview().id, batch: pending.approval().unwrap() };
         let req: ApprovalRequest = serde_json::from_slice(&serde_json::to_vec(&req).unwrap()).unwrap();
-        let all_events = req.redecide(&base).unwrap();
+        let all_events = req.preflight().unwrap().redecide(&base).unwrap();
         let mut retimed = new_batch(&base, at);
         let mut ids = BTreeSet::new();
         for event in &all_events {
@@ -210,9 +210,10 @@ fn destructive_effects_can_be_displayed_but_cannot_be_drafted() {
 }
 
 #[test]
-fn model_titles_reject_controls_format_and_unicode_line_breaks() {
+fn model_titles_reject_controls_format_private_use_unassigned_and_line_breaks() {
     for bad in [
         '\n', '\r', '\t', '\u{0085}', '\u{202e}', '\u{200b}', '\u{2066}', '\u{2028}', '\u{2029}',
+        '\u{200d}', '\u{e000}', '\u{0378}',
     ] {
         let title = format!("Vis{bad}ible");
         let mut batch = new_batch(&base(), NOW);
@@ -223,6 +224,52 @@ fn model_titles_reject_controls_format_and_unicode_line_breaks() {
             assert_eq!(batch.push(command(cmd), 0), Err(BatchError::InvalidDraft));
         }
     }
+}
+
+#[test]
+fn normalizes_new_and_edited_titles_before_preview_digest_and_storage() {
+    let base = base();
+    let mut batch = new_batch(&base, NOW);
+    let decomposed = "Z\u{30c}lut\u{30c}ouc\u{30c}ky\u{301}";
+    let composed = "Žluťoučký";
+    assert!(
+        batch
+            .push(
+                command(json!({"cmd":"create_task","id":NEW,"list":LIST,"title":decomposed})),
+                0
+            )
+            .unwrap()
+    );
+    assert!(
+        batch
+            .push(
+                command(json!({"cmd":"update_task","id":TASK,"patch":{"title":decomposed}})),
+                1
+            )
+            .unwrap()
+    );
+    let draft = batch.freeze().unwrap().unwrap();
+    assert!(
+        matches!(&draft.preview().items[0].effects[0], Effect::Created { task, .. } if task.title == composed)
+    );
+    assert!(
+        matches!(&draft.preview().items[1].effects[0], Effect::Edited { changes, .. } if matches!(&changes[0], Edit::Title(c) if c.new == composed))
+    );
+    let mut req = ApprovalRequest {
+        command_id: ID,
+        batch: draft.approval().unwrap(),
+    };
+    let mut confirmed = base.clone();
+    for event in req.preflight().unwrap().redecide(&base).unwrap() {
+        apply(&mut confirmed, &event).unwrap();
+    }
+    assert_eq!(confirmed.tasks[&NEW].title, composed);
+    assert_eq!(confirmed.tasks[&TASK].title, composed);
+    req.batch.commands[1]
+        .title_mut()
+        .unwrap()
+        .clone_from(&decomposed.to_owned());
+    assert!(matches!(req.preflight(), Err(BatchError::InvalidDraft)));
 }
 
 #[test]
@@ -250,7 +297,7 @@ fn caps_commands_and_events_before_adding_to_the_batch() {
     req.batch
         .commands
         .push(ApprovalCommand::try_from(&extra).unwrap());
-    assert_eq!(req.redecide(&base()), Err(BatchError::Limit));
+    assert!(matches!(req.preflight(), Err(BatchError::Limit)));
 
     // Current supported commands are typically one event. Prime the counter to exercise the
     // independent event budget without advertising other commands that have broader effects.

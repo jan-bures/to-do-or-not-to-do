@@ -2067,6 +2067,7 @@ pub fn activity_items() -> Vec<todo_client::activity::ActivityItem> {
                     command_len: Some(1),
                 },
                 summary: summary.to_owned(),
+                approved_by: None,
                 undone,
                 can_undo: !undone,
             }

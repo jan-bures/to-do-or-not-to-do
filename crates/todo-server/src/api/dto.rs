@@ -95,6 +95,10 @@ pub struct ActivityItem {
     pub event: LogEvent,
     /// One-line description.
     pub summary: String,
+    /// Owner-only provenance of an approved assistant batch.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Object>)]
+    pub approved_by: Option<todo_tools::assistant::approval::ApprovalOrigin>,
     /// True if this event's effect is currently undone.
     pub undone: bool,
     /// True if `POST /api/v1/events/{seq}/undo` may be tried on this event (it is the latest link of

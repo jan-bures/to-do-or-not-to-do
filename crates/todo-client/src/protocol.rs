@@ -241,13 +241,9 @@ pub enum SendOutcome {
     Rejected(Rejection),
 }
 
-/// Classifies a response to `POST /commands` or `POST /events/{seq}/undo`.
-///
-/// Definitive rejections are 4xx answers in the server's error format, except 401 (token problem),
-/// 403 `csrf` (the browser session's token or origin, not the command), 408 (nothing stored), 429
-/// (rate limited) and a bare 404 without details (wrong base URL or an unknown route, not a missing
-/// entity). Everything else (5xx, including 503 `outcome_unknown`,
-/// unparseable answers from a proxy) is retried with the same command ID.
+/// Classifies a response to a write. Definitive rejections are 404 (including a missing route on an
+/// older server) and structured 4xx other than 401, CSRF, 408 and 429. A 5xx, including
+/// `outcome_unknown`, is retried with the same command ID.
 #[must_use]
 pub fn classify_send(res: &Response) -> SendOutcome {
     let retry = |reason: String| SendOutcome::Retry {
@@ -270,14 +266,16 @@ pub fn classify_send(res: &Response) -> SendOutcome {
             Some(d) if res.status == 403 && d.code == CSRF => {
                 retry("the server refused the session's CSRF token (403)".into())
             }
-            Some(d) if !(res.status == 404 && d.details.is_none()) => {
-                SendOutcome::Rejected(Rejection {
-                    status: res.status,
-                    code: d.code,
-                    message: d.message,
-                })
-            }
-            Some(d) => retry(format!("server answered {} {}", res.status, d.code)),
+            Some(d) => SendOutcome::Rejected(Rejection {
+                status: res.status,
+                code: d.code,
+                message: d.message,
+            }),
+            None if res.status == 404 => SendOutcome::Rejected(Rejection {
+                status: 404,
+                code: "endpoint_not_found".into(),
+                message: "The write endpoint is unavailable.".into(),
+            }),
             None => retry(format!(
                 "server answered {} without an error body",
                 res.status
@@ -362,18 +360,13 @@ mod tests {
             )),
             SendOutcome::Rejected(_)
         ));
-        // A proxy's HTML error page or an unknown route is not a verdict on the command.
-        assert!(matches!(
-            classify_send(&res(404, "<html>")),
-            SendOutcome::Retry { .. }
-        ));
-        assert!(matches!(
-            classify_send(&res(
-                404,
-                r#"{"error":{"code":"not_found","message":"no such endpoint"}}"#
-            )),
-            SendOutcome::Retry { .. }
-        ));
+        // An older server may return either a plain 404 or its JSON fallback without details.
+        assert!(
+            matches!(classify_send(&res(404, "<html>")), SendOutcome::Rejected(r) if r.code == "endpoint_not_found")
+        );
+        assert!(
+            matches!(classify_send(&res(404, r#"{"error":{"code":"not_found","message":"no such endpoint"}}"#)), SendOutcome::Rejected(r) if r.code == "not_found")
+        );
         assert!(matches!(
             classify_send(&res(
                 404,
