@@ -4378,7 +4378,6 @@ dependencies = [
  "rusqlite",
  "rustls",
  "rusty-s3",
- "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -4388,6 +4387,7 @@ dependencies = [
  "todo-core",
  "todo-fs",
  "todo-server",
+ "todo-tools",
  "tokio",
  "tokio-stream",
  "toml 1.2.2+spec-1.1.0",
@@ -4401,6 +4401,22 @@ dependencies = [
  "uuid",
  "webauthn-authenticator-rs",
  "webauthn-rs",
+]
+
+[[package]]
+name = "todo-tools"
+version = "0.1.0"
+dependencies = [
+ "base64 0.23.1",
+ "hex",
+ "jiff 1.0.1",
+ "schemars 1.2.3",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "thiserror 2.0.21",
+ "todo-core",
+ "uuid",
 ]
 
 [[package]]

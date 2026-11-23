@@ -131,10 +131,7 @@ pub struct IncludeDeleted {
     pub include_deleted: bool,
 }
 
-/// Default page size of collection reads.
-pub const DEFAULT_PAGE: usize = 100;
-/// Largest page size of collection reads.
-pub const MAX_PAGE: usize = 500;
+pub use todo_tools::read::{DEFAULT_PAGE, MAX_PAGE};
 
 /// Paging and `?include_deleted=` for collections, lists and tags.
 #[derive(Debug, Clone, Default, Deserialize, IntoParams)]

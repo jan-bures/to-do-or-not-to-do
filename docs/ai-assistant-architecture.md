@@ -64,22 +64,25 @@ change. A provider timeout may already have consumed usage: don't replay model r
 
 ### One schema, separate authority
 
-Today [`mcp/tools.rs`](../crates/todo-server/src/mcp/tools.rs) defines `schemars` argument types under
-`rmcp` handlers and maps them to REST reads and core commands. MCP is bearer-only and rejects browser
-origins; it uses stateless JSON responses, not the task SSE stream
+[`mcp/tools.rs`](../crates/todo-server/src/mcp/tools.rs) adapts the shared tool contracts to REST reads
+and writes. MCP is bearer-only and rejects browser origins; it uses stateless JSON responses, not the
+task SSE stream
 ([transport](../crates/todo-server/src/mcp/mod.rs)). REST can also use the owner's same-origin session,
 CSRF header and write-origin check ([auth middleware](../crates/todo-server/src/auth/mod.rs)). Do not
 loosen MCP's policy, issue an assistant bearer, or send an owner bearer to a model.
 
-Extract a small runtime-free workspace crate (e.g. `todo-tools`, depending on `todo-core`) for typed
-arguments, descriptions, canonical JSON Schema, core query/command conversion and shared read result
-shapes as needed. It does not depend on `rmcp`, axum, SQLite or a provider SDK. Keep tool names, optional
-fields, retry semantics, error/response envelopes and enforcement in the existing MCP adapter. Move
-common interpretation such as omitted vs null fields into this shared crate; inject clock, ID source
-and explicit list resolution. Provider adapters may wrap the schema in native tool envelopes; hide
-transport metadata such as MCP's optional `command_id` from model input (the host generates it).
-Snapshot the `tools/list` contract and compare command decoding in both adapters. No second hand-maintained
-schema or raw model-authored `Command` JSON.
+The runtime-free [`todo-tools`](../crates/todo-tools/src/lib.rs) crate owns typed arguments, descriptions,
+canonical JSON Schema, and query/command conversion. It does not depend on `rmcp`, axum, SQLite or a
+provider SDK. The MCP adapter keeps its transport policy, retry semantics and response/error envelopes;
+byte-level snapshots cover `tools/list` and representative errors. The caller supplies the clock, IDs
+and explicit list resolution. The assistant's restricted tool inputs are derived from that same schema
+and reject transport metadata such as `command_id` (the host generates it). Provider adapters may wrap
+the schema in native tool envelopes. No second hand-maintained schema or raw model-authored `Command` JSON.
+
+[`Projection`](../crates/todo-tools/src/assistant/projection.rs) accepts a confirmed state and a live
+list allowlist supplied by the host. It filters before query evaluation, ordering, paging and counts.
+Assistant free-text queries search visible titles and checklist steps, not notes, so matches do not
+become an oracle for omitted note text. Local cursors bind to scope and resolve only visible IDs.
 
 | Tool class | In-app dispatch |
 |---|---|

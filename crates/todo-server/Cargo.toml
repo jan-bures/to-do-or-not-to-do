@@ -22,6 +22,7 @@ test-hooks = []
 
 [dependencies]
 todo-core = { workspace = true, features = ["openapi"] }
+todo-tools.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -51,7 +52,6 @@ webauthn-rs.workspace = true
 getrandom.workspace = true
 todo-fs.workspace = true
 rmcp = { workspace = true, features = ["server", "macros", "transport-streamable-http-server"] }
-schemars.workspace = true
 chacha20poly1305.workspace = true
 hkdf.workspace = true
 rusty-s3.workspace = true

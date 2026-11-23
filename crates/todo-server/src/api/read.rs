@@ -2,7 +2,7 @@
 //!
 //! Every read runs on the blocking pool through bounded admission ([`blocking`] with [`Work::Read`]),
 //! against an immutable snapshot of the state, so a slow read never occupies an async worker or holds
-//! up the writer. Scans check the request's [`Cancel`] every [`TICK`] items, so work stops soon after
+//! up the writer. Scans check the request's [`Cancel`] every [`shared::TICK`] items, so work stops soon after
 //! the request deadline even when nothing matches.
 //!
 //! # Pagination
@@ -23,7 +23,7 @@
 //! key changes between pages can be skipped or appear twice. Clients that need an exact copy sync
 //! through the event log instead.
 //!
-//! Pages stop at `limit` items (at most [`MAX_PAGE`]) or [`MAX_PAGE_BYTES`] of JSON *including* the
+//! Pages stop at `limit` items (at most [`shared::MAX_PAGE`]) or [`MAX_PAGE_BYTES`] of JSON *including* the
 //! envelope, whichever comes first. Items are measured while they are serialized, against the bytes
 //! still left. If the first item alone is too large, the response is 500 `item_too_large` with the
 //! `next_cursor` that skips it.
@@ -34,9 +34,9 @@
 //! pages, and a list or task they cannot read is 404, exactly like one that does not exist.
 
 use super::dto::{
-    ActivityItem, ActivityPage, ActivityParams, CollectionPage, DEFAULT_PAGE, IncludeDeleted,
-    ListPage, ListTasksParams, MAX_PAGE, PageParams, ReadParams, SmartList, TagPage, TaskDetail,
-    TaskPage, TaskQueryParams,
+    ActivityItem, ActivityPage, ActivityParams, CollectionPage, IncludeDeleted, ListPage,
+    ListTasksParams, PageParams, ReadParams, SmartList, TagPage, TaskDetail, TaskPage,
+    TaskQueryParams,
 };
 use super::error::{ApiError, ErrorBody};
 use super::{ApiPath, ApiQuery, RequestCancel, Work, blocking, visibility};
@@ -49,39 +49,26 @@ use axum::extract::State;
 use axum::http::header::CONTENT_TYPE;
 use axum::http::{HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
-use base64::Engine as _;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
-use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
-use std::collections::BinaryHeap;
 use std::io;
 use todo_core::Actor;
 use todo_core::ids::ListId;
-use todo_core::model::{Collection, List, Tag, Task};
-use todo_core::query::{BUILTIN_LISTS, EvalContext, Expr, OrderKey, Query, fold};
+use todo_core::model::{Collection, Tag, Task};
+use todo_core::query::{BUILTIN_LISTS, EvalContext, OrderKey, fold};
 use todo_core::state::State as CoreState;
+use todo_tools::read::{
+    self as shared, Binding, QueryError, encode_cursor, list_key, page_limit, step_key,
+};
+pub use todo_tools::read::{
+    MAX_DETAIL_CHILDREN, MAX_QUERY_BYTES, MAX_QUERY_NODES, MAX_QUERY_TERMS, TICK,
+};
 
 /// Most bytes of JSON in one page of a collection read, envelope included.
 pub const MAX_PAGE_BYTES: usize = 4 * 1024 * 1024;
 /// Bytes of a page reserved for the envelope (`next_cursor`, braces). A cursor holds at most a folded
 /// title (500 characters) plus positions and IDs, well under this.
 const PAGE_ENVELOPE: usize = 16 * 1024;
-/// Longest accepted cursor, in bytes.
-const MAX_CURSOR_BYTES: usize = 8 * 1024;
-/// Items scanned between two checks of the request's cancellation.
-pub const TICK: usize = 256;
-/// Most items of each kind (steps, links, attachments, reminders, tags) in a task detail; more sets
-/// `truncated`.
-pub const MAX_DETAIL_CHILDREN: usize = 200;
-/// Longest accepted smart-list query text, in bytes.
-pub const MAX_QUERY_BYTES: usize = 1024;
-/// Most AST nodes (operators, predicates and sort clauses) in a smart-list query.
-pub const MAX_QUERY_NODES: usize = 64;
-/// Most predicates (terms) in a smart-list query.
-pub const MAX_QUERY_TERMS: usize = 32;
-
 fn live_or(state: &CoreState, include_deleted: bool, id: todo_core::ids::EntityId) -> bool {
     include_deleted || state.is_live(id)
 }
@@ -96,121 +83,20 @@ where
     blocking(app, Work::Read, move || f(&engine.state(), &cancel)).await?
 }
 
-fn page_limit(limit: Option<usize>) -> usize {
-    limit.unwrap_or(DEFAULT_PAGE).clamp(1, MAX_PAGE)
-}
-
-/// What a cursor is bound to: a hash of the route and everything that selects or orders its items.
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct Binding(String);
-
-impl Binding {
-    fn new(parts: &[&str]) -> Self {
-        let mut h = Sha256::new();
-        for p in parts {
-            h.update(p.as_bytes());
-            h.update([0x1f]);
-        }
-        Self(hex::encode(&h.finalize()[..8]))
-    }
-}
-
-#[derive(Serialize, Deserialize)]
-struct CursorData {
-    b: String,
-    k: OrderKey,
-}
-
-fn encode_cursor(binding: &Binding, key: &OrderKey) -> String {
-    let data = CursorData {
-        b: binding.0.clone(),
-        k: key.clone(),
-    };
-    // Serializing strings and integers cannot fail.
-    URL_SAFE_NO_PAD.encode(serde_json::to_vec(&data).unwrap_or_default())
-}
-
-/// Decodes a cursor and checks its binding, before any work is admitted.
 fn decode_cursor(cursor: Option<&str>, binding: &Binding) -> Result<Option<OrderKey>, ApiError> {
-    let Some(c) = cursor else { return Ok(None) };
-    if c.len() > MAX_CURSOR_BYTES {
-        return Err(ApiError::invalid_cursor());
-    }
-    let bytes = URL_SAFE_NO_PAD
-        .decode(c)
-        .map_err(|_| ApiError::invalid_cursor())?;
-    let data: CursorData =
-        serde_json::from_slice(&bytes).map_err(|_| ApiError::invalid_cursor())?;
-    if data.b != binding.0 {
-        return Err(ApiError::invalid_cursor());
-    }
-    Ok(Some(data.k))
+    shared::decode_cursor(cursor, binding).map_err(|_| ApiError::invalid_cursor())
 }
 
-struct Entry<'a, T> {
-    key: OrderKey,
-    item: &'a T,
-}
-
-impl<T> PartialEq for Entry<'_, T> {
-    fn eq(&self, other: &Self) -> bool {
-        self.key == other.key
-    }
-}
-impl<T> Eq for Entry<'_, T> {}
-impl<T> PartialOrd for Entry<'_, T> {
-    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
-        Some(self.cmp(other))
-    }
-}
-impl<T> Ord for Entry<'_, T> {
-    fn cmp(&self, other: &Self) -> Ordering {
-        self.key.cmp(&other.key)
-    }
-}
-
-/// The `n` smallest items (by `key`) among those `keep` accepts whose key is after `after`, in key
-/// order. One pass with a bounded max-heap; checks `cancel` every [`TICK`] items.
-fn select<'a, T>(
+fn select<'a, T: 'a>(
     items: impl Iterator<Item = &'a T>,
     keep: impl Fn(&T) -> bool,
     key: impl Fn(&T) -> OrderKey,
     after: Option<&OrderKey>,
     n: usize,
     cancel: &Cancel,
-) -> Result<Vec<(OrderKey, &'a T)>, ApiError>
-where
-    T: 'a,
-{
-    let mut heap: BinaryHeap<Entry<'a, T>> = BinaryHeap::with_capacity(n.saturating_add(1));
-    for (i, item) in items.enumerate() {
-        if i % TICK == 0 && cancel.is_cancelled() {
-            return Err(ApiError::timeout());
-        }
-        if !keep(item) {
-            continue;
-        }
-        let k = key(item);
-        if after.is_some_and(|a| k <= *a) {
-            continue;
-        }
-        if heap.len() < n {
-            heap.push(Entry { key: k, item });
-        } else if heap.peek().is_some_and(|top| k < top.key) {
-            heap.pop();
-            heap.push(Entry { key: k, item });
-        }
-    }
-    // Matchers may give up early once cancelled (see `Query::matcher_until`); never return their
-    // partial answers.
-    if cancel.is_cancelled() {
-        return Err(ApiError::timeout());
-    }
-    Ok(heap
-        .into_sorted_vec()
-        .into_iter()
-        .map(|e| (e.key, e.item))
-        .collect())
+) -> Result<Vec<(OrderKey, &'a T)>, ApiError> {
+    shared::select(items, keep, key, after, n, || cancel.is_cancelled())
+        .map_err(|_| ApiError::timeout())
 }
 
 /// Counts bytes and fails once more than `cap` were written, which stops serialization early.
@@ -349,27 +235,13 @@ pub async fn lists(
     let after = decode_cursor(q.cursor.as_deref(), &binding)?;
     let limit = page_limit(q.limit);
     read(&app, cancel, move |s, cancel| {
-        // Lists without a collection first, then by collection position, then list position.
-        let key = |l: &List| {
-            let mut k = OrderKey::new();
-            match l.collection.and_then(|c| s.collections.get(&c)) {
-                None => k.push_int(0, false).push_str("", false).push_str("", false),
-                Some(c) => k
-                    .push_int(1, false)
-                    .push_str(c.position.to_string(), false)
-                    .push_str(c.id.to_string(), false),
-            };
-            k.push_str(l.position.to_string(), false)
-                .push_str(l.id.to_string(), false);
-            k
-        };
         let sel = select(
             s.lists.values(),
             |l| {
                 live_or(s, q.include_deleted, l.id.into())
                     && visibility::list_entity_visible(s, &auth.actor, l)
             },
-            key,
+            |l| list_key(s, l),
             after.as_ref(),
             limit + 1,
             cancel,
@@ -442,45 +314,16 @@ pub async fn list_tasks(
     .await
 }
 
-/// Size of a parsed query: (nodes, terms).
-fn complexity(q: &Query) -> (usize, usize) {
-    fn walk(e: &Expr, nodes: &mut usize, terms: &mut usize) {
-        *nodes += 1;
-        match e {
-            Expr::True => {}
-            Expr::And(v) | Expr::Or(v) => v.iter().for_each(|x| walk(x, nodes, terms)),
-            Expr::Not(x) => walk(x, nodes, terms),
-            Expr::Pred(_) => *terms += 1,
-        }
+fn query_error(error: QueryError) -> ApiError {
+    match error {
+        QueryError::Parse(e) => ApiError::invalid_query(&e),
+        QueryError::TooComplex { limit, value, max } => ApiError::new(
+            StatusCode::BAD_REQUEST,
+            "query_too_complex",
+            error.to_string(),
+        )
+        .with_details(json!({ "limit": limit, "value": value, "max": max })),
     }
-    let (mut nodes, mut terms) = (q.sort.len(), 0);
-    walk(&q.expr, &mut nodes, &mut terms);
-    (nodes, terms)
-}
-
-fn too_complex(reason: &str, value: usize, max: usize) -> ApiError {
-    ApiError::new(
-        StatusCode::BAD_REQUEST,
-        "query_too_complex",
-        format!("the query has too many {reason} ({value}; at most {max})"),
-    )
-    .with_details(json!({ "limit": reason, "value": value, "max": max }))
-}
-
-/// Parses a query and enforces the complexity caps.
-fn parse_query(text: &str) -> Result<Query, ApiError> {
-    if text.len() > MAX_QUERY_BYTES {
-        return Err(too_complex("bytes", text.len(), MAX_QUERY_BYTES));
-    }
-    let query = Query::parse(text).map_err(|e| ApiError::invalid_query(&e))?;
-    let (nodes, terms) = complexity(&query);
-    if terms > MAX_QUERY_TERMS {
-        return Err(too_complex("terms", terms, MAX_QUERY_TERMS));
-    }
-    if nodes > MAX_QUERY_NODES {
-        return Err(too_complex("nodes", nodes, MAX_QUERY_NODES));
-    }
-    Ok(query)
 }
 
 async fn run_query(
@@ -492,7 +335,7 @@ async fn run_query(
     cursor: Option<&str>,
     limit: Option<usize>,
 ) -> Result<TaskPage, ApiError> {
-    let query = parse_query(text)?;
+    let query = shared::parse_query(text).map_err(query_error)?;
     let ctx: EvalContext = app.eval_context();
     // "today" changes what matches, so a cursor is only good for the day (and offset) it was made on.
     let binding = Binding::new(&[
@@ -616,12 +459,7 @@ fn detail_bytes(
     let (mut steps, more_steps) = children(
         s.steps.values(),
         |x| x.task == id && keep(x.deleted.is_some()),
-        |x| {
-            let mut k = OrderKey::new();
-            k.push_str(x.position.to_string(), false)
-                .push_str(x.id.to_string(), false);
-            k
-        },
+        step_key,
         cancel,
     )?;
     let (mut links, more_links) = children(

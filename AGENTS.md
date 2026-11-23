@@ -31,6 +31,7 @@ Nothing deployment-specific or personal may ever be committed here. That include
 |---|---|
 | `crates/todo-core` | Domain model, commands and events, validation, the smart-list query language. **No I/O and no platform dependencies.** |
 | `crates/todo-client` | Sync engine shared by every client. Put platform specifics behind traits. |
+| `crates/todo-tools` | Typed tool contracts shared by MCP and the in-app assistant, plus scoped local reads. **No I/O or runtime dependencies.** |
 | `crates/todo-ffi` | UniFFI bindings over `todo-client` for the Android app: engine, view model, pairing, fixtures. |
 | `crates/todo-server` | axum server: REST, SSE, MCP, auth, ingest. |
 | `crates/todo-import` | Microsoft To Do importer CLI. |
@@ -54,8 +55,8 @@ cargo fmt --all
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 # The shared crates must keep building for these targets (CI enforces it):
-cargo check -p todo-core -p todo-client -p todo-design --target wasm32-unknown-unknown
-cargo check -p todo-core -p todo-client -p todo-design --target aarch64-linux-android
+cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --target wasm32-unknown-unknown
+cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --target aarch64-linux-android
 # After changing a design token, regenerate the checked-in exports:
 TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated
 # The email Worker (Node 22 or later):
@@ -87,7 +88,7 @@ with GPUI.
   `[workspace.dependencies]`.
 - **Tests.** Every behaviour change ships with tests. Event and undo logic gets property tests: replaying
   events rebuilds the same state, and undoing every event restores the previous state.
-- **Shared crates stay portable.** Before adding a dependency to `todo-core`, `todo-client` or `todo-design`,
+- **Shared crates stay portable.** Before adding a dependency to `todo-core`, `todo-client`, `todo-design` or `todo-tools`,
   check that it builds for wasm32 and Android.
 - **UI values come from `todo-design`.** Clients never hard-code colours, sizes or durations. Follow
   `docs/design-language.md`.

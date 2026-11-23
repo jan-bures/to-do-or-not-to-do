@@ -111,6 +111,103 @@ fn names(page: &Value) -> Vec<String> {
 }
 
 #[tokio::test]
+async fn discovery_matches_the_external_contract() {
+    // Captured from the original server, before extracting the tool contract.
+    let env = Env::start().await;
+    let response = env
+        .post(
+            Some(TOKEN_A),
+            &json!({"jsonrpc":"2.0","id":1,"method":"tools/list"}),
+        )
+        .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.bytes().await.unwrap();
+    assert!(
+        bytes.as_ref() == include_bytes!("mcp-discovery.json"),
+        "tools/list differs from the pre-extraction snapshot"
+    );
+}
+
+#[tokio::test]
+async fn tool_errors_match_the_external_contract() {
+    let env = Env::start().await;
+    let task = "00000000-0000-0000-0000-000000000001";
+    let mut cases = Vec::new();
+    for (name, arguments) in [
+        ("query_tasks", json!({"query":"due<<"})),
+        ("query_tasks", json!({"query":"x".repeat(1025)})),
+        ("list_lists", json!({"cursor":"bad"})),
+        ("get_task", json!({"task_id":task})),
+        ("get_task", json!({"task_id":task,"unexpected":true})),
+        ("update_task", json!({"task_id":task})),
+        ("update_task", json!({"task_id":task,"status":"done"})),
+        ("update_task", json!({"task_id":task,"due":"invalid"})),
+        (
+            "update_step",
+            json!({"step_id":task,"title":"Change","completed":true}),
+        ),
+        ("add_reminder", json!({"task_id":task,"at":"invalid"})),
+        ("create_task", json!({"title":"No default list"})),
+    ] {
+        let res = env.post(Some(TOKEN_A), &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":name,"arguments":arguments}})).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = res.text().await.unwrap();
+        cases.push(body);
+    }
+    assert_eq!(
+        cases.join("\n"),
+        include_str!("mcp-errors.jsonl").trim_end()
+    );
+}
+
+#[tokio::test]
+async fn rest_replays_mcp_writes_as_the_same_command() {
+    let env = Env::start().await;
+    let list = env.t.create_list("Inbox").await;
+    let c = env.connect(TOKEN_A).await;
+    let key = id();
+    let created = ok(
+        &c,
+        "create_task",
+        json!({
+            "command_id":key,"title":"Draft","start_date":"2030-06-01","due":"2030-06-03",
+            "status":"backlog","recurrence":{"rule":{"freq":"daily"}}
+        }),
+    )
+    .await;
+    let task = &created["task_id"];
+    let (status, headers, replay) = env.t.command_with_id(TOKEN_A, &key, json!({
+        "cmd":"create_task","id":task,"list":list,"title":"Draft","start_date":"2030-06-01",
+        "due":"2030-06-03","status":"backlog","recurrence":{"rule":{"freq":"daily","interval":1}}
+    })).await;
+    assert_eq!(status, StatusCode::OK, "{replay}");
+    assert_eq!(headers[todo_server::api::commands::REPLAYED_HEADER], "true");
+    assert_eq!(replay["events"], created["events"]);
+
+    let key = id();
+    let (_, _, updated) = env
+        .t
+        .command_with_id(
+            TOKEN_A,
+            &key,
+            json!({
+                "cmd":"update_task","id":task,"patch":{"start_date":null,"status":"in_progress"}
+            }),
+        )
+        .await;
+    let replay = ok(
+        &c,
+        "update_task",
+        json!({
+            "command_id":key,"task_id":task,"start_date":null,"status":"in_progress"
+        }),
+    )
+    .await;
+    assert_eq!(replay["replayed"], true);
+    assert_eq!(replay["events"], updated["events"]);
+}
+
+#[tokio::test]
 async fn workflow_tools_respect_grants_and_present_done_as_completion() {
     let env = Env::start().await;
     let inbox = env.t.create_list("Inbox").await;
