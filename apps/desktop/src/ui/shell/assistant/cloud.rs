@@ -1,13 +1,31 @@
 use super::*;
 use crate::chatgpt::{AccountView, Accounts, CloudProvider};
 use std::sync::Arc;
-use todo_client::assistant::{ListAccess, Selection};
-use todo_core::ids::ListId;
+use todo_client::assistant::Selection;
+use todo_core::{State, ids::ListId};
 
 pub(super) struct Consent {
-    pub account: String,
-    pub prompt: String,
+    account: String,
+    prompt: String,
     pub lists: BTreeSet<ListId>,
+    pub previously_allowed: Option<BTreeSet<ListId>>,
+    pub state: Option<Arc<State>>,
+}
+
+impl Consent {
+    pub fn new(
+        account: AccountView,
+        prompt: String,
+        (state, lists): (Option<Arc<State>>, BTreeSet<ListId>),
+    ) -> Self {
+        Self {
+            account: account.id,
+            prompt,
+            lists,
+            previously_allowed: account.consented_lists,
+            state,
+        }
+    }
 }
 
 #[derive(Default)]
@@ -76,7 +94,8 @@ impl Cloud {
         Some(Selection {
             provider: Arc::new(DesktopProvider::ChatGPT(provider)),
             model: active.model?,
-            allow_billed: active.consent,
+            allow_billed: active.consented_lists.is_some(),
+            billed_list_scope: active.consented_lists,
             access: profile.access.clone(),
         })
     }
@@ -352,26 +371,19 @@ impl ShellView {
         let Some(account) = self.ai.cloud.active() else {
             return true;
         };
-        if account.consent {
+        if !account.plan_allowed {
+            self.ai.notice = Some(chatgpt::Error::NoGrant.to_string());
+            cx.notify();
+            return true;
+        }
+        // Use the controller's snapshot, not a second replica read that could race with sync.
+        let scope = self.ai.controller.list_scope();
+        if account.covers(&scope.1) {
             return false;
         }
-        self.ai.cloud.consent = Some(Consent {
-            account: account.id,
-            prompt: prompt.to_owned(),
-            lists: self.shareable_chatgpt_lists(),
-        });
+        self.ai.cloud.consent = Some(Consent::new(account, prompt.to_owned(), scope));
         cx.notify();
         true
-    }
-
-    pub(super) fn shareable_chatgpt_lists(&self) -> BTreeSet<ListId> {
-        let state = self.ai_access_state();
-        state
-            .lists
-            .keys()
-            .copied()
-            .filter(|&id| self.ai.profile.access.list(&state, id) == ListAccess::AllModels)
-            .collect()
     }
 
     pub(super) fn answer_cloud_consent(
@@ -380,37 +392,38 @@ impl ShellView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(mut question) = self.ai.cloud.consent.take() else {
+        let Some(question) = self.ai.cloud.consent.take() else {
             return;
         };
         if accept {
-            let lists = self.shareable_chatgpt_lists();
-            if lists != question.lists {
-                question.lists = lists;
-                self.ai.cloud.consent = Some(question);
-                cx.notify();
-                return;
-            }
-        }
-        if accept
-            && self
-                .ai
-                .cloud
-                .active()
-                .is_some_and(|a| a.id == question.account)
-            && let Some(accounts) = self.ai.cloud.accounts.as_ref()
-        {
-            match accounts.consent(&question.account) {
-                Ok(()) => {
-                    self.ai
-                        .controller
-                        .configure(self.ai.cloud.selection(&self.ai.profile));
-                    self.send_ai(question.prompt, cx);
+            self.refresh_ai(cx);
+            if let Some(account) = self.ai.cloud.active().filter(|a| a.id == question.account)
+                && let Some(accounts) = self.ai.cloud.accounts.as_ref()
+            {
+                let scope = self.ai.controller.list_scope();
+                if !scope.1.is_subset(&question.lists) {
+                    // Sync may have added a list since the owner saw the dialog. Show it first.
+                    self.ai.cloud.consent = Some(Consent::new(account, question.prompt, scope));
+                } else {
+                    let (_, lists) = scope;
+                    match accounts.consent(&question.account, lists.clone()) {
+                        Ok(()) => {
+                            self.ai.controller.set_billed_list_scope(lists);
+                            self.send_ai(question.prompt, cx);
+                        }
+                        Err(error) => self.ai.notice = Some(error.to_string()),
+                    }
                 }
-                Err(error) => self.ai.notice = Some(error.to_string()),
             }
         }
-        self.focus_ai(window, cx);
+        if self.ai.cloud.consent.is_some() {
+            window.focus(
+                &self.ai.focus_handle("assistant-chatgpt-consent-cancel", cx),
+                cx,
+            );
+        } else {
+            self.focus_ai(window, cx);
+        }
         cx.notify();
     }
 }

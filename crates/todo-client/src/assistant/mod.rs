@@ -86,6 +86,8 @@ pub struct Selection<P> {
     pub provider: Arc<P>,
     pub model: String,
     pub allow_billed: bool,
+    /// If billing consent is scope-bound, billed sends may only access these lists.
+    pub billed_list_scope: Option<BTreeSet<ListId>>,
     pub access: AccessRules,
 }
 
@@ -469,6 +471,24 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
         self.inner.abort(active);
     }
 
+    /// Apply a newly approved billing scope without resetting the conversation.
+    pub fn set_billed_list_scope(&self, lists: BTreeSet<ListId>) {
+        if let Some(selection) = &mut self.inner.lock().selection {
+            selection.allow_billed = true;
+            selection.billed_list_scope = Some(lists);
+        }
+    }
+
+    /// The same confirmed list scope that a new turn would pin, with its state for display.
+    #[must_use]
+    pub fn list_scope(&self) -> (Option<Arc<State>>, BTreeSet<ListId>) {
+        let chat = self.inner.lock();
+        (
+            chat.latest.as_ref().map(|snapshot| snapshot.state.clone()),
+            chat.allowed.clone(),
+        )
+    }
+
     pub fn set_scope(&self, access: AccessRules) {
         let active = {
             let mut chat = self.inner.lock();
@@ -764,7 +784,11 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
             match caps.billing {
                 BillingClass::Unknown => return Err(AssistantError::Billing),
                 BillingClass::Metered | BillingClass::Included | BillingClass::Subscription
-                    if !selection.allow_billed =>
+                    if !selection.allow_billed
+                        || selection
+                            .billed_list_scope
+                            .as_ref()
+                            .is_some_and(|lists| !chat.allowed.is_subset(lists)) =>
                 {
                     return Err(AssistantError::Billing);
                 }
@@ -998,6 +1022,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             round,
             model: job.model.clone(),
             instructions: INSTRUCTIONS,
+            list_scope: job.allowed.clone(),
             history: job.history.clone(),
             today: job.context.today,
             previous_draft: job.previous_draft.clone(),

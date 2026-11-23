@@ -4,8 +4,8 @@ use crate::platform::{MaybeSend, MaybeSync};
 use futures_util::{Stream, future::AbortHandle};
 use serde::{Serialize, de};
 use serde_json::{Map, Value};
-use std::{fmt, future::Future, time::Duration};
-use todo_core::time::Date;
+use std::{collections::BTreeSet, fmt, future::Future, time::Duration};
+use todo_core::{ids::ListId, time::Date};
 use uuid::Uuid;
 
 use super::ProposalItem;
@@ -178,6 +178,8 @@ pub struct RoundRequest {
     pub round: usize,
     pub model: String,
     pub instructions: &'static str,
+    /// Pinned list IDs for local transport authorization; not part of the inference payload.
+    pub list_scope: BTreeSet<ListId>,
     pub history: Vec<Message>,
     /// Owner-local date pinned for this turn.
     pub today: Date,

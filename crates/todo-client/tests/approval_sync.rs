@@ -66,6 +66,7 @@ async fn review<T: Transport>(
         provider: Arc::new(FakeProvider::new(CAPABILITIES, script)),
         model: MODEL.into(),
         allow_billed: false,
+        billed_list_scope: None,
         access: BTreeMap::from([(list, ListAccess::AllModels)]).into(),
     }));
     let snapshot = c.assistant_snapshot().unwrap();

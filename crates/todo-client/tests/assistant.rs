@@ -123,6 +123,7 @@ fn fixture(
         provider: provider.clone(),
         model: MODEL.into(),
         allow_billed: false,
+        billed_list_scope: None,
         access: local().into(),
     }));
     chat.update_snapshot(Some(snapshot(7, state())));
@@ -237,6 +238,73 @@ fn moving_out_of_a_shared_collection_invalidates_chat_and_cloud_never_sees_priva
     );
     local.update_snapshot(Some(snapshot(9, state)));
     assert!(local.view().turns.is_empty());
+}
+
+#[test]
+fn cloud_billing_consent_tracks_list_scope_expansion_and_reduction() {
+    let mut base = state();
+    let group = CollectionId::from_uuid(Uuid::from_u128(100));
+    let inherited = ListId::from_uuid(Uuid::from_u128(101));
+    apply_command(
+        &mut base,
+        json!({"cmd":"create_collection","id":group,"name":"Work"}),
+    );
+    apply_command(
+        &mut base,
+        json!({"cmd":"move_list","id":INBOX,"collection":group}),
+    );
+    let mut access = AccessRules::default();
+    access.set_collection(&base, group, ListAccess::AllModels);
+    access.lists.insert(HIDDEN, ListAccess::PrivateOnly);
+    let (chat, provider) = fixture(
+        Capabilities {
+            data_class: DataClass::Cloud,
+            billing: BillingClass::Subscription,
+            ..CAPABILITIES
+        },
+        [round([]), round([]), round([])],
+    );
+    chat.configure(Some(Selection {
+        provider: provider.clone(),
+        model: MODEL.into(),
+        allow_billed: true,
+        billed_list_scope: Some([INBOX].into()),
+        access: access.clone(),
+    }));
+    chat.update_snapshot(Some(snapshot(8, base.clone())));
+    assert_eq!(chat.list_scope().1, [INBOX].into());
+    block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
+
+    apply_command(
+        &mut base,
+        json!({"cmd":"create_list","id":inherited,"collection":group,"name":"New list"}),
+    );
+    chat.update_snapshot(Some(snapshot(9, base)));
+    let expanded = chat.list_scope().1;
+    assert_eq!(expanded, [INBOX, inherited].into());
+    assert_eq!(
+        chat.start(intent(&chat, 2)).err(),
+        Some(AssistantError::Billing)
+    );
+    assert_eq!(provider.requests().len(), 1);
+    chat.set_billed_list_scope(expanded.clone());
+    block_on(chat.start(intent(&chat, 3)).unwrap()).unwrap();
+    assert_eq!(chat.view().turns.len(), 2);
+
+    access.lists.insert(HIDDEN, ListAccess::AllModels);
+    chat.set_scope(access.clone());
+    assert_eq!(
+        chat.start(intent(&chat, 4)).err(),
+        Some(AssistantError::Billing)
+    );
+    access.lists.insert(HIDDEN, ListAccess::Hidden);
+    access.lists.insert(INBOX, ListAccess::PrivateOnly);
+    chat.set_scope(access);
+    block_on(chat.start(intent(&chat, 5)).unwrap()).unwrap();
+    let requests = provider.requests();
+    assert_eq!(requests[0].list_scope, [INBOX].into());
+    assert_eq!(requests[1].list_scope, expanded);
+    assert_eq!(requests[2].list_scope, [inherited].into());
 }
 
 #[test]
@@ -647,6 +715,7 @@ fn checks_cancel_timeout_duplicate_send_and_late_round_messages() {
         )),
         model: MODEL.into(),
         allow_billed: false,
+        billed_list_scope: None,
         access: local().into(),
     }));
     assert_eq!(

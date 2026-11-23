@@ -330,22 +330,43 @@ impl ShellView {
 
     pub(super) fn ai_chatgpt_consent(&self, cx: &mut Context<Self>) -> Stateful<Div> {
         let p = self.palette;
-        let state = self.ai_access_state();
-        let mut names: Vec<_> = self
-            .ai
-            .cloud
-            .consent
-            .iter()
-            .flat_map(|consent| consent.lists.iter())
-            .filter_map(|id| state.lists.get(id))
-            .map(|list| model::labels::one_line(&list.name))
-            .collect();
-        names.sort();
-        let scope = if names.is_empty() {
-            "No lists are currently shared.".into()
-        } else {
-            format!("Lists set to All models: {}.", names.join(", "))
-        };
+        let mut scope = Vec::new();
+        if let Some(consent) = &self.ai.cloud.consent {
+            let mut new = Vec::new();
+            let mut previous = Vec::new();
+            if let Some(state) = &consent.state {
+                for id in &consent.lists {
+                    if let Some(list) = state.lists.get(id) {
+                        let name = model::labels::one_line(&list.name);
+                        if consent
+                            .previously_allowed
+                            .as_ref()
+                            .is_some_and(|lists| lists.contains(id))
+                        {
+                            previous.push(name);
+                        } else {
+                            new.push(name);
+                        }
+                    }
+                }
+            }
+            if new.is_empty() && previous.is_empty() {
+                scope.push("No lists are currently shared.".into());
+            }
+            if !new.is_empty() {
+                new.sort();
+                let heading = if consent.previously_allowed.is_some() {
+                    "New lists to share"
+                } else {
+                    "Lists set to All models"
+                };
+                scope.push(format!("{heading}: {}.", new.join(", ")));
+            }
+            if !previous.is_empty() {
+                previous.sort();
+                scope.push(format!("Previously allowed: {}.", previous.join(", ")));
+            }
+        }
         let dialog = div().id("assistant-chatgpt-consent-dialog").role(Role::Dialog).aria_label("Share with ChatGPT?")
             .w(px(desktop::AI_SETTINGS_WIDTH)).max_w_full().max_h_full().rounded(px(radius::XL))
             .bg(p.pane).shadow(kit::overlay_shadow(&p)).border_1().border_color(p.line_strong)
@@ -366,7 +387,8 @@ impl ShellView {
                 .child(text(ty::DETAIL_TITLE, p.ink, "Share with ChatGPT?"))
                 .child(text(ty::BODY, p.ink_2, "ChatGPT is a cloud service. OpenAI receives this chat and the allowed task summaries used to answer it. Hidden and Private only lists, task notes, and attachments are not shared."))
                 .child(div().id("assistant-chatgpt-consent-scope").max_h(px(desktop::AI_COMPOSER_MAX)).overflow_y_scroll()
-                    .child(text(ty::BODY, p.ink, scope)))
+                    .flex().flex_col().gap(px(space::S2))
+                    .children(scope.into_iter().map(|line| text(ty::BODY, p.ink, line))))
                 .child(text(ty::META, p.ink_2, "This uses your ChatGPT plan or available credits. Manage usage and credit use in ChatGPT settings. To stop sharing, switch providers or sign out."))
                 .child(self.ai_manage_usage("assistant-chatgpt-consent-usage", Tone::Quiet, cx)))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))

@@ -353,6 +353,7 @@ impl LocalProvider {
             },
             mode,
             max_output_tokens: 128,
+            list_scope: Default::default(),
         };
         let (text, mut calls) = collect(
             self.stream_turn(request.clone(), Cancel(cancel.clone()))

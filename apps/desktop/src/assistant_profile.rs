@@ -62,6 +62,7 @@ impl Profile {
             model: self.model.clone(),
             access: self.access.clone(),
             allow_billed: false,
+            billed_list_scope: None,
         })
     }
 

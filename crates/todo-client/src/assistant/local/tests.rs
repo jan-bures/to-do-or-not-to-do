@@ -173,6 +173,7 @@ fn round(mode: RoundMode) -> RoundRequest {
         }],
         mode,
         max_output_tokens: 128,
+        list_scope: Default::default(),
     }
 }
 

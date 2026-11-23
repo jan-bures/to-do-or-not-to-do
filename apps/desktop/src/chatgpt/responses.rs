@@ -32,7 +32,7 @@ struct Entry {
 }
 
 pub(super) async fn models(accounts: &Accounts, id: &str) -> Result<Vec<Model>, ProviderError> {
-    let bearer = accounts.access(id, false).await.map_err(auth_error)?;
+    let bearer = accounts.access(id, None).await.map_err(auth_error)?;
     let service = accounts.service();
     let response = service
         .http
@@ -276,7 +276,7 @@ impl Provider for CloudProvider {
         }
         let bearer = self
             .accounts
-            .access(&self.client_id, true)
+            .access(&self.client_id, Some(&request.list_scope))
             .await
             .map_err(auth_error)?;
         if cancel.is_cancelled() {
@@ -440,6 +440,7 @@ mod tests {
             }],
             mode: RoundMode::Streaming,
             max_output_tokens: 10,
+            list_scope: [todo_core::ids::ListId::from_uuid(uuid::Uuid::from_u128(1))].into(),
         };
         let request = serde_json::to_value(body(&request)).expect("adapter body");
         assert_eq!(request["stream"], true);
@@ -447,6 +448,7 @@ mod tests {
         assert!(
             request.get("max_output_tokens").is_none()
                 && request.get("previous_response_id").is_none()
+                && request.get("list_scope").is_none()
         );
         assert_eq!(request["tools"][0]["type"], "namespace");
         assert_eq!(request["tools"][0]["tools"][0]["name"], "list_lists");

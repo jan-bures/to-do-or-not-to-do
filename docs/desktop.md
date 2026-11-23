@@ -467,9 +467,11 @@ host ID for this pairing is sent as `urn:uuid:<uuid>`.
 This does not sign the owner into To-do or give To-do access to ChatGPT conversations.
 
 Choose a model from the signed-in account's catalog and explicitly enable the assistant in settings.
-The first send asks for permission and names the **All models** lists. The choice is saved for that
-account registration. **Hidden** and **Private only** lists, task notes, and attachments are never
-included. Text you type and the permitted task summaries the assistant reads go directly to OpenAI.
+The first send asks for permission and names the **All models** lists. The approved lists are saved
+for that account registration. A later send asks again if it would share any newly eligible list;
+sharing fewer approved lists does not require new permission. **Hidden** and **Private only** lists,
+task notes, and attachments are never included. Text you type and the permitted task summaries the
+assistant reads go directly to OpenAI.
 Responses use `store: false`; this is not a zero-retention promise. The app does not send chat data
 or credentials through the To-do server, and never switches providers automatically.
 
@@ -481,8 +483,8 @@ that setting. An OpenAI usage failure stops the reply; the app will not retry it
 The `assistant-chatgpt.bin` record is separate from the private server profile. Both are owner-only,
 DPAPI-protected files in the pairing directory. The app renews a token only as needed, saves rotating
 credentials together, and stops using them at sign-out. **Sign out** attempts remote revocation and
-then clears local tokens but retains the account and client mapping for reuse. Unpairing removes the
-local record. If remote revocation is not confirmed, disconnect the app in ChatGPT settings.
+then clears local tokens and sharing permission but retains the account and client mapping for reuse.
+Unpairing removes the local record. If remote revocation is not confirmed, disconnect the app in ChatGPT settings.
 
 The **Continue with ChatGPT** button uses the official logo published in OpenAI's
 [sign-in button guidelines](https://developers.openai.com/siwc/website). The mark is not the To-do

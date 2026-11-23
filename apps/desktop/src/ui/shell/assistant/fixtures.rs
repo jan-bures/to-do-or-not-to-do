@@ -283,7 +283,7 @@ impl ShellView {
                         model: Some("gpt-sample".into()),
                         signed_in: true,
                         plan_allowed: true,
-                        consent: false,
+                        consented_lists: None,
                         welcomed: true,
                     });
                 }
@@ -300,11 +300,23 @@ impl ShellView {
                     }
                 }
                 if name == "ai-chatgpt-consent" {
-                    self.ai.cloud.consent = Some(super::cloud::Consent {
-                        account: "oaiapp_fixture".into(),
-                        prompt: "Summarize this week".into(),
-                        lists: self.shareable_chatgpt_lists(),
-                    });
+                    let access = &mut self.ai.profile.access;
+                    let mut lists: BTreeSet<_> = state
+                        .lists
+                        .keys()
+                        .copied()
+                        .filter(|&id| access.list(&state, id) == ListAccess::AllModels)
+                        .collect();
+                    if let Some(account) = &mut self.ai.cloud.fixture {
+                        account.consented_lists = Some(lists.clone());
+                        access.lists.insert(errands.id, ListAccess::AllModels);
+                        lists.insert(errands.id);
+                        self.ai.cloud.consent = Some(super::cloud::Consent::new(
+                            account.clone(),
+                            "Summarize this week".into(),
+                            (Some(state), lists),
+                        ));
+                    }
                 } else {
                     self.open_ai_settings(window, cx);
                 }

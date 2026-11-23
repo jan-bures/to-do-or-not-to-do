@@ -2,7 +2,7 @@ use super::{Attempt, Error, Secret, Service, Tokens, now};
 use crate::{config::DataDir, platform::dpapi};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs::{File, OpenOptions},
     io::{ErrorKind, Write},
     os::windows::fs::OpenOptionsExt,
@@ -12,6 +12,7 @@ use std::{
     },
 };
 use todo_client::assistant::provider::Model;
+use todo_core::ids::ListId;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
@@ -28,7 +29,12 @@ struct Account {
     name: Option<String>,
     tokens: Option<Tokens>,
     model: Option<String>,
-    consent: bool,
+    // Older builds require this field. Write false so downgrading never grants unscoped access.
+    #[serde(rename = "consent", skip_deserializing)]
+    legacy_consent: bool,
+    /// None also covers legacy records that lacked a list scope. Some(empty) allows chat only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    consented_lists: Option<BTreeSet<ListId>>,
     welcomed: bool,
 }
 
@@ -49,8 +55,25 @@ pub struct AccountView {
     pub model: Option<String>,
     pub signed_in: bool,
     pub plan_allowed: bool,
-    pub consent: bool,
+    pub consented_lists: Option<BTreeSet<ListId>>,
     pub welcomed: bool,
+}
+
+impl AccountView {
+    pub fn covers(&self, lists: &BTreeSet<ListId>) -> bool {
+        covers(self.consented_lists.as_ref(), lists)
+    }
+}
+
+fn covers(consented: Option<&BTreeSet<ListId>>, lists: &BTreeSet<ListId>) -> bool {
+    consented.is_some_and(|consented| lists.is_subset(consented))
+}
+
+impl Account {
+    fn clear_tokens(&mut self) {
+        self.tokens = None;
+        self.consented_lists = None;
+    }
 }
 
 #[derive(Clone)]
@@ -225,7 +248,10 @@ impl Accounts {
             name: identity.name,
             tokens: Some(tokens),
             model: old.and_then(|a| a.model.clone()),
-            consent: old.is_some_and(|a| a.consent),
+            legacy_consent: false,
+            consented_lists: old
+                .filter(|a| a.tokens.is_some())
+                .and_then(|a| a.consented_lists.clone()),
             welcomed: old.is_some_and(|a| a.welcomed),
         };
         let display = view(&client, &account);
@@ -260,8 +286,20 @@ impl Accounts {
         Ok(())
     }
 
-    pub fn consent(&self, id: &str) -> Result<(), Error> {
-        self.edit(id, |a| a.consent = true)
+    pub fn consent(&self, id: &str, lists: BTreeSet<ListId>) -> Result<(), Error> {
+        let mut current = self.record();
+        if current.active.as_deref() != Some(id) {
+            return Err(Error::Expired);
+        }
+        let mut next = current.clone();
+        let account = next.accounts.get_mut(id).ok_or(Error::Expired)?;
+        if !account.tokens.as_ref().is_some_and(Tokens::plan_allowed) {
+            return Err(Error::NoGrant);
+        }
+        account.consented_lists = Some(lists);
+        self.store(&next)?;
+        *current = next;
+        Ok(())
     }
     pub fn welcome(&self, id: &str) -> Result<(), Error> {
         self.edit(id, |a| a.welcomed = true)
@@ -301,12 +339,12 @@ impl Accounts {
     }
 
     fn clear_tokens(&self, id: &str) -> Result<(), Error> {
-        let result = self.edit(id, |a| a.tokens = None);
+        let result = self.edit(id, Account::clear_tokens);
         if result.is_err() {
             // Never re-enable egress from memory after the owner has signed out, even if the
             // protected file couldn't be replaced. The UI reports the failed disk cleanup.
             if let Some(account) = self.record().accounts.get_mut(id) {
-                account.tokens = None;
+                account.clear_tokens();
             }
         }
         result
@@ -324,18 +362,28 @@ impl Accounts {
         &self.0.service
     }
 
-    pub(super) async fn access(&self, id: &str, require_consent: bool) -> Result<Secret, Error> {
+    /// Model discovery needs no list consent. Inference passes its pinned scope, even when empty.
+    pub(super) async fn access(
+        &self,
+        id: &str,
+        inference_scope: Option<&BTreeSet<ListId>>,
+    ) -> Result<Secret, Error> {
         // A completed rotation must save even if the owner cancels the inference that requested
         // it. Sign-out waits on this operation, and close prevents any post-unpair disk write.
         let this = self.clone();
         let id = id.to_owned();
-        tokio::spawn(async move { this.access_serialized(&id, require_consent).await })
+        let inference_scope = inference_scope.cloned();
+        tokio::spawn(async move { this.access_serialized(&id, inference_scope.as_ref()).await })
             .await
             .map_err(|_| Error::Storage)?
     }
 
-    async fn access_serialized(&self, id: &str, require_consent: bool) -> Result<Secret, Error> {
-        self.access_with(id, require_consent, |old| async move {
+    async fn access_serialized(
+        &self,
+        id: &str,
+        inference_scope: Option<&BTreeSet<ListId>>,
+    ) -> Result<Secret, Error> {
+        self.access_with(id, inference_scope, |old| async move {
             self.0.service.refresh(id, &old).await
         })
         .await
@@ -344,7 +392,7 @@ impl Accounts {
     async fn access_with<F, Fut>(
         &self,
         id: &str,
-        require_consent: bool,
+        inference_scope: Option<&BTreeSet<ListId>>,
         refresh: F,
     ) -> Result<Secret, Error>
     where
@@ -359,7 +407,9 @@ impl Accounts {
             .cloned()
             .ok_or(Error::Expired)?;
         let old = account.tokens.ok_or(Error::Expired)?;
-        if !old.plan_allowed() || (require_consent && !account.consent) {
+        if !old.plan_allowed()
+            || inference_scope.is_some_and(|lists| !covers(account.consented_lists.as_ref(), lists))
+        {
             return Err(Error::NoGrant);
         }
         if old.expires > now().saturating_add(90) {
@@ -404,7 +454,7 @@ fn view(id: &str, a: &Account) -> AccountView {
         model: a.model.clone(),
         signed_in: a.tokens.is_some(),
         plan_allowed: a.tokens.as_ref().is_some_and(Tokens::plan_allowed),
-        consent: a.consent,
+        consented_lists: a.consented_lists.clone(),
         welcomed: a.welcomed,
     }
 }
@@ -443,7 +493,8 @@ mod tests {
                     name: None,
                     tokens: Some(tokens("initial-access", "initial-refresh", 0)),
                     model: Some("sample-model".into()),
-                    consent: false,
+                    legacy_consent: false,
+                    consented_lists: None,
                     welcomed: false,
                 },
             );
@@ -515,11 +566,50 @@ mod tests {
             .expect("complete the issued registration");
         assert_eq!(active.id, ISSUED);
         assert!(loaded.record().pending_client.is_none());
-        assert!(!active.consent);
+        assert!(active.consented_lists.is_none());
     }
 
     #[tokio::test]
-    async fn rotation_is_serialized_persisted_and_denied_before_consent() {
+    async fn legacy_consent_does_not_cover_even_an_empty_scope() {
+        let (_temp, data, accounts) = fixture();
+        {
+            let record = accounts.record();
+            let mut legacy = serde_json::to_value(&*record).expect("legacy record fixture");
+            legacy["accounts"][ID]["consent"] = true.into();
+            let plain = Zeroizing::new(serde_json::to_vec(&legacy).expect("serialize legacy"));
+            let sealed = dpapi::seal(&plain, PURPOSE).expect("seal legacy");
+            std::fs::write(data.path().join(FILE), sealed).expect("save legacy");
+        }
+        drop(accounts);
+        let accounts = Accounts::load(data).expect("load legacy");
+        let no_lists = BTreeSet::new();
+        assert!(!accounts.active().expect("legacy account").covers(&no_lists));
+        assert!(matches!(
+            accounts
+                .access_with(ID, Some(&no_lists), |_| async {
+                    panic!("must not refresh")
+                })
+                .await,
+            Err(Error::NoGrant)
+        ));
+        assert!(
+            accounts
+                .access_with(ID, None, |_| async {
+                    Ok(tokens("catalog-access", "catalog-refresh", now() + 3600))
+                })
+                .await
+                .is_ok()
+        );
+        accounts
+            .consent(ID, no_lists.clone())
+            .expect("allow chat only");
+        assert!(accounts.active().expect("account").covers(&no_lists));
+        let list = ListId::from_uuid(Uuid::from_u128(1));
+        assert!(!accounts.active().expect("account").covers(&[list].into()));
+    }
+
+    #[tokio::test]
+    async fn rotation_is_serialized_persisted_and_denied_for_unconsented_lists() {
         let (_temp, data, accounts) = fixture();
         let refreshes = AtomicUsize::new(0);
         let refresh = |old: Tokens| async {
@@ -531,38 +621,66 @@ mod tests {
             tokio::task::yield_now().await;
             Ok(tokens("rotated-access", "rotated-refresh", now() + 3600))
         };
+        let first = ListId::from_uuid(Uuid::from_u128(1));
+        let second = ListId::from_uuid(Uuid::from_u128(2));
+        let original = BTreeSet::from([first]);
+        let expanded = BTreeSet::from([first, second]);
         assert!(matches!(
-            accounts.access_with(ID, true, refresh).await,
+            accounts.access_with(ID, Some(&original), refresh).await,
             Err(Error::NoGrant)
         ));
         assert!(
             Accounts::load(data.clone()).is_err(),
             "second process lease must fail"
         );
-        accounts.consent(ID).expect("persist consent");
+        accounts
+            .consent(ID, original.clone())
+            .expect("persist consent");
+        assert!(matches!(
+            accounts.access_with(ID, Some(&expanded), refresh).await,
+            Err(Error::NoGrant)
+        ));
+        let narrowed = BTreeSet::new();
         let (one, two) = tokio::join!(
-            accounts.access_with(ID, true, refresh),
-            accounts.access_with(ID, true, refresh)
+            accounts.access_with(ID, Some(&original), refresh),
+            accounts.access_with(ID, Some(&narrowed), refresh)
         );
         assert_eq!(one.expect("first token").0.as_str(), "rotated-access");
         assert_eq!(two.expect("second token").0.as_str(), "rotated-access");
         assert_eq!(refreshes.load(Ordering::Relaxed), 1);
         drop(accounts);
         let loaded = Accounts::load(data).expect("reload protected tokens");
-        let record = loaded.record();
-        let account = &record.accounts[ID];
-        assert!(account.consent);
-        assert_eq!(
-            account
-                .tokens
-                .as_ref()
-                .expect("tokens saved")
-                .refresh
-                .as_ref()
-                .expect("refresh saved")
-                .0
-                .as_str(),
-            "rotated-refresh"
+        {
+            let record = loaded.record();
+            let account = &record.accounts[ID];
+            assert_eq!(account.consented_lists.as_ref(), Some(&original));
+            assert_eq!(
+                account
+                    .tokens
+                    .as_ref()
+                    .expect("tokens saved")
+                    .refresh
+                    .as_ref()
+                    .expect("refresh saved")
+                    .0
+                    .as_str(),
+                "rotated-refresh"
+            );
+        }
+        let replacement = BTreeSet::from([second]);
+        loaded
+            .consent(ID, replacement.clone())
+            .expect("replace the consented scope");
+        let active = loaded.active().expect("account");
+        assert!(active.covers(&replacement));
+        assert!(!active.covers(&original));
+        assert!(
+            loaded
+                .access_with(ID, Some(&replacement), |_| async {
+                    panic!("must not refresh")
+                })
+                .await
+                .is_ok()
         );
     }
 
@@ -570,6 +688,9 @@ mod tests {
     async fn sign_out_revokes_then_clears_sealed_tokens_even_if_revocation_fails() {
         let (_temp, data, accounts) = fixture();
         let host = accounts.record().host;
+        let scope = [ListId::from_uuid(Uuid::from_u128(1))].into();
+        accounts.consent(ID, scope).expect("persist consent");
+        accounts.welcome(ID).expect("dismiss welcome");
         let result = accounts
             .sign_out_with(ID, |refresh| async move {
                 assert_eq!(refresh.0.as_str(), "initial-refresh");
@@ -581,12 +702,51 @@ mod tests {
         drop(accounts);
         let loaded = Accounts::load(data).expect("reload signed-out account");
         assert_eq!(loaded.record().host, host);
-        assert!(!loaded.active().expect("registration remains").signed_in);
+        let signed_out = loaded.active().expect("registration remains");
+        assert!(!signed_out.signed_in);
+        assert!(signed_out.consented_lists.is_none());
+        assert!(signed_out.welcomed);
+        let no_lists = BTreeSet::new();
         assert!(matches!(
             loaded
-                .access_with(ID, true, |_| async { panic!("must not refresh") })
+                .access_with(ID, Some(&no_lists), |_| async {
+                    panic!("must not refresh")
+                })
                 .await,
             Err(Error::Expired)
+        ));
+
+        use super::super::{Grant, authorization::Identity};
+        let grant = Grant {
+            client: ID.into(),
+            code: Zeroizing::new("one-time-code".into()),
+            redirect: url::Url::parse("http://127.0.0.1:1455/auth/callback").expect("loopback"),
+            verifier: Zeroizing::new("verifier".into()),
+            nonce: Zeroizing::new("nonce".into()),
+        };
+        let signed_in = loaded
+            .complete_grant(grant, |_| async {
+                Ok((
+                    Identity {
+                        sub: "fixture".into(),
+                        email: None,
+                        name: None,
+                    },
+                    tokens("new-access", "new-refresh", now() + 3600),
+                ))
+            })
+            .await
+            .expect("sign the same account back in");
+        assert!(signed_in.signed_in);
+        assert!(signed_in.welcomed);
+        assert!(!signed_in.covers(&no_lists));
+        assert!(matches!(
+            loaded
+                .access_with(ID, Some(&no_lists), |_| async {
+                    panic!("must not refresh")
+                })
+                .await,
+            Err(Error::NoGrant)
         ));
     }
 }
