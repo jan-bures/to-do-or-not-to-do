@@ -57,6 +57,7 @@ pub struct Palette {
     pub raised: Hsla,
     pub hover: Hsla,
     pub wash: Hsla,
+    pub selection_wash: Hsla,
     pub tint: Hsla,
     pub line: Hsla,
     pub line_strong: Hsla,
@@ -67,6 +68,7 @@ pub struct Palette {
     pub ink_4: Hsla,
     pub accent: Hsla,
     pub check_selected: Hsla,
+    pub selection_check: Hsla,
     pub accent_strong: Hsla,
     pub accent_fill: Hsla,
     pub on_accent: Hsla,
@@ -91,6 +93,15 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// Keep quiet text and the completed checkbox legible on the stronger selection wash.
+    pub fn for_task_row(mut self, bulk_selected: bool) -> Self {
+        if bulk_selected {
+            self.ink_3 = self.ink_2;
+            self.check_selected = self.selection_check;
+        }
+        self
+    }
+
     /// The horizon band and the stars are drawn in the dark slim scene only.
     pub fn night(&self) -> bool {
         self.theme == Theme::Dark
@@ -108,6 +119,7 @@ pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
         raised: color(t.raised),
         hover: color(t.hover),
         wash: color(t.wash),
+        selection_wash: color(t.selection_wash),
         tint: color(t.tint),
         line: color(t.line),
         line_strong: color(t.line_strong),
@@ -118,6 +130,7 @@ pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
         ink_4: color(t.ink_4),
         accent: color(t.accent),
         check_selected: color(t.check_selected),
+        selection_check: color(t.selection_check),
         accent_strong: color(t.accent_strong),
         accent_fill: color(t.accent_fill),
         on_accent: color(t.on_accent),

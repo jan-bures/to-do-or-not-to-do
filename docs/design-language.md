@@ -317,8 +317,10 @@ The mark repeats the actor already named in text. This is a read-only summary, n
   the right.
 - On phones, a 56 dp strip above the single 48 dp composer holds the toast.
 
-**Multi-selection.** A room uses the same `wash` and leading `accent-strong` mark on every selected row,
-with a separate keyboard focus edge on the current row. Desktop and web place the selection count,
+**Multi-selection.** Every selected row gets a tinted fill and a leading `accent-strong` mark. Desktop
+and web use the stronger `selection-wash` in multi-selection, with `ink-2` for quiet text and
+`selection-check` for a checked box. Only the keyboard cursor gets a thin outline, inset from the
+leading mark. Android keeps its existing `wash`. Desktop and web place the selection count,
 actions and clear button in a flat strip above the reserved Undo footer; narrow web lets the controls
 wrap. Android uses a count and Close in the app bar and replaces the composer with touch-sized bulk
 controls. The wide detail column shows a selection summary instead of a task editor. A bulk completion

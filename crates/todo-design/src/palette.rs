@@ -143,6 +143,8 @@ const fn kebab(s: &'static str) -> &'static str {
         b"sun_ink" => "sun-ink",
         b"important_fill" => "important-fill",
         b"check_selected" => "check-selected",
+        b"selection_wash" => "selection-wash",
+        b"selection_check" => "selection-check",
         b"on_strong" => "on-strong",
         b"silhouette_far" => "silhouette-far",
         b"silhouette_near" => "silhouette-near",
@@ -163,6 +165,8 @@ token_struct! {
         hover = h(0.972, 0.010), h(0.226, 0.016);
         /// The selected row, the active step, the quick-add parse strip.
         wash = h(0.952, 0.028), h(0.262, 0.030);
+        /// A stronger wash for members of a multi-selection in the desktop and web lists.
+        selection_wash = h(0.935, 0.038), h(0.333, 0.051);
         /// Highlights for parsed quick-add text, the focus ring, the sunrise mark.
         tint = h(0.930, 0.045), h(0.300, 0.045);
         /// Hairlines between rows and panes.
@@ -184,6 +188,8 @@ token_struct! {
         /// The checked checkbox on a selected (`wash`) row: `accent`, nudged until it meets 3:1 on `wash`. In
         /// light rooms `accent` itself only reaches about 2.8:1 there.
         check_selected = h(0.660, 0.140), h(0.740, 0.105);
+        /// Checkbox fill and keyboard cursor edge on the stronger selection wash (3:1).
+        selection_check = h(0.660, 0.140), h(0.740, 0.105);
         /// Accent text: "due soon", the estimate, the quick-add plus.
         accent_strong = h(0.470, 0.110), h(0.830, 0.090);
         /// Primary button fill.
@@ -292,7 +298,7 @@ pub const LIST_ON_STRONG_DARK: (f64, f64) = (0.24, 0.05);
 /// against any of its backgrounds is below the minimum moves away from them in lightness, in steps of
 /// [`GUARD_STEP`], until it passes. Pairs that already pass, including every pair in the approved contrast table,
 /// are untouched.
-pub const GUARDS: [(&str, &[&str], f64); 16] = [
+pub const GUARDS: [(&str, &[&str], f64); 17] = [
     ("ink", &["pane", "canvas", "wash"], 4.5),
     ("ink-2", &["pane", "sky"], 4.5),
     ("ink-3", &["pane", "canvas", "wash"], 4.5),
@@ -304,6 +310,7 @@ pub const GUARDS: [(&str, &[&str], f64); 16] = [
     ("on-accent", &["accent-fill"], 4.5),
     ("accent", &["pane"], 3.0),
     ("check-selected", &["wash"], 3.0),
+    ("selection-check", &["selection-wash"], 3.0),
     ("control", &["pane", "wash"], 3.0),
     ("danger", &["pane"], 3.0),
     ("arc", &["sky"], 3.0),
@@ -440,13 +447,15 @@ mod tests {
             p.accent.contrast(p.pane) < 3.2,
             "moved only as far as needed"
         );
-        // My Day passes as specified, so nothing moves, except the checked box on a selected row: the
-        // approved accent reaches only about 2.8:1 on `wash`, so that one token is nudged.
+        // My Day passes as specified except for the checked box on the two selection surfaces.
         let guarded = palette(Theme::Light, 65.0);
         let mut raw = Palette::from_specs(Theme::Light, 65.0, 1.0);
         assert!(raw.check_selected.contrast(raw.wash) < 3.0);
         assert!(guarded.check_selected.contrast(guarded.wash) >= 3.0);
+        assert!(raw.selection_check.contrast(raw.selection_wash) < 3.0);
+        assert!(guarded.selection_check.contrast(guarded.selection_wash) >= 3.0);
         raw.check_selected = guarded.check_selected;
+        raw.selection_check = guarded.selection_check;
         assert_eq!(guarded, raw);
     }
 

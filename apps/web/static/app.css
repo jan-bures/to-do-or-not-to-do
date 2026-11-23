@@ -1594,18 +1594,26 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   background: var(--color-hover);
 }
 
-.row.selected {
+.row.selected,
+.handover-task.selected {
   background: var(--color-wash);
 }
 
-.row.selected::before {
+.bulk-selected.selected {
+  --color-ink-3: var(--color-ink-2);
+  --color-check-selected: var(--color-selection-check);
+  background: var(--color-selection-wash);
+}
+
+:is(.row, .handover-task).selected::before {
   content: "";
   position: absolute;
-  left: 0;
+  inset-inline-start: 0;
   top: 0;
   bottom: 0;
   width: var(--selection-bar);
   background: var(--color-accent-strong);
+  pointer-events: none;
 }
 
 .row-important {
@@ -1968,7 +1976,24 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 
 .bulk-tool.danger { color: var(--color-danger-ink); }
 .bulk-tool:not(:disabled):hover { background: var(--color-pane); }
-.bulk-cursor:has(.row-title:focus-visible) { box-shadow: inset 0 0 0 var(--hairline) var(--color-accent); }
+.bulk-cursor :is(.row-title, .next-title, .t-title):focus-visible {
+  outline: none;
+  box-shadow: none;
+}
+
+.bulk-cursor:has(:is(.row-title, .next-title, .t-title):focus-visible)::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  inset-inline-start: var(--bulk-cursor-start, 0px);
+  border: var(--hairline) solid var(--color-selection-check);
+  pointer-events: none;
+}
+
+/* Keep the membership bar intact even when this is also the keyboard cursor. */
+.bulk-cursor.selected {
+  --bulk-cursor-start: calc(var(--selection-bar) + var(--hairline));
+}
 
 @media (max-width: 759px) {
   .bulk-bar { padding: 0 var(--space-4) var(--space-2); gap: 0; }
@@ -2217,18 +2242,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 }
 
 .handover-task {
+  position: relative;
   cursor: pointer;
   overflow: hidden;
   padding-inline: var(--space-2);
 }
 
-.handover-task:hover {
+.handover-task:not(.selected):hover {
   background: var(--color-hover);
-}
-
-.handover-task.selected {
-  background: var(--color-wash);
-  box-shadow: inset var(--selection-bar) 0 var(--color-accent);
 }
 
 .handover-task .check {

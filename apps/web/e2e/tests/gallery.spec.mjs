@@ -58,8 +58,31 @@ for (const scheme of ["light", "dark"]) {
       const rows = page.locator(".rows:not(.completed-rows) .row-title");
       await rows.first().click({ modifiers: ["Control"] });
       await rows.nth(2).click({ modifiers: ["Shift"] });
+      await expect(rows.nth(2)).toBeFocused();
+      await page.keyboard.press("Shift+ArrowUp");
+      await expect(rows.nth(1)).toBeFocused();
+      await page.keyboard.press("Shift+ArrowDown");
+      await expect(rows.nth(2)).toBeFocused();
       await expect(page.locator(".bulk-count")).toHaveText("3 tasks selected");
       await page.mouse.move(0, DESKTOP.height - 1);
+      const selected = page.locator(".row.bulk-selected");
+      await expect(selected).toHaveCount(3);
+      await expect.poll(() => selected.evaluateAll((items) => {
+        // Membership is visible on all three rows, including the two without keyboard focus.
+        const room = items[0].closest(".main");
+        const hex = getComputedStyle(room).getPropertyValue("--color-selection-wash").trim();
+        const channels = hex.match(/[0-9a-f]{2}/gi)?.map((pair) => parseInt(pair, 16));
+        const wash = channels && `rgb(${channels.join(", ")})`;
+        return items.map((item) => ({
+          wash: getComputedStyle(item).backgroundColor === wash,
+          bar: getComputedStyle(item, "::before").width === getComputedStyle(item).getPropertyValue("--selection-bar").trim(),
+          cursor: getComputedStyle(item, "::after").borderWidth !== "0px",
+        }));
+      })).toEqual([
+        { wash: true, bar: true, cursor: false },
+        { wash: true, bar: true, cursor: false },
+        { wash: true, bar: true, cursor: true },
+      ]);
       await shot(page, `multi-select-${scheme}`);
       await page.setViewportSize(PHONE);
       await expect(page.locator(".bulk-count")).toBeVisible();

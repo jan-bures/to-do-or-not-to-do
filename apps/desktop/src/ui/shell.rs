@@ -2596,9 +2596,8 @@ impl ShellView {
     /// counted as "+N", and when the line is narrower still, the mail mark, the step meter and the step
     /// count give way in turn before the chip narrows to its minimum, ending in an ellipsis. The line is
     /// never wider than its column and nothing is clipped, so no descender is either.
-    fn meta(&self, task: &TaskRow, chips: Chips, room: f32, window: &Window) -> Div {
-        let p = &self.palette;
-        let t = self.theme;
+    fn meta(p: &Palette, task: &TaskRow, chips: Chips, room: f32, window: &Window) -> Div {
+        let t = p.theme;
         let with_collection = match chips {
             Chips::None => None,
             Chips::List => Some(false),
@@ -2679,14 +2678,17 @@ impl ShellView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        let p = &self.palette;
-        let t = self.theme;
         let RowStyle {
             selected,
             room,
             look,
             chips,
         } = style;
+        let id = task.id;
+        let bulk_selected = room.is_some() && self.multi.contains(id);
+        let selected = selected || bulk_selected;
+        let p = &self.palette.for_task_row(bulk_selected);
+        let t = self.theme;
         let overdue = matches!(task.due, Due::Overdue(_));
         // The trailing columns keep their places from the right edge, but empty ones to the left of every
         // filled one are left out, so the title runs on into their room instead of stopping short.
@@ -2710,7 +2712,7 @@ impl ShellView {
         }
         title_width -= 2. * desktop::ROW_GAP + component::ICON_BUTTON;
         let meta_width = fit::row_meta_width(room_width, title_width);
-        let meta = self.meta(task, chips, meta_width, window);
+        let meta = Self::meta(p, task, chips, meta_width, window);
         let (meta, compact_meta) = if meta_width > title_width {
             // The trailing columns occupy only the title line. Fit metadata under them when
             // docked detail leaves the room too narrow for the regular layout.
@@ -2728,9 +2730,6 @@ impl ShellView {
         } else {
             (Some(meta), None)
         };
-        let id = task.id;
-        let bulk_selected = room.is_some() && self.multi.contains(id);
-        let selected = selected || bulk_selected;
         let check = match look {
             Some(l) => kit::checkbox_at(
                 p,
@@ -2756,7 +2755,8 @@ impl ShellView {
                     }
                 }))
             });
-        let title = self.struck_title(
+        let title = Self::struck_title(
+            p,
             ty::TASK_TITLE,
             &task.title,
             look.unwrap_or(RowLook::rest(task.done)),
@@ -2912,25 +2912,13 @@ impl ShellView {
                 } else {
                     gpui::Toggled::False
                 })
-                .when(cursor, |row| {
-                    row.child(div().absolute().inset_0().border_1().border_color(p.accent))
-                })
         });
-        if selected {
-            row.bg(p.wash).child(
-                div()
-                    .absolute()
-                    .left_0()
-                    .top(px(-elevation::HAIRLINE))
-                    .bottom(px(-elevation::HAIRLINE))
-                    .w(px(elevation::SELECTION_BAR))
-                    .bg(p.accent_strong),
-            )
-        } else {
-            let hover = p.hover;
-            row.when(room.is_some(), |el| el.hover(move |s| s.bg(hover)))
-                .when(menu_target && room.is_some(), |el| el.bg(hover))
-        }
+        let row = self.task_selection(row, selected, bulk_selected, cursor);
+        let hover = p.hover;
+        row.when(!selected && room.is_some(), |row| {
+            row.hover(move |s| s.bg(hover))
+                .when(menu_target, |row| row.bg(hover))
+        })
     }
 
     /// Records where task `id`'s row is painted (`row_bounds`), without drawing anything.
@@ -2990,8 +2978,7 @@ impl ShellView {
     /// GPUI's own strike-through; part way, the same line again, invisible but for its strike-through,
     /// cut off at `strike` of the line's own width (never the column's), so it lands where the rest
     /// state draws it.
-    fn struck_title(&self, style: ty::TextStyle, title: &SharedString, l: RowLook) -> Div {
-        let p = &self.palette;
+    fn struck_title(p: &Palette, style: ty::TextStyle, title: &SharedString, l: RowLook) -> Div {
         let ink = theme::mix(p.ink, p.ink_3, l.dim);
         let line = || {
             div()
@@ -3136,9 +3123,9 @@ impl ShellView {
                 }))
                 .into_any_element(),
             OutgoingBody::Empty { line, hint } => self.empty_list(line, hint).into_any_element(),
-            OutgoingBody::Handover { tomorrow, top } => {
-                self.tomorrow(tomorrow, Some(*top), cx).into_any_element()
-            }
+            OutgoingBody::Handover { tomorrow, top } => self
+                .tomorrow(tomorrow, Some(*top), window, cx)
+                .into_any_element(),
             OutgoingBody::Plan(weekday) => self
                 .plan_only(weekday.clone(), false, cx)
                 .into_any_element(),
@@ -3174,7 +3161,7 @@ impl ShellView {
         } else if room.key == RoomKey::Trash {
             self.trash_feed(cx)
         } else if let Some(next) = room.handover() {
-            self.tomorrow(next, None, cx).into_any_element()
+            self.tomorrow(next, None, window, cx).into_any_element()
         } else if let Some(weekday) = room.plan_only() {
             self.plan_only(weekday.clone(), true, cx).into_any_element()
         } else if self.shell.row_count() == 0 {
@@ -3528,6 +3515,7 @@ impl ShellView {
         &self,
         next: &Tomorrow,
         outgoing_top: Option<gpui::Pixels>,
+        window: &Window,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let p = &self.palette;
@@ -3548,6 +3536,9 @@ impl ShellView {
         };
         // Picking a task opens it in the detail pane, like a row.
         let selected = self.ui.task;
+        let bulk = |id| live && self.multi.contains(id);
+        let cursor =
+            |id| live && self.multi.cursor() == Some(id) && self.list_focus.is_focused(window);
         let pick = |id: TaskId| {
             cx.listener(
                 move |this: &mut Self, click: &gpui::ClickEvent, window, cx| {
@@ -3565,33 +3556,36 @@ impl ShellView {
             let when = task.due.text().cloned().unwrap_or_default();
             let look = live.then(|| self.motion.row(task.id, self.frame)).flatten();
             let height = component::ICON_BUTTON + space::S1;
-            div()
-                .id(SharedString::from(format!("next-{}", task.id)))
-                .when(
-                    selected == Some(task.id) || live && self.multi.contains(task.id),
-                    |d| self.handover_selected(d),
-                )
-                .when(interactive, |el| {
-                    el.hover(|s| s.bg(p.hover)).on_click(pick(task.id))
-                })
-                .flex_none()
-                .mx(px(desktop::LIST_PAD_X))
-                .h(px(height * look.map_or(1., |l| l.height)))
-                .when_some(look, |el, l| el.overflow_hidden().opacity(l.opacity))
-                .flex()
-                .items_center()
-                .gap(px(space::S3))
-                .border_t_1()
-                .border_color(p.line)
-                .child(self.handover_check(task, look, interactive, cx))
-                .child(self.struck_title(
-                    ty::BODY,
-                    &task.title,
-                    look.unwrap_or(RowLook::rest(task.done)),
-                ))
-                .child(kit::chip(t, &task.list, false))
-                .child(div().flex_1())
-                .child(div().style(ty::DUE).text_color(p.ink_2).child(when))
+            let bulk = bulk(task.id);
+            let selected = selected == Some(task.id) || bulk;
+            let colors = self.palette.for_task_row(bulk);
+            self.task_selection(
+                div().id(SharedString::from(format!("next-{}", task.id))),
+                selected,
+                bulk,
+                cursor(task.id),
+            )
+            .when(interactive && !selected, |el| el.hover(|s| s.bg(p.hover)))
+            .when(interactive, |el| el.on_click(pick(task.id)))
+            .flex_none()
+            .mx(px(desktop::LIST_PAD_X))
+            .h(px(height * look.map_or(1., |l| l.height)))
+            .when_some(look, |el, l| el.overflow_hidden().opacity(l.opacity))
+            .flex()
+            .items_center()
+            .gap(px(space::S3))
+            .border_t_1()
+            .border_color(p.line)
+            .child(self.handover_check(task, look, interactive, bulk, cx))
+            .child(Self::struck_title(
+                &colors,
+                ty::BODY,
+                &task.title,
+                look.unwrap_or(RowLook::rest(task.done)),
+            ))
+            .child(kit::chip(t, &task.list, false))
+            .child(div().flex_1())
+            .child(div().style(ty::DUE).text_color(p.ink_2).child(when))
         };
         let first = &next.first;
         let mark = self.sunrise_mark();
@@ -3603,11 +3597,12 @@ impl ShellView {
             .flatten();
         let (card_paint, card_height) = card_paint(card_look, first.done);
         // It closes from below, as a list row does in its slot: the card keeps its height inside a clip.
-        let card = div()
-            .id("next-first")
-            .when(
-                selected == Some(first.id) || live && self.multi.contains(first.id),
-                |d| self.handover_selected(d),
+        let card = self
+            .task_selection(
+                div().id("next-first"),
+                selected == Some(first.id) || bulk(first.id),
+                bulk(first.id),
+                cursor(first.id),
             )
             .when(interactive, |el| el.on_click(pick(first.id)))
             .flex_none()
@@ -3624,7 +3619,12 @@ impl ShellView {
                     .flex()
                     .flex_col()
                     .gap(px(space::S1))
-                    .child(self.struck_title(ty::NEXT_TITLE, &first.title, card_paint))
+                    .child(Self::struck_title(
+                        &self.palette.for_task_row(bulk(first.id)),
+                        ty::NEXT_TITLE,
+                        &first.title,
+                        card_paint,
+                    ))
                     .child(
                         div()
                             .flex()
@@ -3716,13 +3716,14 @@ impl ShellView {
         task: &TaskRow,
         look: Option<RowLook>,
         interactive: bool,
+        bulk: bool,
         cx: &Context<Self>,
     ) -> Stateful<Div> {
-        let p = &self.palette;
+        let p = &self.palette.for_task_row(bulk);
         let size = component::CHECKBOX - space::S1 / 2.;
         let mark = match look {
-            Some(l) => kit::checkbox_at(p, false, false, size, (l.fill, l.scale, l.tick)),
-            None if task.done => kit::checked(p, false, size),
+            Some(l) => kit::checkbox_at(p, false, bulk, size, (l.fill, l.scale, l.tick)),
+            None if task.done => kit::checked(p, bulk, size),
             None => kit::checkbox(p, false, size),
         };
         let (id, room) = (task.id, self.shell.room.key);

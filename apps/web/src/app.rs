@@ -2184,6 +2184,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             on:contextmenu=move |ev| task_actions::row_menu(c, id, &ev)
             class:overdue=overdue
             class:selected=move || c.row_selected(id)
+            class:bulk-selected=move || c.multi.with(|s| s.contains(id))
             class:bulk-cursor=move || c.multi.with(|s| s.cursor() == Some(id))
             class:with-agent=move || c.columns.with(|cols| cols.agent)
             class:with-priority=move || c.columns.with(|cols| cols.priority)
@@ -2439,6 +2440,8 @@ fn HandoverFirst(row: Row, date: String) -> impl IntoView {
     view! {
         <div class="next-task handover-task" class:done=row.done
             class:selected=move || c.row_selected(id)
+            class:bulk-selected=move || c.multi.with(|s| s.contains(id))
+            class:bulk-cursor=move || c.multi.with(|s| s.cursor() == Some(id))
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || Phase::exiting(phase.get())
             inert=move || phase.get() == Some(Phase::Depart)
@@ -2467,6 +2470,8 @@ fn HandoverRow(row: Row, show_date: bool) -> impl IntoView {
     view! {
         <li class="t-row handover-task" class:done=row.done
             class:selected=move || c.row_selected(id)
+            class:bulk-selected=move || c.multi.with(|s| s.contains(id))
+            class:bulk-cursor=move || c.multi.with(|s| s.cursor() == Some(id))
             class:completing=move || phase.get() == Some(Phase::Hold)
             class:exiting=move || Phase::exiting(phase.get())
             inert=move || phase.get() == Some(Phase::Depart)

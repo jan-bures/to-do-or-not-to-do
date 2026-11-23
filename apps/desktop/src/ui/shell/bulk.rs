@@ -102,7 +102,7 @@ impl ShellView {
                     undo::Action {
                         entity: id.into(),
                         kind: undo::EditKind::Bulk,
-                        target,
+                        targets: vec![target],
                         room: self.shell.room.key,
                     },
                     label.into(),
@@ -329,17 +329,39 @@ impl ShellView {
             .children(label.map(|text| div().style(ty::BODY).text_color(ink).child(text)))
     }
 
-    pub(super) fn handover_selected(&self, row: Stateful<Div>) -> Stateful<Div> {
+    pub(super) fn task_selection(
+        &self,
+        row: Stateful<Div>,
+        selected: bool,
+        bulk: bool,
+        cursor: bool,
+    ) -> Stateful<Div> {
         let p = self.palette;
-        row.relative().bg(p.wash).child(
-            div()
-                .absolute()
-                .left_0()
-                .top_0()
-                .bottom_0()
-                .w(px(elevation::SELECTION_BAR))
-                .bg(p.accent_strong),
-        )
+        row.when(selected, |row| {
+            row.relative()
+                .bg(if bulk { p.selection_wash } else { p.wash })
+                .child(
+                    div()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(elevation::SELECTION_BAR))
+                        .bg(p.accent_strong),
+                )
+        })
+        .when(cursor, |row| {
+            row.relative().child(
+                div()
+                    .absolute()
+                    .inset_0()
+                    .when(selected, |outline| {
+                        outline.left(px(elevation::SELECTION_BAR + elevation::HAIRLINE))
+                    })
+                    .border(px(elevation::HAIRLINE))
+                    .border_color(p.selection_check),
+            )
+        })
     }
 }
 

@@ -182,6 +182,7 @@ fn every_hue_passes() {
             let h = f64::from(h);
             for k in [1.0, 0.85] {
                 let t = palette_scaled(theme, h, k);
+                assert!(t.selection_wash.contrast(t.pane) > t.wash.contrast(t.pane));
                 let pairs = [
                     ("ink/pane", t.ink, t.pane, 4.5),
                     ("ink-2/pane", t.ink_2, t.pane, 4.5),
@@ -210,6 +211,34 @@ fn every_hue_passes() {
                     ("accent-strong/wash", t.accent_strong, t.wash, 4.5),
                     ("accent-strong/tint", t.accent_strong, t.tint, 4.5),
                     ("accent-strong/canvas", t.accent_strong, t.canvas, 3.0),
+                    (
+                        "selection-wash/pane",
+                        t.selection_wash,
+                        t.pane,
+                        if theme == Theme::Dark { 1.30 } else { 1.15 },
+                    ),
+                    ("ink/selection-wash", t.ink, t.selection_wash, 4.5),
+                    ("ink-2/selection-wash", t.ink_2, t.selection_wash, 4.5),
+                    (
+                        "accent-strong/selection-wash",
+                        t.accent_strong,
+                        t.selection_wash,
+                        4.5,
+                    ),
+                    ("control/selection-wash", t.control, t.selection_wash, 3.0),
+                    ("danger/selection-wash", t.danger, t.selection_wash, 3.0),
+                    (
+                        "important-fill/selection-wash",
+                        t.important_fill,
+                        t.selection_wash,
+                        3.0,
+                    ),
+                    (
+                        "selection-check/selection-wash",
+                        t.selection_check,
+                        t.selection_wash,
+                        3.0,
+                    ),
                 ];
                 for (name, fg, bg, target) in pairs {
                     let r = fg.contrast(bg);
