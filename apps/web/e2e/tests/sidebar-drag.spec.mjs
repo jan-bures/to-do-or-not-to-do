@@ -107,6 +107,8 @@ test("touch can move a list onto a collection header in the phone drawer", async
     await expect(group(page, "Osobní").locator(".sidebar-into")).toBeVisible();
     await touch("touchEnd");
     await expect(names(group(page, "Osobní"))).toHaveText(["Osobní", "Domácnost", "Nákupy", "Zdraví", "Planning"]);
+    await page.getByRole("dialog", { name: "Lists" }).getByRole("button", { name: /^Undo/ }).click();
+    await expect(names(group(page, "Work"))).toHaveText(["Work", "Planning", "Finance", "Team"]);
     await w.check();
   } finally {
     await context.close();

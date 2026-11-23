@@ -109,6 +109,7 @@ pub struct Toast {
     id: u64,
     text: String,
     undo: bool,
+    sidebar: bool,
 }
 
 /// Shared UI state and whether it follows the real clock (`false` for fixtures).
@@ -367,7 +368,12 @@ impl Ctx {
     fn show_toast(self, text: String, undo: bool) {
         let id = self.toast_seq.get_untracked() + 1;
         self.toast_seq.set(id);
-        self.toast.set(Some(Toast { id, text, undo }));
+        self.toast.set(Some(Toast {
+            id,
+            text,
+            undo,
+            sidebar: false,
+        }));
         set_timeout(
             move || {
                 if self.toast.get_untracked().is_some_and(|t| t.id == id) {
@@ -1540,6 +1546,7 @@ fn SidebarPane() -> impl IntoView {
                 {navigation}
                 {move || c.new_room.get().map(|kind| view! { <NewRoom kind/> })}
             </div>
+            <div class="sidebar-toast"><ToastView in_drawer=true/></div>
             <div class="side-foot">
                 <NewRoomMenu/>
                 <room_actions::SyncLine/>
@@ -2448,15 +2455,25 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
 }
 
 #[component]
-fn ToastView() -> impl IntoView {
+fn ToastView(#[prop(optional)] in_drawer: bool) -> impl IntoView {
     let c = ctx();
     let has_alert = Memo::new(move |_| {
         c.sync
             .with(|s| s.holding_upgrade || s.read_only || s.local_error.is_some())
     });
-    let toast = Memo::new(move |_| if has_alert.get() { None } else { c.toast.get() });
+    let toast = Memo::new(move |_| {
+        if has_alert.get() {
+            return None;
+        }
+        let drawer = c.drawer.get();
+        c.toast.with(|t| {
+            t.as_ref()
+                .filter(|t| (drawer && t.sidebar) == in_drawer)
+                .cloned()
+        })
+    });
     let reminder = Memo::new(move |_| {
-        if has_alert.get() || toast.with(Option::is_some) {
+        if in_drawer || has_alert.get() || toast.with(Option::is_some) {
             return None;
         }
         let alarm = c.reminder_alerts.first()?;
@@ -2469,7 +2486,9 @@ fn ToastView() -> impl IntoView {
         })
     });
     let dismiss = move || {
-        if c.detail_modal.get_untracked() {
+        if in_drawer {
+            platform::focus("list-drawer");
+        } else if c.detail_modal.get_untracked() {
             platform::focus("task-detail");
         }
         c.toast.set(None);
@@ -2483,7 +2502,7 @@ fn ToastView() -> impl IntoView {
         </span>
         {move || {
             // Another tab waits to upgrade until this one's changes are stored.
-            if c.sync.with(|s| s.holding_upgrade) {
+            if !in_drawer && c.sync.with(|s| s.holding_upgrade) {
                 let e = c.sync.with(|s| s.local_error.clone()).unwrap_or_default();
                 return Some(
                     view! {
@@ -2498,7 +2517,7 @@ fn ToastView() -> impl IntoView {
                 );
             }
             // A newer version took the database over: no more edits until the tab reloads.
-            if c.read_only() {
+            if !in_drawer && c.read_only() {
                 return Some(
                     view! {
                         <div class="toast toast-error toast-read-only" role="alert">
@@ -2513,7 +2532,7 @@ fn ToastView() -> impl IntoView {
                 );
             }
             // A change this browser couldn't store stays on screen until storing works again.
-            if let Some(e) = c.sync.with(|s| s.local_error.clone()) {
+            if !in_drawer && let Some(e) = c.sync.with(|s| s.local_error.clone()) {
                 return Some(
                     view! {
                         <div class="toast toast-error" role="alert" title=format!("Retrying. The browser said: {e}")>
@@ -2538,7 +2557,9 @@ fn ToastView() -> impl IntoView {
                                         <button
                                             class="toast-undo"
                                             on:click=move |_| {
-                                                if c.detail_modal.get_untracked() {
+                                                if in_drawer {
+                                                    platform::focus("list-drawer");
+                                                } else if c.detail_modal.get_untracked() {
                                                     platform::focus("task-detail");
                                                 }
                                                 c.undo();

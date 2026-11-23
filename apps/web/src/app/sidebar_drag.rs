@@ -258,6 +258,12 @@ impl Ctx {
         if !self.submit_undoable(command, label.into(), None) {
             return;
         }
+        // The drawer is modal on narrow screens; keep the Undo action in that focus scope.
+        self.toast.update(|toast| {
+            if let Some(toast) = toast {
+                toast.sidebar = true;
+            }
+        });
         if let Some(id) = destination
             && self.collapsed.with_untracked(|ids| ids.contains(&id))
         {

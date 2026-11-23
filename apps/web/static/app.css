@@ -3533,13 +3533,20 @@ a.source:hover {
   }
 
   .list-foot,
-  .detail-toast:has(.toast) {
+  .detail-toast:has(.toast),
+  .sidebar-toast:has(.toast) {
     min-height: var(--phone-toast-strip);
     padding: 0 var(--space-3) 0 var(--space-2);
   }
 
   .detail-toast:has(.toast) {
     padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  .sidebar-toast:has(.toast) {
+    display: flex;
+    flex: none;
+    align-items: center;
   }
 
   .completed-toggle {
