@@ -87,6 +87,10 @@ import app.todoornot.ui.ActionSheetContent
 import app.todoornot.ui.BottomSheet
 import app.todoornot.push.PushStatus
 import app.todoornot.ui.LocalPushStatus
+import app.todoornot.ui.LocalUpdates
+import app.todoornot.ui.UpdateControls
+import app.todoornot.updates.UpdateManifest
+import app.todoornot.updates.UpdateState
 import app.todoornot.ui.LocalSheetAtEnd
 import app.todoornot.ui.LocalSheetAtRest
 import app.todoornot.ui.LocalSheetWidth
@@ -202,6 +206,37 @@ class GalleryTest {
             MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
                 collapsed = collapsed, motion = motion, hand = hand, switcherFilter = switcherFilter,
                 settingsOpen = settings, roomMenuOpen = roomMenu, reachExpanded = reach)
+        }
+    }
+
+    @Test
+    fun app_update_states() {
+        val update = UpdateManifest(337, "0.1.0-build.337", 12_000_000, "a".repeat(64), "todo-android-0.1.0-build.337.apk", 29, setOf("b".repeat(64)))
+        val checked = 10_000_000L
+        val base = UpdateState(currentVersion = "0.1.0-build.336", checkedAt = checked)
+        val states = listOf(
+            "current" to base.copy(status = "You're up to date."),
+            "downloading" to base.copy(offer = update, progress = 42),
+            "ready" to base.copy(offer = update, ready = true),
+            "error" to base.copy(problem = "The update wasn't signed with a trusted key for this app."),
+            "permission" to base.copy(offer = update, ready = true, permissionNeeded = true),
+            "dock" to base.copy(offer = update, ready = true),
+        )
+        fixtureEngine().use { engine ->
+            val room = state(engine)
+            for ((name, render) in states) for ((posture, device) in listOf("cover" to FOLD7_COVER, "inner" to FOLD7_INNER)) {
+                for (dark in listOf(false, true)) {
+                    shot("updates_${name}_${posture}_${if (dark) "dark" else "light"}", device) {
+                        CompositionLocalProvider(
+                            LocalSheetAtRest provides true,
+                            LocalUpdates provides UpdateControls(render, clock = { checked + 8 * 60_000 }),
+                        ) {
+                            MainScreen(room, Actions.None, dark, wide = device == FOLD7_INNER, server = "https://todo.example.com",
+                                drawerOpen = name != "dock", settingsOpen = name != "dock")
+                        }
+                    }
+                }
+            }
         }
     }
 

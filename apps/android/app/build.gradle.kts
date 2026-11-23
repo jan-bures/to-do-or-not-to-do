@@ -1,4 +1,5 @@
 import com.android.build.api.variant.ApplicationAndroidComponentsExtension
+import java.net.URI
 
 plugins {
     alias(libs.plugins.android.application)
@@ -13,6 +14,27 @@ val repoRoot: File = rootDir.resolve("../..").canonicalFile
 // builds one, for a faster loop on the emulator.
 val androidAbis: List<String> = (findProperty("todo.abis") as String? ?: "arm64-v8a,x86_64").split(',').map(String::trim)
 val minSdkVersion = 29
+val releaseAbi = "arm64-v8a"
+val buildHeight = providers.exec {
+    workingDir(repoRoot)
+    commandLine("git", "rev-list", "--first-parent", "--count", "HEAD")
+}.standardOutput.asText.map { it.trim().toInt().also { count -> require(count in 1..2_100_000_000) } }
+val workspaceToml = providers.fileContents(rootProject.layout.projectDirectory.file("../../Cargo.toml")).asText
+val releaseVersion = workspaceToml.map {
+    requireNotNull(Regex("(?m)^version = \"([0-9]+\\.[0-9]+\\.[0-9]+)\"$").find(it)).groupValues[1]
+}
+val updateFeed = providers.gradleProperty("todo.updateFeed").orElse(workspaceToml.map {
+    requireNotNull(Regex("(?m)^repository = \"([^\"]+)\"$").find(it)).groupValues[1]
+}).map { base ->
+    val value = base.trim().trimEnd('/')
+    if (value.isNotEmpty()) {
+        val uri = URI(value)
+        require(uri.scheme == "https" && uri.host != null && uri.userInfo == null && uri.query == null && uri.fragment == null) {
+            "todo.updateFeed must be an HTTPS repository URL or empty"
+        }
+    }
+    "\"${value.replace("\\", "\\\\").replace("\"", "\\\"")}\""
+}
 
 android {
     namespace = "app.todoornot"
@@ -27,6 +49,7 @@ android {
         targetSdk = 37
         versionCode = 1
         versionName = "0.1.0"
+        buildConfigField("String", "UPDATE_FEED", updateFeed.get())
         // Plain http to a loopback server (the emulator workflow). Off unless a build type turns it on:
         // only `debug` does, so a release build, even one made debuggable, talks HTTPS only.
         buildConfigField("boolean", "ALLOW_LOOPBACK_HTTP", "false")
@@ -35,10 +58,15 @@ android {
     buildTypes {
         debug {
             buildConfigField("boolean", "ALLOW_LOOPBACK_HTTP", "true")
+            ndk.abiFilters.addAll(androidAbis)
         }
         release {
-            isMinifyEnabled = false
-            // Sideloaded only. No signing secrets live in this repository: sign release builds locally.
+            ndk.abiFilters.add(releaseAbi)
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+            // Always unsigned here, including CI. The release script signs with apksigner, which
+            // can attach a rotation lineage (the Gradle signing DSL cannot).
         }
     }
 
@@ -72,7 +100,22 @@ val cargoNdk = tasks.register<CargoNdkTask>("cargoNdkBuild") {
     sources.from(rustSources)
     abis.set(androidAbis)
     platform.set(minSdkVersion)
+    stripSymbols.set(false)
     outputDir.set(layout.buildDirectory.dir("generated/rust/jniLibs"))
+}
+
+val releaseGradleHome = gradle.gradleUserHomeDir
+val releaseSdkDir = extensions.getByType<ApplicationAndroidComponentsExtension>().sdkComponents.sdkDirectory
+val cargoNdkRelease = tasks.register<CargoNdkTask>("cargoNdkReleaseBuild") {
+    description = "Builds a stripped arm64 Rust core for the release APK."
+    workspace.set(repoRoot)
+    sources.from(rustSources)
+    abis.set(listOf(releaseAbi))
+    platform.set(minSdkVersion)
+    stripSymbols.set(true)
+    gradleHome.set(releaseGradleHome)
+    sdkDir.set(releaseSdkDir)
+    outputDir.set(layout.buildDirectory.dir("generated/rust/releaseJniLibs"))
 }
 
 val hostLibDir = repoRoot.resolve("target/debug")
@@ -126,7 +169,14 @@ extensions.getByType<ApplicationAndroidComponentsExtension>().onVariants { varia
         it.addGeneratedSourceDirectory(designResources, GenerateDesignResources::outputDir)
         it.addGeneratedSourceDirectory(launcherIcon, GenerateLauncherIcon::outputDir)
     }
-    variant.sources.jniLibs?.addGeneratedSourceDirectory(cargoNdk, CargoNdkTask::outputDir)
+    val release = variant.buildType == "release"
+    if (release) variant.outputs.forEach { output ->
+        output.versionCode.set(buildHeight)
+        output.versionName.set(releaseVersion.zip(buildHeight) { version, height -> "$version-build.$height" })
+    }
+    variant.sources.jniLibs?.addGeneratedSourceDirectory(
+        if (release) cargoNdkRelease else cargoNdk, CargoNdkTask::outputDir,
+    )
 
     val name = variant.name.replaceFirstChar(Char::uppercase)
     val policy = tasks.register<VerifyCleartextPolicy>("verify${name}CleartextPolicy") {
@@ -192,6 +242,8 @@ dependencies {
     implementation(libs.compose.ui.tooling.preview)
     implementation(libs.activity.compose)
     implementation("com.journeyapps:zxing-android-embedded:4.3.0")
+    // ZXing's AppCompat dependency otherwise resolves an old Fragment with broken ActivityResult support.
+    implementation(libs.fragment)
     implementation(libs.lifecycle.runtime.compose)
     implementation(libs.lifecycle.viewmodel.compose)
     implementation(libs.lifecycle.process)

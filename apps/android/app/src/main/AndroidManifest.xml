@@ -7,6 +7,8 @@
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
     <!-- Reminders: their notifications (asked for after the first reminder is set, on Android 13 and
          later), exact alarms when the owner allows them (else inexact), and setting them again after a
          reboot. -->
@@ -71,6 +73,8 @@
         </receiver>
 
         <receiver android:name=".widget.WidgetTaskReceiver" android:exported="false" />
+        <receiver android:name=".updates.UpdateInstallReceiver" android:exported="false" />
+        <activity android:name=".updates.UpdateInstallActivity" android:exported="false" />
 
         <!-- A reminder's alarm and notification actions (explicit intents from this app), and the system's
              word that alarms must be set again. -->

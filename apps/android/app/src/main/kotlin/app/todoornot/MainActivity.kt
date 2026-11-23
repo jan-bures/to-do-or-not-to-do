@@ -27,8 +27,13 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.Modifier
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -42,6 +47,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.window.core.layout.WindowSizeClass
 import app.todoornot.core.RoomKey
+import app.todoornot.design.TodoTheme
 import app.todoornot.model.DevicePairingModel
 import app.todoornot.model.PairingModel
 import app.todoornot.model.TodoModel
@@ -57,6 +63,13 @@ import app.todoornot.ui.LocalReminderAccess
 import app.todoornot.ui.LocalPairingOwner
 import app.todoornot.ui.LocalScanPairing
 import app.todoornot.ui.MainScreen
+import app.todoornot.ui.LocalUpdates
+import app.todoornot.ui.UpdateControls
+import app.todoornot.ui.UpdatesSheet
+import app.todoornot.ui.LocalSheetWidth
+import app.todoornot.ui.listPaneWidth
+import app.todoornot.updates.SHOW_UPDATES
+import app.todoornot.updates.UpdateMode
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
 import app.todoornot.widget.WIDGET_ADD
@@ -68,6 +81,7 @@ import kotlinx.coroutines.Job
 class MainActivity : ComponentActivity() {
     private val graph get() = (application as TodoApplication).graph
     private var routeJob: Job? = null
+    private var updateRequest by mutableStateOf(0)
     private var composerRoom by mutableStateOf<Pair<TodoModel, RoomKey>?>(null)
 
     /** Android's own question for notifications; whatever the answer, the alarms follow. */
@@ -105,6 +119,10 @@ class MainActivity : ComponentActivity() {
 
     /** A reminder or widget opens a detail; the widget's + opens and focuses the room's real composer. */
     private fun openExternal(intent: Intent?) {
+        if (intent?.action == SHOW_UPDATES) {
+            updateRequest++
+            return
+        }
         routeJob?.cancel()
         composerRoom = null
         val task = intent?.getStringExtra(EXTRA_TASK)
@@ -177,6 +195,26 @@ class MainActivity : ComponentActivity() {
         val h = host
         val ready = h as? Host.Ready
         val ui by m?.ui?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(null) }
+        val update by graph.updates.state.collectAsStateWithLifecycle()
+        val updates = if (graph.updates.enabled) UpdateControls(
+            update,
+            check = { graph.requestUpdate(UpdateMode.CHECK_NOW) },
+            download = { update.offer?.let { graph.requestUpdate(UpdateMode.DOWNLOAD_NOW, it.versionCode) } },
+            install = { update.offer?.let { graph.installUpdate(it.versionCode) } },
+            settings = { runCatching { startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:$packageName"))) } },
+            confirm = { graph.updates.openConfirmation(::startActivity) },
+            dismiss = { update.offer?.let { graph.dismissUpdate(it.versionCode) } },
+            openRequest = updateRequest,
+            opened = { updateRequest = 0 },
+        ) else null
+        var standaloneUpdates by rememberSaveable { mutableStateOf(false) }
+        val standalone = loaded && m == null && h !is Host.Ready
+        LaunchedEffect(standalone, updates?.openRequest) {
+            if (standalone && updates != null && updates.openRequest > 0) {
+                standaloneUpdates = true
+                updates.opened()
+            }
+        }
         val nightHeader by remember(m, ui, wide) { derivedStateOf {
             val s = ui ?: return@derivedStateOf false
             if (s.activity != null || (!wide && s.detail != null)) return@derivedStateOf false
@@ -196,6 +234,7 @@ class MainActivity : ComponentActivity() {
                         LocalPairingOwner provides graph.devicePairing?.takeIf { m.engine === ready?.engine },
                         LocalScanPairing provides ::scanApproval,
                         LocalPushStatus provides (if (screen.status.signedOut) PushStatus() else push),
+                        LocalUpdates provides updates,
                     ) {
                         MainScreen(
                             screen, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
@@ -211,7 +250,16 @@ class MainActivity : ComponentActivity() {
                 !loaded || h is Host.Ready -> Unit // The cold-start window already uses the room's background.
                 else -> {
                     val state by graph.pairing.state.collectAsStateWithLifecycle()
-                    PairingScreen(state, pairingActions(graph.pairing), dark)
+                    CompositionLocalProvider(LocalUpdates provides updates) {
+                        PairingScreen(state, pairingActions(graph.pairing), dark, onOpenUpdates = { standaloneUpdates = true })
+                    }
+                }
+            }
+            if (standalone && standaloneUpdates && updates != null) TodoTheme(dark, "my-day") {
+                BoxWithConstraints(Modifier.fillMaxSize()) {
+                    CompositionLocalProvider(LocalSheetWidth provides listPaneWidth(maxWidth, wide, fold)) {
+                        UpdatesSheet(updates) { standaloneUpdates = false }
+                    }
                 }
             }
         }

@@ -186,6 +186,16 @@ private fun Screen(
             }
         }
         val switcherVisible = switcher || reveal != null
+        val updates = LocalUpdates.current
+        var updatesOpen by rememberSaveable { mutableStateOf(false) }
+        LaunchedEffect(updates?.openRequest) {
+            if (updates != null && updates.openRequest > 0) {
+                switcher = false
+                reveal = null
+                updatesOpen = true
+                updates.opened()
+            }
+        }
         val menu = { switcher = true }
         var roomActionsOpen by rememberSaveable(state.generation) { mutableStateOf(roomMenuOpen || listSettingsOpen) }
         var roomActionsSettings by rememberSaveable(state.generation) { mutableStateOf(listSettingsOpen) }
@@ -208,7 +218,7 @@ private fun Screen(
         }
         var deleteCollection by rememberSaveable { mutableStateOf<String?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
-        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null || detailSheets.page != null ||
+        val sheetOpen = switcherVisible || (updatesOpen && updates != null) || roomActionsOpen || bulkPicker != null || detailSheets.page != null ||
             renaming != null || deleting != null || deleteCollection != null || newCollection || state.unpairing != null
         if (newCollection) OverlayDialog({ newCollection = false }, paneWidth = paneWidth) { overlay ->
             RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); switcher = false } }, overlay::close)
@@ -296,6 +306,7 @@ private fun Screen(
                         composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
                         onListSettings = { roomActionsSettings = true; roomActionsOpen = true }, fullBoard = fullBoard,
                         boardFold = separated, boardInput = boardInput, listWidth = paneWidth,
+                        onOpenUpdates = if (!sheetOpen && (wide || detail == null)) {{ updatesOpen = true }} else null,
                         reachExpanded = reachExpanded, onSwipeRooms = { progress ->
                             if (progress == null && !switcher && reveal != null) returningGesture = true
                             else { returningGesture = false; reveal = progress }
@@ -351,6 +362,7 @@ private fun Screen(
                         onRoomMenu, close = { roomActionsOpen = false },
                         initialPage = if (roomActionsSettings) (state.room.key as? RoomKey.List)?.let { MenuAction.ListSettings(it) } else null)
                     bulkPicker?.let { BulkSelectionPicker(it, state, actions) { bulkPicker = null } }
+                    if (updatesOpen && updates != null) UpdatesSheet(updates) { updatesOpen = false }
                 }
                 if (detail != null && feed == null) CompositionLocalProvider(
                     LocalSheetWidth provides paneWidth?.let { windowWidth - it - gap }, LocalSheetAtEnd provides true,

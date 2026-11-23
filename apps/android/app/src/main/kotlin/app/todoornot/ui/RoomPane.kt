@@ -155,6 +155,7 @@ internal fun RoomPane(
     boardFold: PaneFold? = null,
     boardInput: BoardInput? = null,
     listWidth: Dp? = null,
+    onOpenUpdates: (() -> Unit)? = null,
 ) {
     val r = LocalDesign.current.room
     val room = state.room
@@ -237,6 +238,12 @@ internal fun RoomPane(
             }
             if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
             ToastStrip(state.toast, actions)
+            if (!keyboard && !state.signedOut && state.bulk == null && onOpenUpdates != null &&
+                board?.adding == null && boardMove == null && !lifted
+            ) {
+                val edge = if (fullBoard && listWidth != null) Modifier.width(listWidth) else Modifier
+                LocalUpdates.current?.let { UpdateReadyStrip(it, onOpenUpdates, modifier = edge) }
+            }
             if (state.bulk != null) {
                 BulkStatusStrip(state.bulk.label, left, actions::clearBulk)
                 if (lifted) BottomRoomBar(state, actions, left, onMenu, onRoomMenu, draggingTask = true)

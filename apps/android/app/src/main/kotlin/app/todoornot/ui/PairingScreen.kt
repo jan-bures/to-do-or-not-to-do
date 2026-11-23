@@ -78,7 +78,9 @@ interface PairingActions {
  * passkey. The example address is a placeholder; nothing is filled in.
  */
 @Composable
-fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, fixedRemainingSeconds: Long? = null) {
+fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, fixedRemainingSeconds: Long? = null,
+    onOpenUpdates: (() -> Unit)? = null,
+) {
     // No tasks yet, so nothing to measure: the hills only, no sun (`docs/design-language.md`).
     Welcome("Welcome", "Pair this phone", dark,
         footer = (state as? PairingState.Waiting)?.let { waiting -> { WaitingActions(waiting, actions) } },
@@ -103,6 +105,7 @@ fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, f
             }
             is PairingState.Waiting -> Waiting(state, fixedRemainingSeconds)
         }
+        if (state is PairingState.Entering && onOpenUpdates != null) LocalUpdates.current?.let { UpdateReadyStrip(it, onOpenUpdates) }
     }
 }
 

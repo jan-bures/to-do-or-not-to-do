@@ -1,6 +1,7 @@
 package app.todoornot
 
 import android.content.Context
+import android.content.Intent
 import android.net.ConnectivityManager
 import android.net.Network
 import android.os.Build
@@ -34,6 +35,9 @@ import app.todoornot.session.PrefsKeyValues
 import app.todoornot.session.SessionStore
 import app.todoornot.session.Unpaired
 import app.todoornot.session.signedOut
+import app.todoornot.updates.AndroidUpdates
+import app.todoornot.updates.UpdateMode
+import app.todoornot.updates.UpdateWork
 import app.todoornot.widget.WidgetRefresh
 import android.os.SystemClock
 import app.todoornot.core.ProblemKind
@@ -95,6 +99,23 @@ class AppGraph(private val app: Context) {
 
     internal val widgets = WidgetRefresh(app)
     internal val push = AndroidPush(app)
+    internal val updates = AndroidUpdates(app)
+
+    private fun checkAtStartup() {
+        if (updates.startupDue(System.currentTimeMillis())) UpdateWork.enqueue(app, UpdateMode.AUTOMATIC)
+    }
+
+    internal fun requestUpdate(mode: UpdateMode, version: Long? = null) {
+        if (updates.enabled) UpdateWork.enqueue(app, mode, version)
+    }
+
+    internal fun installUpdate(code: Long) { scope.launch { updates.install(code) } }
+
+    internal fun dismissUpdate(code: Long) { scope.launch { updates.dismiss(code) } }
+
+    internal fun updateInstallResult(intent: Intent, finish: () -> Unit) {
+        scope.launch { try { updates.installationResult(intent) } finally { finish() } }
+    }
 
     /** The reminders' alarms and notifications, kept in line with the synced reminders. */
     val reminders = Reminders(PrefsKeyValues(app, "reminders"), AndroidAlarms(app), debug = { Log.d("Reminders", it) })
@@ -116,6 +137,11 @@ class AppGraph(private val app: Context) {
 
     init {
         NativeInit.ensure(app)
+        if (updates.enabled) UpdateWork.start(app) else UpdateWork.cancel(app)
+        scope.launch {
+            updates.activate()
+            if (foreground) checkAtStartup()
+        }
         scope.launch(Dispatchers.IO) {
             sessions.revocationPending.collectLatest { id ->
                 if (id == null) return@collectLatest
@@ -153,6 +179,7 @@ class AppGraph(private val app: Context) {
         ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
+                checkAtStartup()
                 _model.value?.resume()
                 (host.state.value as? Host.Ready)?.let { PushWork.register(app, it.session.pairingId) }
                 // Notifications may have been allowed in the settings meanwhile: show what is due.

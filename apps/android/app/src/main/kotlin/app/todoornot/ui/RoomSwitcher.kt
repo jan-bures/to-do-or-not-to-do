@@ -498,6 +498,7 @@ internal fun SettingsPage(server: String?, syncing: Boolean, actions: Actions, h
             hand = hand, onHand = onHand,
             push = LocalPushStatus.current.takeIf { server != null },
         )
+        LocalUpdates.current?.let { UpdatesSection(it) }
     }
 }
 

@@ -169,13 +169,15 @@ jobs:
           ./todo-backup --version
 
   android:
-    name: Android app (debug APK, unit and screenshot tests)
+    name: Android app (debug and unsigned release APKs, unit and screenshot tests)
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: apps/android
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 0 # The release version includes the first-parent commit count.
       - name: Install pinned toolchain and the Android targets
         run: |
           rustup show active-toolchain || rustup toolchain install
@@ -196,15 +198,31 @@ jobs:
           NDK_VERSION: 30.0.16248370
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null
-          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "ndk;$NDK_VERSION"
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-37.2" "build-tools;37.0.0" "ndk;$NDK_VERSION"
           test -f "$ANDROID_HOME/ndk/$NDK_VERSION/source.properties"
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/$NDK_VERSION" >> "$GITHUB_ENV"
       # The build logic's own tests (the launcher icon's SVG conversion).
       - run: ./gradlew --no-daemon -p buildSrc test
-      # Debug-signed with the SDK's debug key: no signing secrets.
-      # verifyReleaseCleartextPolicy: the release build type must not allow plain http (unit tests only
-      # run against debug).
-      - run: ./gradlew --no-daemon :app:verifyReleaseCleartextPolicy :app:assembleDebug :app:testDebugUnitTest :app:verifyPaparazziDebug
+      # Debug is signed with the SDK's debug key; R8 and resource shrinking run in the unsigned release build.
+      - run: ./gradlew --no-daemon :app:assembleDebug :app:assembleRelease :app:testDebugUnitTest :app:verifyPaparazziDebug
+      - name: Test and run the public APK privacy scan with a throwaway key
+        shell: pwsh
+        run: |
+          python3 -B scripts/test_scan_release_apk.py
+          if ($LASTEXITCODE -ne 0) { throw 'APK scan tests failed.' }
+          $scratch = Join-Path $env:RUNNER_TEMP ('android-ota-' + [Guid]::NewGuid().ToString('N'))
+          $null = New-Item -ItemType Directory -Path $scratch
+          try {
+              $env:TODO_ANDROID_KEYSTORE = Join-Path $scratch 'test.p12'
+              $env:TODO_ANDROID_KEY_ALIAS = 'ci-test'
+              $env:TODO_ANDROID_STORE_PASSWORD = [Guid]::NewGuid().ToString('N')
+              $env:TODO_ANDROID_KEY_PASSWORD = $env:TODO_ANDROID_STORE_PASSWORD
+              keytool -genkeypair -keystore $env:TODO_ANDROID_KEYSTORE -storetype PKCS12 -alias ci-test `
+                  -keyalg RSA -keysize 2048 -validity 1 -dname 'CN=Throwaway Android CI' -storepass:env TODO_ANDROID_STORE_PASSWORD
+              if ($LASTEXITCODE -ne 0) { throw 'Throwaway key creation failed.' }
+              ./scripts/release-apk.ps1 -BuildTools "$env:ANDROID_HOME/build-tools/37.0.0" `
+                  -UnsignedApk app/build/outputs/apk/release/app-release-unsigned.apk -OutputDir (Join-Path $scratch 'output')
+          } finally { Remove-Item -LiteralPath $scratch -Recurse -Force }
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: android-debug-apk

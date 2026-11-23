@@ -498,16 +498,137 @@ fields above the keyboard in portrait and landscape. Press **Done** in the list-
 the new list opens. Check predictive Back at both outer edges with rows on screen, and open a detail
 sheet unfolded to check it stays clear of the hinge.
 
-CI builds the debug APK and runs the unit and screenshot tests. It uses no signing secrets: the debug APK
-is signed with the SDK's debug key, and the APK is uploaded as a build artifact.
+CI builds the debug and unsigned release APKs and runs the unit and screenshot tests. It also signs a
+copy with a throwaway key to run the public APK privacy scan, then deletes that copy. Only the debug
+APK (signed with the SDK's debug key) is uploaded as a CI artifact. CI never needs release signing secrets.
 
-## Sideloading
+## Sideloading and updates
 
-1. Turn on developer options and USB debugging on the phone.
-2. `adb install -r apps/android/app/build/outputs/apk/debug/app-debug.apk`
+### Build and sign a release
 
-`-r` keeps the app's data, so the pairing survives an update. Uninstalling the app removes the pairing,
-because the Keystore key goes with it.
+`./gradlew :app:assembleRelease` produces `app/build/outputs/apk/release/app-release-unsigned.apk`.
+R8 and resource shrinking remove unused code and resources, with keep rules for the generated UniFFI
+native bridge, JNA and the Rust TLS verifier. The Rust library is built in release mode with symbols
+stripped and build paths remapped. The release is **arm64-v8a only** for modern phones such as the Fold7; debug builds keep
+x86_64 for emulators. Both builds use package `app.todoornot.android`; minSdk is 29, targetSdk is 37.
+The release `versionCode` is the first-parent Git commit count and `versionName` is `<version>-build.<count>`.
+Build from a full checkout of fast-forwarded `main`, not a shallow checkout, an uncommitted tree or a
+branch that may be rewritten. Publish only increasing counts. To undo a bad release, revert on `main`
+and publish the revert as a higher version.
+
+Use Android SDK build-tools 37.0.0 or later. Set `TODO_ANDROID_KEYSTORE`, `TODO_ANDROID_KEY_ALIAS`,
+`TODO_ANDROID_STORE_PASSWORD`, `TODO_ANDROID_KEY_PASSWORD` and optionally `TODO_ANDROID_LINEAGE`
+in the local signing session. Keep keys, passwords and the lineage file outside the checkout; back
+them up securely. With a PKCS#12 keystore, use the store password as the key password. Create the new
+key once (set the password environment variable securely before running `keytool`):
+
+```powershell
+$buildTools = '<sdk>/build-tools/37.0.0'
+$apksigner = Join-Path $buildTools 'apksigner.bat' # 'apksigner' on Linux
+$env:TODO_ANDROID_KEYSTORE = '<offline-signing-dir>/release.p12'
+$env:TODO_ANDROID_KEY_ALIAS = '<release-key-alias>'
+keytool -genkeypair -keystore $env:TODO_ANDROID_KEYSTORE -storetype PKCS12 `
+    -alias $env:TODO_ANDROID_KEY_ALIAS -keyalg RSA -keysize 4096 -validity 10000 `
+    -dname 'CN=To Do Android Release' -storepass:env TODO_ANDROID_STORE_PASSWORD
+```
+
+If migrating earlier debug installs, use the **original debug key that signed those installs**. Compare
+its fingerprint with `apksigner verify --print-certs -v <old-debug.apk>` before rotating. Set
+`TODO_ANDROID_OLD_STORE_PASSWORD` and `TODO_ANDROID_OLD_KEY_PASSWORD` outside the repo, then create
+the lineage **once**:
+
+```powershell
+$env:TODO_ANDROID_LINEAGE = '<offline-signing-dir>/debug-to-release.lineage'
+& $apksigner rotate --out $env:TODO_ANDROID_LINEAGE `
+    --old-signer --ks '<original-debug-keystore>' --ks-key-alias androiddebugkey `
+    --ks-pass env:TODO_ANDROID_OLD_STORE_PASSWORD --key-pass env:TODO_ANDROID_OLD_KEY_PASSWORD `
+    --set-installed-data true --set-rollback false `
+    --new-signer --ks $env:TODO_ANDROID_KEYSTORE --ks-key-alias $env:TODO_ANDROID_KEY_ALIAS `
+    --ks-pass env:TODO_ANDROID_STORE_PASSWORD --key-pass env:TODO_ANDROID_KEY_PASSWORD
+```
+
+From the repository root, run (use a new output directory):
+
+```powershell
+pwsh apps/android/scripts/release-apk.ps1 -BuildTools $buildTools -OutputDir '<release-output-dir>'
+```
+
+The script signs and verifies the already-aligned APK with APK Signature Scheme v3, then writes
+`android-update.json` next to `todo-android-<versionName>.apk`. It does not publish unless you pass `-Publish`. With a lineage, it sets the rotation floor to API 28, so all supported
+phones see the release signer and Android can preserve installed data. Without a lineage the APK is
+suitable for new installs or same-key updates, **not** for replacing the old debug build. Keep using
+the lineage on later releases so phones that missed the first one can still update. Keep the debug
+key out of day-to-day signing; do not use a shared or compromised debug key to establish trust.
+The manifest's certificate digests describe the current APK signer(s); the verified rotation history
+comes from the APK, not the manifest.
+
+### First install or migration
+
+Use the signed APK from your trusted build output. Check its SHA-256 and `apksigner verify --print-certs -v`
+before installation. An older debug APK has no updater, so the first migration still needs one sideload:
+
+```sh
+adb install -r <release-output-dir>/todo-android-<versionName>.apk
+```
+
+Enable developer options and USB debugging to use ADB. A successfully rotated in-place install keeps
+the app's files and Android Keystore key, so the pairing survives. **Do not uninstall** to work around a
+signing error: that removes the pairing and local data. If the original signing key can't be recovered,
+there is no data-preserving migration from that debug install; let all local edits sync first before
+reinstalling and pairing again. An HTTPS pairing continues to work unchanged (a release cannot use a
+loopback HTTP test pairing).
+
+### Use the updater
+
+In **Rooms → Settings → Updates**, see the installed version and when the app last checked.
+The app checks GitHub Releases at startup if it hasn't attempted a check in six hours, and in the
+background on a six-hour WorkManager schedule when connected. Failed network requests back off.
+Checking and downloading don't need a pairing and never send its address, token or other credentials. **Check now** checks without waiting. Newer compatible releases download on unmetered networks;
+**Download now** allows this release on the current connection, including metered networks. Interrupted
+downloads restart with backoff; partial files are not reused. Before installing, the app verifies the
+private APK again against its size, SHA-256, package, version, SDK and current signer or forward
+signing lineage. Android separately verifies the update when it installs it.
+
+A dismissible **Update ready** strip above the bottom dock opens Updates. If notifications are
+allowed, the **App updates** channel also shows one low-priority **Update ready** notification with an
+**Install** action. Installation always follows an explicit tap; save any open edit first. The first
+in-app install opens Android's **Install unknown apps** setting if needed. Allow this app, return and
+tap **Install update** again, then **Continue in Android** to confirm. On Android 12+, when this app
+is already the installer of record it requests an install without a second Android confirmation;
+Android may still require one. WorkManager never installs a package.
+
+### Publish on GitHub Releases
+
+**These APKs are public.** No deployment host, private identity, credentials or local paths may be
+compiled into them. The Rust release build remaps Cargo (`/cargo`), Rustup/sysroot (`/rustc`), workspace
+(`/src`), Gradle and SDK/NDK paths. The signing script checks every decompressed APK entry, including
+native libraries and DEX, for the home path, local username and user-directory prefixes such as
+`C:\Users` and `/home/`. Set `TODO_ANDROID_DENYLIST` to an optional private UTF-8 file with more names,
+paths or other values to reject, one per line. Blank lines and `#` comments are ignored. This is a
+release gate, not a substitute for reviewing resources and certificate subjects. Never upload a
+keystore, signing lineage file or signing passwords.
+
+Run the command above as a dry run first. When you're ready, check out a clean copy of the current
+`origin/main`, sign in to `gh`, and use a new output directory:
+
+```powershell
+pwsh apps/android/scripts/release-apk.ps1 -BuildTools $buildTools -OutputDir '<new-output-dir>' `
+    -Publish -Notes '<public release notes>'
+```
+
+The script refuses a dirty worktree, a stale commit or an existing `v<version>-build.<count>` tag.
+`gh release create` creates the tag at that exact `main` commit and marks the release Latest. The
+assets are the signed APK and an `android-update.json` with `versionCode`, `versionName`, `size`,
+`sha256`, `fileName`, `minSdk` and `signingCertSha256`. Publish only one Android build per version;
+keep its assets available for clients that already read its manifest. A release marked Latest must
+include `android-update.json` or the app won't find an update.
+
+The default feed base is the public `repository` URL from the root `Cargo.toml`. Forks can set
+`-Ptodo.updateFeed=<public-https-repo-url>` or `-Ptodo.updateFeed=` to disable the updater. The app
+uses plain HTTPS GETs, with HTTPS redirects allowed, to `/releases/latest/download/android-update.json`
+and `/releases/download/v<versionName>/todo-android-<versionName>.apk`. It never uses the GitHub API
+or the to-do server for updates. GitHub and the manifest provide distribution, not trust: the APK must
+still match the installed signer or prove a forward rotation to a new signer.
 
 ## Pairing
 
