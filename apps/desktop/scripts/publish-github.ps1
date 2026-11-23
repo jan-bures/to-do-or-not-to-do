@@ -4,7 +4,7 @@
     Builds and scans an unsigned Windows release. Use -Publish to upload it to GitHub.
 .DESCRIPTION
     Use a new output directory. Reads GitHub Releases to find the previous desktop delta base;
-    dry runs never create a release, tag, commit, or asset. Requires gh and Python 3.
+    dry runs never create a release, tag, commit, or asset. Requires gh, Python 3 and OpenSSL 3.
 #>
 [CmdletBinding()]
 param(
@@ -26,6 +26,14 @@ if ($denylist -and (-not (Test-Path -LiteralPath $denylist -PathType Leaf) -or
     throw 'TODO_DESKTOP_DENYLIST must point to a readable file with at least one active pattern.'
 }
 if (-not $denylist) { Write-Warning 'No private denylist configured; this dry run only checks built-in privacy patterns.' }
+$privateKey = $env:TODO_DESKTOP_FEED_KEY
+if ($Publish) {
+    if (-not $privateKey) { throw 'Publishing requires an offline Ed25519 key (TODO_DESKTOP_FEED_KEY).' }
+    $keyPath = [IO.Path]::GetFullPath($privateKey)
+    if ($keyPath.StartsWith($repo + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw 'Keep TODO_DESKTOP_FEED_KEY outside the worktree.'
+    }
+}
 
 $repository = Get-PublicReleaseRepository $repo
 $head = git -C $repo rev-parse HEAD
@@ -38,6 +46,10 @@ if ($LASTEXITCODE -ne 0) { throw 'Cannot read the root workspace version.' }
 $ffi = ($rootMetadata | ConvertFrom-Json).packages | Where-Object { $_.name -ceq 'todo-ffi' }
 $version = Get-DesktopPackageVersion $ffi.version $height # Android uses the root workspace version.
 $manifestName = 'releases.win.json'
+$proofName = 'desktop-update.sig.json'
+$signer = Join-Path $PSScriptRoot 'sign-update-feed.py'
+$keyOptions = @()
+if (-not $Publish -and $env:TODO_DESKTOP_UPDATE_KEYS) { $keyOptions = @('--keys', $env:TODO_DESKTOP_UPDATE_KEYS) }
 $setupName = 'todo-desktop-win-Setup.exe'
 
 # An Android-only Latest is not a delta base. Find the greatest published desktop version,
@@ -57,12 +69,17 @@ $OutputDir = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPS
 if (Test-Path -LiteralPath $OutputDir) { throw 'Use a new output directory for each release.' }
 $null = New-Item -ItemType Directory -Path $OutputDir
 $manifest = Join-Path $OutputDir $manifestName
+$proof = Join-Path $OutputDir $proofName
 $packages = @((Join-Path $OutputDir $setupName), (Join-Path $OutputDir "todo-desktop-$version-full.nupkg"))
 if ($null -ne $previous) {
     $baseName = "todo-desktop-$previous-full.nupkg"
     $baseFile = Join-Path $OutputDir $baseName
-    & gh release download "v$previous" --repo $repository.Target --dir $OutputDir --pattern $manifestName --pattern $baseName
-    if ($LASTEXITCODE -ne 0) { throw 'Cannot download the previous desktop feed and full package.' }
+    & gh release download "v$previous" --repo $repository.Target --dir $OutputDir `
+        --pattern $manifestName --pattern $proofName --pattern $baseName
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot download the previous signed desktop feed and full package.' }
+    & python -B $signer verify "v$previous" $manifest $proof @keyOptions
+    if ($LASTEXITCODE -ne 0) { throw 'The previous desktop feed is not signed by a trusted key.' }
+    Remove-Item -LiteralPath $proof
     $feed = Get-Content -Raw -LiteralPath $manifest | ConvertFrom-Json
     $asset = @($feed.Assets | Where-Object { $_.Version -ceq "$previous" -and $_.FileName -ceq $baseName -and
         $_.Type -ceq 'Full' -and $_.PackageId -ceq 'todo-desktop' })
@@ -77,11 +94,18 @@ if ($null -ne $previous) {
 }
 
 $feedOverride = $env:TODO_DESKTOP_UPDATE_FEED
+$keysOverride = $env:TODO_DESKTOP_UPDATE_KEYS
 try {
-    if ($Publish) { $env:TODO_DESKTOP_UPDATE_FEED = $repository.Url } # Don't use workstation overrides in public artifacts.
+    $env:TODO_DESKTOP_FEED_KEY = $null # The Rust build and packaging tools do not need the key path.
+    if ($Publish) {
+        $env:TODO_DESKTOP_UPDATE_FEED = $repository.Url
+        $env:TODO_DESKTOP_UPDATE_KEYS = $null # Official packages always pin the checked-in public keys.
+    }
     & (Join-Path $PSScriptRoot 'package.ps1') -ReleaseDir $OutputDir -AllowUnmerged:(-not $Publish)
 } finally {
     $env:TODO_DESKTOP_UPDATE_FEED = $feedOverride
+    $env:TODO_DESKTOP_UPDATE_KEYS = $keysOverride
+    $env:TODO_DESKTOP_FEED_KEY = $privateKey
 }
 foreach ($package in $packages) {
     if (-not (Test-Path -LiteralPath $package -PathType Leaf)) {
@@ -89,6 +113,11 @@ foreach ($package in $packages) {
     }
 }
 if ($null -ne $previous) { Remove-Item -LiteralPath $baseFile }
+if ($privateKey) {
+    & python -B $signer sign "v$version" $manifest $proof @keyOptions
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot sign the desktop update feed.' }
+    $packages += $proof # Upload the proof before the well-known manifest becomes visible.
+}
 $scannerArgs = @($OutputDir)
 if ($Publish) { $scannerArgs += '--require-denylist' }
 & python -B (Join-Path $PSScriptRoot 'scan-release-desktop.py') @scannerArgs

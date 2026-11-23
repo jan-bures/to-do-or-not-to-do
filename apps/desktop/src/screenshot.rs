@@ -316,6 +316,10 @@ fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateS
         "updates-ready" | "updates-indicator" => UpdateState::Ready {
             version: "0.1.0-build.147".into(),
         },
+        "updates-unverified" => UpdateState::Failed {
+            kind: updates::Failure::Verify,
+            at: earlier(2),
+        },
         "updates-failed" => UpdateState::Failed {
             kind: updates::Failure::Check,
             at: earlier(2),

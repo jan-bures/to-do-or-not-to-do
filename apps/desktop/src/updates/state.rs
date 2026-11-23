@@ -15,6 +15,7 @@ const RETRY_INTERVALS: [Duration; 3] = [
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     Check,
+    Verify,
     Download,
     Apply,
 }

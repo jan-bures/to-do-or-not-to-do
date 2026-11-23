@@ -163,6 +163,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "updates-ready"
         | "updates-indicator"
         | "updates-failed"
+        | "updates-unverified"
         | "priority-menu"
         | "detail-due-calendar"
         | "repeat-focus"

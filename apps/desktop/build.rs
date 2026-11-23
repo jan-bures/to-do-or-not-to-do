@@ -6,6 +6,7 @@ fn main() {
     println!("cargo:rerun-if-changed=../../assets/brand/generated/todo.ico");
     println!("cargo:rerun-if-changed=../../Cargo.toml");
     println!("cargo:rerun-if-env-changed=TODO_DESKTOP_UPDATE_FEED");
+    println!("cargo:rerun-if-env-changed=TODO_DESKTOP_UPDATE_KEYS");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
@@ -19,6 +20,30 @@ fn main() {
     let feed = std::env::var("TODO_DESKTOP_UPDATE_FEED").unwrap_or_else(|_| repository.to_owned());
     assert!(!feed.contains(['\n', '\r']), "invalid desktop update feed");
     println!("cargo:rustc-env=TODO_DESKTOP_UPDATE_FEED={}", feed.trim());
+
+    let keys_path = std::env::var_os("TODO_DESKTOP_UPDATE_KEYS").map_or_else(
+        || "resources/update-keys.txt".into(),
+        std::path::PathBuf::from,
+    );
+    println!("cargo:rerun-if-changed={}", keys_path.display());
+    let contents =
+        std::fs::read_to_string(keys_path).expect("cannot read desktop update public keys");
+    let keys: Vec<_> = contents
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .collect();
+    assert!(
+        !keys.is_empty()
+            && keys
+                .iter()
+                .all(|key| key.len() == 64 && key.bytes().all(|b| b.is_ascii_hexdigit())),
+        "desktop update keys must be 32-byte Ed25519 public keys in hex"
+    );
+    println!(
+        "cargo:rustc-env=TODO_DESKTOP_VERIFY_KEYS={}",
+        keys.join(" ")
+    );
 
     let var = |name: &str| std::env::var(name).unwrap_or_default();
     let macros = [

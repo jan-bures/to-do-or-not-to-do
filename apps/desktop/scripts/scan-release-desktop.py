@@ -22,6 +22,9 @@ def main():
         if not any(path.name.endswith("-full.nupkg") for path in packages):
             raise ScanFailure("No full package to scan")
         scan(root / "releases.win.json", patterns, label="Windows feed", archive_required=False)
+        proof = root / "desktop-update.sig.json"
+        if proof.is_file():
+            scan(proof, patterns, label="Windows feed signature", archive_required=False)
         for package in packages:
             scan(package, patterns, label="Windows package", forbid_pdb=True)
         scan(root / "todo-desktop-win-Setup.exe", patterns, label="Windows installer", forbid_pdb=True)

@@ -1,14 +1,17 @@
-//! Unsigned Velopack updates come from the public release host. They are staged by a
-//! low-priority worker and applied on restart or before GPUI on the next primary launch.
+//! Signed Velopack updates are staged by a low-priority worker and reapplied only after a
+//! second verification on restart or before GPUI on the next primary launch.
 
+mod release;
 mod state;
 
+use release::{APP_ID, CHANNEL, MAX_FEED, MAX_PROOF, Receipt, Release};
 use state::{Check, Schedule};
 pub use state::{Failure, Snapshot, State};
 
 use semver::Version;
+use sha2::{Digest, Sha256};
 use std::fs::File;
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
@@ -17,15 +20,9 @@ use std::time::{Duration, Instant};
 use todo_core::time::Timestamp;
 use tokio::sync::watch;
 use ureq::tls::{RootCerts, TlsConfig};
-use velopack::bundle::Manifest;
 use velopack::locator::{LocationContext, auto_locate_app_manifest};
-use velopack::sources::{NoneSource, UpdateSource};
-use velopack::{Error, UpdateCheck, UpdateManager, VelopackAsset, VelopackAssetFeed};
-
-const APP_ID: &str = "todo-desktop";
-const CHANNEL: &str = "win";
-const MAX_FEED: u64 = 1024 * 1024;
-const MAX_PACKAGE: u64 = 256 * 1024 * 1024;
+use velopack::sources::NoneSource;
+use velopack::{Error, UpdateManager, VelopackAsset};
 
 const REPOSITORY: &str = env!("TODO_DESKTOP_UPDATE_FEED");
 
@@ -55,6 +52,10 @@ impl ReleaseUrls {
         format!("{}/latest/download/releases.win.json", self.0)
     }
 
+    fn proof(&self, version: &Version) -> String {
+        format!("{}/download/v{version}/desktop-update.sig.json", self.0)
+    }
+
     fn package(&self, asset: &VelopackAsset) -> String {
         // The latest release can change between requests. Asset names and versions have already
         // been validated, and each package lives under its own immutable release tag.
@@ -62,8 +63,8 @@ impl ReleaseUrls {
     }
 }
 
-/// Follow GitHub's HTTPS asset redirects without credentials. Keep bounded reads and validate the
-/// filenames Velopack uses on disk, rather than treating manifest data as arbitrary URLs.
+/// Follow GitHub's HTTPS asset redirects without credentials. Neither transport nor GitHub
+/// authorizes a release: verify a receipt against the compiled keys before touching packages.
 struct Feed {
     urls: ReleaseUrls,
     agent: ureq::Agent,
@@ -125,123 +126,71 @@ fn package_body_timeout(size: u64) -> Duration {
     Duration::from_mins(5) + Duration::from_secs(size.div_ceil(32 * 1024))
 }
 
-fn valid_asset(asset: &VelopackAsset) -> bool {
-    // All fields originate in the feed. Validate before the manager can use a name as a disk path
-    // (including before it calls download_release_entry), and require Velopack's SHA-256 check.
-    let kind = match asset.Type.as_str() {
-        "Full" => "full",
-        "Delta" => "delta",
-        _ => return false,
-    };
-    let Ok(version) = Version::parse(&asset.Version) else {
-        return false;
-    };
-    let Some(height) = version.pre.as_str().strip_prefix("build.") else {
-        return false;
-    };
-    height.parse::<u32>().is_ok()
-        && version.build.is_empty()
-        && asset.PackageId == APP_ID
-        && asset.FileName == format!("{APP_ID}-{version}-{kind}.nupkg")
-        && (1..=MAX_PACKAGE).contains(&asset.Size)
-        && asset.SHA256.len() == 64
-        && asset.SHA256.bytes().all(|b| b.is_ascii_hexdigit())
+fn is_missing(error: &Error) -> bool {
+    matches!(error, Error::Network(error) if matches!(**error, velopack::NetworkError::Http(ureq::Error::StatusCode(404))))
 }
 
 impl Feed {
-    fn latest(&self) -> Result<VelopackAssetFeed, Error> {
-        let response = match self.get(&self.urls.manifest(), Duration::from_secs(30)) {
-            // The repository can have no releases yet, or Latest can be Android-only.
-            Err(Error::Network(error))
-                if matches!(
-                    *error,
-                    velopack::NetworkError::Http(ureq::Error::StatusCode(404))
-                ) =>
-            {
-                return Ok(VelopackAssetFeed { Assets: vec![] });
-            }
-            result => result?,
-        };
-        let mut bytes = Vec::new();
-        response.take(MAX_FEED + 1).read_to_end(&mut bytes)?;
-        self.ensure_running()?;
-        if bytes.len() as u64 > MAX_FEED {
-            return Err(Error::Other("desktop release feed is too large".into()));
+    fn latest(&self) -> Result<Option<String>, Failure> {
+        match self.get(&self.urls.manifest(), Duration::from_secs(30)) {
+            // Latest may be Android-only. A missing proof for an existing feed is different.
+            Err(error) if is_missing(&error) => Ok(None),
+            Err(_) => Err(Failure::Check),
+            Ok(body) => read_text(body, MAX_FEED).map(Some),
         }
-        let feed: VelopackAssetFeed = serde_json::from_slice(&bytes)?;
-        if !feed.Assets.iter().all(valid_asset) {
-            return Err(Error::Other("invalid desktop release feed asset".into()));
-        }
-        Ok(feed)
-    }
-}
-
-impl UpdateSource for Feed {
-    fn get_release_feed(
-        &self,
-        channel: &str,
-        app: &Manifest,
-        _staged_user_id: &str,
-    ) -> Result<VelopackAssetFeed, Error> {
-        if channel != CHANNEL {
-            return Err(Error::Other("unexpected desktop update channel".into()));
-        }
-        let mut feed = self.latest()?;
-        // Publishing includes the previous full entry to identify the one supported delta base.
-        // Older installations skip the inapplicable delta and download the latest full package.
-        if let Some(base) = feed
-            .Assets
-            .iter()
-            .filter(|a| a.Type == "Full")
-            .filter_map(|a| Version::parse(&a.Version).ok())
-            .min()
-            && base == app.version
-            && feed.Assets.iter().filter(|a| a.Type == "Full").count() == 2
-        {
-            return Ok(feed);
-        }
-        feed.Assets.retain(|a| a.Type == "Full");
-        Ok(feed)
     }
 
-    fn download_release_entry(
+    fn proof(&self, version: &Version) -> Result<String, Failure> {
+        match self.get(&self.urls.proof(version), Duration::from_secs(30)) {
+            Err(error) if is_missing(&error) => Err(Failure::Verify),
+            Err(_) => Err(Failure::Check),
+            Ok(body) => read_text(body, MAX_PROOF),
+        }
+    }
+
+    fn download(
         &self,
         asset: &VelopackAsset,
-        local_file: &Path,
-        progress: Option<Sender<i16>>,
-    ) -> Result<(), Error> {
-        if !valid_asset(asset) {
-            return Err(Error::Other(
-                "invalid desktop package name or metadata".into(),
-            ));
-        }
+        file: &mut File,
+        progress: &impl Fn(Option<u8>),
+    ) -> Result<(), Failure> {
         let mut reader = self
-            .get(&self.urls.package(asset), package_body_timeout(asset.Size))?
+            .get(&self.urls.package(asset), package_body_timeout(asset.Size))
+            .map_err(|_| Failure::Download)?
             .take(asset.Size + 1);
-        let mut file = File::create(local_file)?;
         let mut buffer = vec![0; 64 * 1024];
         let mut bytes = 0;
+        let mut hash = Sha256::new();
         let mut reported = 0;
         loop {
-            self.ensure_running()?;
-            let n = reader.read(&mut buffer)?;
+            self.ensure_running().map_err(|_| Failure::Download)?;
+            let n = reader.read(&mut buffer).map_err(|_| Failure::Download)?;
             if n == 0 {
                 break;
             }
-            file.write_all(&buffer[..n])?;
+            file.write_all(&buffer[..n])
+                .map_err(|_| Failure::Download)?;
+            hash.update(&buffer[..n]);
             bytes += n as u64;
-            // Leave completion to Velopack's verification and staging, not the transfer.
-            let percent = (100 * bytes / asset.Size).min(99) as i16;
-            if percent > reported
-                && let Some(progress) = &progress
-            {
-                let _ = progress.send(percent);
+            let percent = (100 * bytes / asset.Size).min(99) as u8;
+            if percent > reported {
+                progress(Some(percent));
                 reported = percent;
             }
         }
-        self.ensure_running()?;
-        Ok(()) // Velopack checks the exact size and hash before staging the file.
+        if !release::matches_bytes(asset, bytes, &hash.finalize()) {
+            return Err(Failure::Verify);
+        }
+        Ok(())
     }
+}
+
+fn read_text(body: impl Read, limit: u64) -> Result<String, Failure> {
+    let bytes = release::read_bounded(body, limit).map_err(|_| Failure::Check)?;
+    if bytes.len() as u64 > limit {
+        return Err(Failure::Verify);
+    }
+    String::from_utf8(bytes).map_err(|_| Failure::Verify)
 }
 
 #[derive(Clone, Debug)]
@@ -262,19 +211,34 @@ struct Connection {
 
 impl Controller {
     pub fn new(enabled: bool) -> Self {
-        if enabled && let Some((manager, marker)) = installed_manager(NoneSource {}) {
-            let state = if ReleaseUrls::new(REPOSITORY).is_some() {
-                pending(&manager, &marker)
-                    .ok()
-                    .flatten()
-                    .map_or(State::Idle, |a| State::Ready { version: a.Version })
-            } else {
+        if enabled && let Some(install) = Installation::locate() {
+            let version = install.manager.get_current_version();
+            let state = if ReleaseUrls::new(REPOSITORY).is_none() {
                 State::Disabled
+            } else {
+                match install.pending() {
+                    Ok(Some(asset)) => State::Ready {
+                        version: asset.Version,
+                    },
+                    Ok(None)
+                        if install
+                            .rejections()
+                            .iter()
+                            .any(|rejected| rejected > &version) =>
+                    {
+                        failed(Failure::Verify)
+                    }
+                    Ok(None) => State::Idle,
+                    Err(rejected) => {
+                        install.discard_pending(rejected.as_ref());
+                        failed(Failure::Verify)
+                    }
+                }
             };
             return Self::with_state(
-                Some(manager.get_current_version_as_string()),
+                Some(version.to_string()),
                 state,
-                Some(marker.with_file_name(".todo-dismissed-update")),
+                Some(install.dir.join(".todo-dismissed-update")),
             );
         }
         Self::with_state(None, State::NotInstalled, None)
@@ -338,22 +302,28 @@ impl Controller {
         let Some(version) = self.snapshot().ready_version().map(str::to_owned) else {
             return false;
         };
-        let ready = installed_manager(NoneSource {}).and_then(|(manager, marker)| {
-            let asset = pending(&manager, &marker).ok().flatten()?;
-            (asset.Version == version).then_some((manager, asset))
-        });
-        if let Some((manager, asset)) = ready {
-            if launch_apply(&manager, asset).is_ok() {
-                return true;
+        let mut failure = Failure::Apply;
+        if let Some(install) = Installation::locate() {
+            match install.pending() {
+                Ok(Some(asset)) if asset.Version == version => {
+                    if launch_apply(&install.manager, asset).is_ok() {
+                        return true;
+                    }
+                    // Velopack didn't launch. Keep the verified package and offer a retry.
+                    self.0.status.send_modify(|s| s.restart_failed = true);
+                    return false;
+                }
+                Err(rejected) => {
+                    install.discard_pending(rejected.as_ref());
+                    failure = Failure::Verify;
+                }
+                Ok(_) => {}
             }
-            // Velopack didn't launch. Keep the package and offer a retry.
-            self.0.status.send_modify(|s| s.restart_failed = true);
-        } else {
-            let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
-            self.0
-                .status
-                .send_modify(|s| s.set(failed(Failure::Apply), worker.is_some()));
         }
+        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        self.0
+            .status
+            .send_modify(|s| s.set(failed(failure), worker.is_some()));
         tracing::warn!("could not start the staged desktop update");
         false
     }
@@ -381,7 +351,7 @@ impl Controller {
                     control.disconnect(&run, failed(Failure::Check));
                     return;
                 }
-                let Some((manager, marker)) = installed_manager(feed) else {
+                let Some(install) = Installation::locate() else {
                     control.disconnect(&run, failed(Failure::Check));
                     return;
                 };
@@ -407,15 +377,27 @@ impl Controller {
                             continue;
                         }
                     }
-                    let result = stage_update(&manager, &marker, |progress| {
-                        control.for_worker(&run, |s| {
-                            let state = State::Downloading { progress };
-                            let changed = s.state != state;
-                            s.set(state, true);
-                            changed
-                        });
-                    });
-                    schedule.finished(check, result.is_ok(), Instant::now());
+                    let result = stage_update(
+                        &feed,
+                        &install.dir,
+                        &install.manager.get_current_version(),
+                        check,
+                        Receipt::verify,
+                        |progress| {
+                            control.for_worker(&run, |s| {
+                                let state = State::Downloading { progress };
+                                let changed = s.state != state;
+                                s.set(state, true);
+                                changed
+                            });
+                        },
+                    );
+                    // Verification failures are not transient; resume the ordinary schedule.
+                    schedule.finished(
+                        check,
+                        result.is_ok() || result == Err(Failure::Verify),
+                        Instant::now(),
+                    );
                     let state = match result {
                         Ok(Some(version)) => State::Ready { version },
                         Ok(None) => State::UpToDate {
@@ -441,7 +423,10 @@ impl Controller {
             stopped: stopped.clone(),
             wake,
         });
-        self.unless_ready(State::Idle, true);
+        self.0.status.send_if_modified(|s| {
+            let state = s.state.clone();
+            set_unless_ready(s, state, true)
+        });
         Some(Worker {
             control: self.clone(),
             stopped,
@@ -498,17 +483,136 @@ fn set_unless_ready(snapshot: &mut Snapshot, state: State, has_worker: bool) -> 
     true
 }
 
-fn installed_manager(source: impl UpdateSource + 'static) -> Option<(UpdateManager, PathBuf)> {
-    let manager = UpdateManager::new(source, None, None).ok()?;
-    if manager.get_is_portable() || manager.get_app_id() != APP_ID {
-        return None;
+struct Installation {
+    manager: UpdateManager,
+    dir: PathBuf,
+}
+
+impl Installation {
+    fn locate() -> Option<Self> {
+        let locator = auto_locate_app_manifest(LocationContext::FromCurrentExe).ok()?;
+        if locator.get_manifest_channel() != CHANNEL {
+            return None;
+        }
+        let dir = locator.get_packages_dir();
+        let manager = UpdateManager::new(NoneSource {}, None, None).ok()?;
+        if manager.get_is_portable() || manager.get_app_id() != APP_ID {
+            return None;
+        }
+        Some(Self { manager, dir })
     }
-    // The manager does not expose its locator; use Velopack's own lookup for the marker too.
-    let locator = auto_locate_app_manifest(LocationContext::FromCurrentExe).ok()?;
-    Some((
-        manager,
-        locator.get_packages_dir().join(".todo-failed-update"),
-    ))
+
+    fn receipt_path(&self) -> PathBuf {
+        self.dir.join(RECEIPT)
+    }
+
+    fn failed_path(&self) -> PathBuf {
+        self.dir.join(FAILED)
+    }
+
+    fn rejections(&self) -> Vec<Version> {
+        read_rejections(&self.dir)
+    }
+
+    // Never let Velopack locate/open a more recent package just because of its filename. Only an
+    // authenticated receipt can name a package, and its bytes must still match at apply time.
+    fn pending(&self) -> Result<Option<VelopackAsset>, Option<Version>> {
+        verified_pending(
+            &self.dir,
+            &self.manager.get_current_version(),
+            Receipt::verify,
+        )
+    }
+
+    fn discard_pending(&self, version: Option<&Version>) {
+        let _ = std::fs::remove_file(self.receipt_path());
+        if let Some(version) = version.filter(|v| **v > self.manager.get_current_version()) {
+            let _ = std::fs::remove_file(self.dir.join(format!("{APP_ID}-{version}-full.nupkg")));
+            reject(&self.dir, version);
+        }
+    }
+}
+
+fn verified_pending(
+    dir: &Path,
+    installed: &Version,
+    verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
+) -> Result<Option<VelopackAsset>, Option<Version>> {
+    let Some(receipt) = read_receipt(&dir.join(RECEIPT)).map_err(|_| None)? else {
+        return Ok(None);
+    };
+    let signed = verify(&receipt).map_err(|_| release::advertised_version(&receipt.manifest))?;
+    if !signed.newer_than(installed)
+        || !is_candidate(
+            &signed.full,
+            read_version_marker(&dir.join(FAILED))
+                .map_err(|_| None)?
+                .as_ref(),
+        )
+    {
+        return Ok(None);
+    }
+    let path = dir.join(&signed.full.FileName);
+    match release::matches_file(&signed.full, &path) {
+        Ok(true) => Ok(Some(signed.full)),
+        Ok(false) => Err(Some(signed.version)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(_) => Err(Some(signed.version)),
+    }
+}
+
+fn read_receipt(path: &Path) -> io::Result<Option<Receipt>> {
+    let file = match File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    // The saved JSON contains escaped copies of both wire documents.
+    let limit = 8 * (MAX_FEED + MAX_PROOF);
+    let bytes = release::read_bounded(file, limit)?;
+    if bytes.len() as u64 > limit {
+        return Err(io::Error::from(io::ErrorKind::InvalidData));
+    }
+    serde_json::from_slice(&bytes)
+        .map(Some)
+        .map_err(io::Error::other)
+}
+
+const RECEIPT: &str = ".todo-signed-update";
+const FAILED: &str = ".todo-failed-update";
+const REJECTIONS: &str = ".todo-rejected-updates";
+const MAX_REJECTIONS: usize = 32;
+
+fn read_rejections(dir: &Path) -> Vec<Version> {
+    File::open(dir.join(REJECTIONS))
+        .ok()
+        .and_then(|file| release::read_bounded(file, 4096).ok())
+        .and_then(|bytes| serde_json::from_slice::<Vec<Version>>(&bytes).ok())
+        .filter(|versions| versions.len() <= MAX_REJECTIONS)
+        .unwrap_or_default()
+}
+
+fn reject(dir: &Path, version: &Version) {
+    let mut versions = read_rejections(dir);
+    if versions.contains(version) {
+        return;
+    }
+    versions.insert(0, version.clone());
+    versions.truncate(MAX_REJECTIONS);
+    if atomic_json(&dir.join(REJECTIONS), &versions).is_err() {
+        tracing::warn!("could not record the rejected desktop update");
+    }
+}
+
+fn atomic_json(path: &Path, data: &impl serde::Serialize) -> io::Result<()> {
+    let dir = path
+        .parent()
+        .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
+    serde_json::to_writer(&mut temp, data).map_err(io::Error::other)?;
+    temp.as_file().sync_all()?;
+    temp.persist(path).map_err(|e| e.error)?;
+    Ok(())
 }
 
 fn read_version_marker(marker: &Path) -> Result<Option<Version>, Error> {
@@ -535,56 +639,82 @@ fn is_candidate(asset: &VelopackAsset, failed: Option<&Version>) -> bool {
         .is_none_or(|failed| Version::parse(&asset.Version).is_ok_and(|version| version > *failed))
 }
 
-fn pending(manager: &UpdateManager, marker: &Path) -> Result<Option<VelopackAsset>, Error> {
-    let failed = read_version_marker(marker)?;
-    Ok(manager
-        .get_update_pending_restart()
-        .filter(|a| is_candidate(a, failed.as_ref())))
-}
-
 fn stage_update(
-    manager: &UpdateManager,
-    marker: &Path,
-    downloading: impl Fn(Option<u8>) + Sync,
+    feed: &Feed,
+    dir: &Path,
+    installed: &Version,
+    check: Check,
+    verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
+    downloading: impl Fn(Option<u8>),
 ) -> Result<Option<String>, Failure> {
-    let failed = read_version_marker(marker).map_err(|_| Failure::Apply)?;
-    if let Some(asset) = manager
-        .get_update_pending_restart()
-        .filter(|a| is_candidate(a, failed.as_ref()))
-    {
-        return Ok(Some(asset.Version));
-    }
-    let check = manager.check_for_updates().map_err(|_| Failure::Check)?;
-    // Do not let a failed package block checking the feed, but do not re-stage it either.
-    let UpdateCheck::UpdateAvailable(update) = check else {
+    let Some(manifest) = feed.latest()? else {
         return Ok(None);
     };
-    if !is_candidate(&update.TargetFullRelease, failed.as_ref()) {
-        return Err(Failure::Apply);
+    let advertised = release::advertised_version(&manifest).ok_or(Failure::Verify)?;
+    if check == Check::Automatic && read_rejections(dir).contains(&advertised) {
+        return Err(Failure::Verify);
     }
-    downloading(None);
-    std::thread::scope(|scope| {
-        let (tx, rx) = mpsc::channel::<i16>();
-        let downloading = &downloading;
-        // Progress is best effort; if the relay can't start, the download still proceeds.
-        let _ = std::thread::Builder::new()
-            .name("todo-update-progress".into())
-            .spawn_scoped(scope, move || {
-                for percent in rx {
-                    if (0..=100).contains(&percent) {
-                        downloading(Some(percent as u8));
-                    }
-                }
-            });
-        manager.download_updates(&update, Some(tx))
-    })
-    .map_err(|_| Failure::Download)?;
-    let asset = manager
-        .get_update_pending_restart()
-        .filter(|a| is_candidate(a, failed.as_ref()))
-        .ok_or(Failure::Download)?;
-    tracing::info!("desktop update staged for next launch");
-    Ok(Some(asset.Version))
+    let result = (|| {
+        let proof = feed.proof(&advertised)?;
+        let receipt = Receipt { manifest, proof };
+        let signed = verify(&receipt).map_err(|_| Failure::Verify)?;
+        if signed.version != advertised {
+            return Err(Failure::Verify);
+        }
+        if !signed.newer_than(installed) {
+            return Ok(None);
+        }
+        let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
+        if !is_candidate(&signed.full, failed.as_ref()) {
+            return Err(Failure::Apply);
+        }
+        downloading(None);
+        stage_verified(feed, dir, &signed, &receipt, &downloading)?;
+        let mut rejections = read_rejections(dir);
+        if let Some(index) = rejections
+            .iter()
+            .position(|version| *version == signed.version)
+        {
+            rejections.remove(index);
+            let _ = atomic_json(&dir.join(REJECTIONS), &rejections);
+        }
+        tracing::info!("desktop update staged for next launch");
+        Ok(Some(signed.full.Version))
+    })();
+    if result == Err(Failure::Verify) {
+        reject(dir, &advertised);
+    }
+    result
+}
+
+fn stage_verified(
+    feed: &Feed,
+    dir: &Path,
+    release: &Release,
+    receipt: &Receipt,
+    progress: &impl Fn(Option<u8>),
+) -> Result<(), Failure> {
+    // Native Velopack delta reconstruction can produce a different ZIP from the original full
+    // package. Stage the signed full bytes directly, without letting download_updates extract
+    // a replacement Update.exe or letting any unauthenticated file qualify as pending.
+    std::fs::create_dir_all(dir).map_err(|_| Failure::Download)?;
+    let mut partial = tempfile::Builder::new()
+        .suffix(".partial")
+        .tempfile_in(dir)
+        .map_err(|_| Failure::Download)?;
+    feed.download(&release.full, partial.as_file_mut(), progress)?;
+    partial
+        .as_file()
+        .sync_all()
+        .map_err(|_| Failure::Download)?;
+    feed.ensure_running().map_err(|_| Failure::Download)?;
+    let dest = dir.join(&release.full.FileName);
+    partial.persist(&dest).map_err(|_| Failure::Download)?;
+    if atomic_json(&dir.join(RECEIPT), receipt).is_err() {
+        let _ = std::fs::remove_file(dest);
+        return Err(Failure::Download);
+    }
+    Ok(())
 }
 
 fn should_apply(asset: &VelopackAsset, restarted: bool, marker: &Path) -> bool {
@@ -614,16 +744,16 @@ pub fn apply_pending(restarted: bool) -> bool {
     if ReleaseUrls::new(REPOSITORY).is_none() {
         return false;
     }
-    let Some((manager, marker)) = installed_manager(NoneSource {}) else {
+    let Some(install) = Installation::locate() else {
         return false;
     };
-    let Some(asset) = manager.get_update_pending_restart() else {
+    let Ok(Some(asset)) = install.pending() else {
         return false;
     };
-    if !should_apply(&asset, restarted, &marker) {
+    if !should_apply(&asset, restarted, &install.failed_path()) {
         return false;
     }
-    match launch_apply(&manager, asset) {
+    match launch_apply(&install.manager, asset) {
         Ok(()) => true,
         Err(e) => {
             tracing::warn!(error = %e, "could not start the staged desktop update");
@@ -735,7 +865,10 @@ mod tests {
             package_body_timeout(32 * 1024 + 1),
             Duration::from_secs(302)
         );
-        assert_eq!(package_body_timeout(MAX_PACKAGE), Duration::from_secs(8492));
+        assert_eq!(
+            package_body_timeout(256 * 1024 * 1024),
+            Duration::from_secs(8492)
+        );
         let urls = ReleaseUrls::new("https://todo.example.com/owner/project").expect("feed URL");
         let feed = Feed::new(urls, Arc::default());
         let config = feed.agent.config();
@@ -789,31 +922,153 @@ mod tests {
     }
 
     #[test]
-    fn asset_names_are_bound_to_the_app_version_and_kind() {
-        let mut asset = VelopackAsset {
-            PackageId: APP_ID.into(),
-            Version: "0.1.0-build.146".into(),
-            Type: "Delta".into(),
-            FileName: "todo-desktop-0.1.0-build.146-delta.nupkg".into(),
-            SHA256: "a".repeat(64),
-            Size: 100,
-            ..Default::default()
+    fn verification_rejections_survive_reopening() {
+        let dir = tempfile::tempdir().expect("packages directory");
+        let version = Version::parse("0.1.0-build.146").expect("version");
+        assert!(read_rejections(dir.path()).is_empty());
+        reject(dir.path(), &version);
+        reject(dir.path(), &version);
+        assert_eq!(read_rejections(dir.path()), [version]);
+    }
+
+    fn serve_update(
+        responses: Vec<(&'static str, u16, Vec<u8>)>,
+    ) -> (Feed, std::thread::JoinHandle<()>) {
+        use std::io::{BufRead, BufReader};
+        use std::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").expect("loopback listener");
+        listener.set_nonblocking(true).expect("nonblocking");
+        let feed = loopback_feed(listener.local_addr().expect("test server address"));
+        let server = std::thread::spawn(move || {
+            for (route, code, body) in responses {
+                let deadline = Instant::now() + Duration::from_secs(3);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((s, _)) => break s,
+                        Err(e)
+                            if e.kind() == io::ErrorKind::WouldBlock
+                                && Instant::now() < deadline =>
+                        {
+                            std::thread::sleep(Duration::from_millis(5))
+                        }
+                        Err(e) => panic!("request for {route} missing: {e}"),
+                    }
+                };
+                stream.set_nonblocking(false).expect("blocking stream");
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(3)))
+                    .expect("read deadline");
+                let mut request = BufReader::new(&mut stream);
+                let mut line = String::new();
+                request.read_line(&mut line).expect("request line");
+                assert_eq!(line, format!("GET {route} HTTP/1.1\r\n"));
+                loop {
+                    line.clear();
+                    if request.read_line(&mut line).expect("header") == 0 || line == "\r\n" {
+                        break;
+                    }
+                }
+                write!(
+                    stream,
+                    "HTTP/1.1 {code} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .expect("response headers");
+                stream.write_all(&body).expect("response body");
+            }
+        });
+        (feed, server)
+    }
+
+    #[test]
+    fn only_verified_full_bytes_are_staged_and_pending_files_are_rehashed() {
+        use ed25519_dalek::{Signer, SigningKey};
+        use serde_json::json;
+
+        const FEED_ROUTE: &str = "/releases/latest/download/releases.win.json";
+        const PROOF_ROUTE: &str = "/releases/download/v0.1.0-build.10/desktop-update.sig.json";
+        const FULL_ROUTE: &str =
+            "/releases/download/v0.1.0-build.10/todo-desktop-0.1.0-build.10-full.nupkg";
+        const PACKAGE: &[u8] = b"fixture package";
+        let dir = tempfile::tempdir().expect("packages directory");
+        let installed = Version::parse("0.1.0-build.9").expect("installed version");
+        let offered = Version::parse("0.1.0-build.10").expect("offered version");
+        let name = "todo-desktop-0.1.0-build.10-full.nupkg";
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let verify = |receipt: &Receipt| receipt.verify_with([key.verifying_key()]);
+        let manifest = json!({"Assets":[{
+            "PackageId":"todo-desktop", "Version":offered.to_string(), "Type":"Full", "FileName":name,
+            "SHA256":hex::encode(Sha256::digest(PACKAGE)), "Size":PACKAGE.len()
+        }]}).to_string();
+        let tag = format!("v{offered}");
+        let proof = json!({"tag":tag,"signature":hex::encode(key.sign(format!("todo-desktop-update-v1\n{tag}\n{manifest}").as_bytes()).to_bytes())}).to_string();
+        let offer = || (FEED_ROUTE, 200, manifest.as_bytes().to_vec());
+        let valid_proof = || (PROOF_ROUTE, 200, proof.as_bytes().to_vec());
+        let check = |requests, current: &Version, mode| {
+            let (feed, server) = serve_update(requests);
+            let result = stage_update(&feed, dir.path(), current, mode, verify, |_| {});
+            server.join().expect("test server");
+            result
         };
-        assert!(valid_asset(&asset));
-        let name = asset.FileName.clone();
-        for bad in [
-            "https://todo.example.com/package.nupkg",
-            "../package.nupkg",
-            r"..\package.nupkg",
-            "todo-desktop-0.1.0-build.146-full.nupkg",
-            "todo-desktop-0.1.0-build.900-delta.nupkg",
-        ] {
-            asset.FileName = bad.into();
-            assert!(!valid_asset(&asset));
+
+        assert_eq!(
+            check(
+                vec![offer(), (PROOF_ROUTE, 404, vec![])],
+                &installed,
+                Check::Automatic
+            ),
+            Err(Failure::Verify)
+        );
+        assert_eq!(
+            check(vec![offer()], &installed, Check::Automatic),
+            Err(Failure::Verify)
+        );
+        assert_eq!(
+            check(vec![offer(), valid_proof()], &offered, Check::Manual),
+            Ok(None)
+        );
+        for bad in [b"fixture tamper!".as_slice(), b"short"] {
+            assert_eq!(
+                check(
+                    vec![offer(), valid_proof(), (FULL_ROUTE, 200, bad.to_vec())],
+                    &installed,
+                    Check::Manual
+                ),
+                Err(Failure::Verify)
+            );
+            assert_eq!(
+                std::fs::read_dir(dir.path()).expect("packages").count(),
+                1,
+                "only the rejection marker may remain"
+            );
         }
-        asset.FileName = name;
-        asset.SHA256.clear();
-        assert!(!valid_asset(&asset));
+
+        let package = dir.path().join(name);
+        std::fs::write(&package, PACKAGE).expect("unsigned legacy pending package");
+        assert!(
+            verified_pending(dir.path(), &installed, verify)
+                .expect("no receipt")
+                .is_none()
+        );
+        assert_eq!(
+            check(
+                vec![offer(), valid_proof(), (FULL_ROUTE, 200, PACKAGE.to_vec())],
+                &installed,
+                Check::Manual
+            ),
+            Ok(Some(offered.to_string()))
+        );
+        assert!(
+            verified_pending(dir.path(), &installed, verify)
+                .expect("receipt verified")
+                .is_some()
+        );
+        std::fs::write(&package, b"fixture tamper!").expect("tamper with staged package");
+        assert_eq!(
+            verified_pending(dir.path(), &installed, verify)
+                .expect_err("pending verification must fail"),
+            Some(offered)
+        );
     }
 
     #[test]
@@ -899,7 +1154,7 @@ mod tests {
             let result = feed.latest();
             server.join().expect("server thread");
             if status == 404 {
-                assert!(result.expect("optional manifest").Assets.is_empty());
+                assert_eq!(result.expect("optional manifest"), None);
             } else {
                 assert!(result.is_err());
             }

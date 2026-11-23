@@ -67,21 +67,22 @@ packaged version; the executable's `--version` still reports the Cargo version.
 
 ### Publish on GitHub Releases
 
-With Python 3 and an authenticated `gh` CLI, run the publisher first without `-Publish`:
+With Python 3, OpenSSL 3 and an authenticated `gh` CLI, run the publisher first without `-Publish`:
 
 ```powershell
 pwsh apps/desktop/scripts/publish-github.ps1 -OutputDir apps/desktop/target/release-dry-run
 ```
 
 The publisher finds the highest previous **desktop** release (even if Latest is Android-only), verifies
-its full package against its manifest, and uses it to build the delta. The first desktop release has no
-delta. For a real release, use a new output directory and pass `-Publish -Notes '<public release notes>'`.
-Publishing requires a clean worktree at the live tip of `origin/main` and an origin matching the root
-`Cargo.toml`. Desktop and Android must agree on the version. Both publish to `v<version>-build.<count>`
-without creating local tags or commits. The first platform creates the release at that commit; the second
-adds its assets to that same release. Desktop uploads Setup.exe, the full package, the delta if available,
-and `releases.win.json`. When adding to an existing release, both publishers upload binaries before their
-manifest. Neither overwrites assets. If a publish fails partway, inspect GitHub before retrying.
+its signature and full package, and uses it to build the delta. The first desktop release has no delta.
+For a real release, use a new output directory and pass `-Publish -Notes '<public release notes>'`.
+Publishing requires a clean worktree at the live tip of `origin/main`, an origin matching the root
+`Cargo.toml`, and the offline signing key. Desktop and Android must agree on the version. Both publish to
+`v<version>-build.<count>` without creating local tags or commits. The first platform creates the release
+at that commit; the second adds its assets to that same release. Desktop uploads Setup.exe, the full
+package, the delta if available, `desktop-update.sig.json` and `releases.win.json`. Both publishers upload
+packages (and the desktop signature) before the manifest. Neither overwrites assets. If a publish fails
+partway, inspect GitHub before retrying.
 
 Prefer publishing both platforms from the same commit. Either order works, and a one-platform release
 can be Latest: if the other platform's manifest returns HTTP 404, that client keeps its installed version
@@ -100,11 +101,40 @@ to a private UTF-8 file with additional values to reject, one per line. Blank li
 ignored. Publishing requires at least one active pattern. Add any one- or two-character local identity
 that needs scanning to this file. Review assets and release notes even if the scan passes.
 
+### Desktop update signing key
+
+Use OpenSSL 3 to create a PKCS#8 Ed25519 key on a trusted signing machine, in an owner-only directory
+outside the checkout. Never put the private PEM or a copy of it in the repo, GitHub, CI, or a release.
+Back it up securely offline. These commands create a new key for a fork or rotation, not a replacement
+for the current production key:
+
+```powershell
+openssl genpkey -algorithm ED25519 -out '<offline-dir>/desktop-feed-private.pem'
+openssl pkey -in '<offline-dir>/desktop-feed-private.pem' -pubout -out '<offline-dir>/desktop-feed-public.pem'
+python -B apps/desktop/scripts/sign-update-feed.py export-public '<offline-dir>/desktop-feed-public.pem'
+```
+
+The last command prints **only** the public key, as 64 hex digits. Add it on a new line in
+[`apps/desktop/resources/update-keys.txt`](../apps/desktop/resources/update-keys.txt). The app compiles in
+that file's non-comment lines. Forks can set `TODO_DESKTOP_UPDATE_KEYS` at build time to a different
+public key list in the same format. `-Publish` uses the checked-in list, never the build override.
+On the signing machine, verify the reviewed source commit and build tools independently before running
+any repository script with access to the key. Set `TODO_DESKTOP_FEED_KEY` in the publishing session to
+the **path** of the offline private PEM. The publisher signs only with a key that matches a bundled pin. With the variable set, a dry run also signs
+and verifies the proof; without it the dry run just builds and scans. A dry run never uploads assets.
+
+For rotation, first publish a bridge build that includes **both** public keys, signing the bridge with
+the old private key. Wait for installed clients to take the bridge before signing later releases with the
+new key. After that, remove the old key in a release signed by the new key. A client that misses the bridge
+cannot take a new-key update: share the trusted bridge or a verified installer out of band. Do not rotate
+through a compromised signing key. Recover with a separately verified installer in that case.
+
 ### Transition from the authenticated server feed
 
-Publish the first GitHub-enabled Windows build on **both** GitHub and the existing paired server's
-`/releases` feed. Older installed clients keep using the server until they install that build; the new
-build switches to GitHub without changing their pairing. Keep the existing `[releases]` section and
+Publish the first GitHub-enabled Windows build, **with the verifier and production public key already
+compiled in**, on both GitHub and the existing paired server's `/releases` feed. Older installed clients
+keep using the trusted server until they install that build; the new build switches to the independently
+signed GitHub feed without changing their pairing. Keep the existing `[releases]` section and
 restricted write access on the legacy release directory. Transfer the scanned packages, manifest and
 Setup.exe to the server over your trusted SSH transport. Use
 [`deploy/linux/publish-desktop-release.py`](../deploy/linux/publish-desktop-release.py) to install them
@@ -130,14 +160,24 @@ five minutes, thirty minutes, then six hours. Downloads do not interrupt normal 
 
 The build reads the root `Cargo.toml` repository URL by default. Forks can set the build-time
 `TODO_DESKTOP_UPDATE_FEED` to their public HTTPS repository base, or to an empty value to disable updates.
-The public publisher always uses the repository default. The updater uses a plain HTTPS Velopack source:
-it reads `/releases/latest/download/releases.win.json` and downloads full or delta packages from
-`/releases/download/v<version>/<filename>`. Pinning each download to its tag avoids a race when Latest
-changes after the manifest GET and lets older assets stay under their original tags. Unlike Velopack's
-GitHub API source, this uses ordinary asset URLs with no API rate limit or access token. Windows verifies
-HTTPS certificates and the source follows only HTTPS redirects. No request uses the server address,
-credentials or pairing. Because the packages are unsigned, GitHub release write access can deliver
-executable code to every installed client. HTTPS and feed hashes are not a substitute for code signing.
+The public publisher always uses the repository default. The updater reads
+`/releases/latest/download/releases.win.json`, then fetches `desktop-update.sig.json` and the package from
+`/releases/download/v<version>/<filename>`. Tag-specific downloads still work if Latest changes after the
+manifest GET. Unlike Velopack's GitHub API source, ordinary asset URLs need no API calls or access token.
+Windows verifies HTTPS certificates and the source follows only HTTPS redirects. No request uses the server
+address, credentials or pairing.
+
+The proof signs `todo-desktop-update-v1`, a newline, the tag, a newline, and the exact bytes of
+`releases.win.json`, including the versions and the SHA-256 and size of every full and delta package.
+The app verifies the proof against its pinned keys and only accepts a newer version. It checks the size
+and SHA-256 before staging, then checks the saved proof and package again before asking Velopack to apply
+it. Current clients download the signed full package: Velopack's native delta reconstruction does not
+produce a byte-identical full nupkg. The publisher still produces and signs the delta metadata.
+A signature or checksum failure stages nothing and shows **Update couldn’t be verified**. The app skips
+automatic retries for recently rejected versions (including after restart); **Check now** can retry an
+explicitly selected check after a problem is corrected. A compromised GitHub account can withhold releases
+but cannot authorize new code for an existing installation. Setup.exe is still unsigned and is not covered
+by the OTA signature; verify its hash against an independently trusted build before the first install.
 
 After pairing, **Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
 the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately
@@ -264,7 +304,7 @@ event stream, the offline outbox and reconnecting with backoff are the client's;
 its synchronous `view`, `submit` and `status` and awaits its change signal, coalesced to one frame. A
 command applies to the view at once and is queued for the server; one the domain refuses shows a message in
 the status bar. Attachments upload and download on the runtime too. A 401 from sync, Activity, a download, an upload or
-an update check marks the pairing as signed out. It stays signed out when reopened offline; the
+a sync request marks the pairing as signed out. It stays signed out when reopened offline; the
 marker is separate from the database, so recovery doesn't clear it or discard any unsent edits.
 
 **Startup.** A loader thread reads the config, unseals the token and opens the cache while GPUI sets up
@@ -857,7 +897,7 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 composer, the settings page, the full board, and the board with the collapsed Done rail beside Detail.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
 menu and the detail pane's priority picker. `updates-up-to-date`, `updates-checking`, `updates-downloading`,
-`updates-ready`, `updates-failed` and `updates-disabled` show the Updates page without checking a real feed; `updates-indicator`
+`updates-ready`, `updates-failed`, `updates-unverified` and `updates-disabled` show the Updates page without checking a real feed; `updates-indicator`
 shows the ready control in the sidebar with Settings closed. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
 calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected

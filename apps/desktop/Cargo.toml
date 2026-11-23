@@ -58,7 +58,10 @@ raw-window-handle = "0.6"
 tray-icon = "0.21"
 # Keep the Rust updater and the vpk tool in scripts/package.ps1 on the same release.
 velopack = { version = "=1.2.161", features = ["public-utils"] }
-semver = "1"
+semver = { version = "1", features = ["serde"] }
+ed25519-dalek = { version = "2.2", default-features = false, features = ["fast", "zeroize"] }
+hex = "0.4"
+sha2 = "0.10"
 ureq = { version = "3.5", default-features = false, features = ["rustls", "platform-verifier"] }
 windows-registry = "0.6"
 # Reminder toasts (WinRT `ToastNotification`) and the app's AUMID. The same release and features as the

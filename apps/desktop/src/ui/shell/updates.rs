@@ -116,6 +116,7 @@ impl ShellView {
             State::Failed { kind, at } => {
                 let title = match kind {
                     Failure::Check => "Couldn’t check for updates",
+                    Failure::Verify => "Update couldn’t be verified",
                     Failure::Download => "Couldn’t prepare the update",
                     Failure::Apply => "Couldn’t apply the update",
                 };

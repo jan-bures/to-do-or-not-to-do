@@ -98,6 +98,9 @@ jobs:
       - run: ./scripts/test-package-version.ps1
       - run: ../../scripts/test-github-release.ps1
       - run: python -B scripts/test_scan_release_desktop.py
+      - name: Test signed feeds with throwaway Ed25519 keys
+        shell: bash
+        run: python -B scripts/test_sign_update_feed.py
       # Keep packages outside the build cache as well as out of release artifacts.
       - name: Build and scan the unsigned installer and packages
         run: |

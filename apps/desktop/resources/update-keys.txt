@@ -1,0 +1,2 @@
+# Trusted Ed25519 public keys for Windows release feeds, one raw 32-byte key in hex per line.
+27c6b186cd5439c36870d12adb09bde7a6da44e747aa3a36752829f6e2148e2a
