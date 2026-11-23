@@ -139,7 +139,7 @@ HTTPS certificates and the source follows only HTTPS redirects. No request uses 
 credentials or pairing. Because the packages are unsigned, GitHub release write access can deliver
 executable code to every installed client. HTTPS and feed hashes are not a substitute for code signing.
 
-**Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
+After pairing, **Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
 the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately
 when no check, download or staged update is pending. It does not move the next automatic check or change its backoff.
 Development builds do not check for updates. Errors are shown without the feed address or credentials.

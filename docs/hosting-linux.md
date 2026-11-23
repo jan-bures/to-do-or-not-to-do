@@ -26,7 +26,7 @@ Every name below is a placeholder: `<project-id>`, `<zone>`, `<instance>`, `todo
 |---|---|---|
 | `/opt/todo/releases/<version>-<hash>/` | root, 0755 | One directory per release: `todo-server`, `todo-backup`, `web/`, `SHA256SUMS`. The hash in the name covers both binaries and the web files. The current and previous release and three older ones are kept. |
 | `/opt/todo/current` | root | A symlink to the running release. A deploy switches it with one atomic rename. The units run the binaries through it and the server reads `/opt/todo/current/web` through it. |
-| `/opt/todo/desktop-releases/` | root, 0755 | Optional private Windows desktop feed. Published independently of the Linux release; see [desktop updates](desktop.md#enable-and-publish-the-private-feed). |
+| `/opt/todo/desktop-releases/` | root, 0755 | Optional legacy Windows desktop feed for the [GitHub Releases transition](desktop.md#transition-from-the-authenticated-server-feed). |
 | `/usr/local/bin/todo-server`, `todo-backup` | root | Symlinks to `/opt/todo/current/`, for running the tools by hand. |
 | `/opt/todo/deploy-in-progress` | root, 0600 | Exists only while a deploy is unfinished. See [An interrupted deploy](#an-interrupted-deploy). |
 | `/opt/todo/deploy.lock` | root | Held by the deploy or recovery that is running, so only one runs at a time. |

@@ -58,7 +58,8 @@ function Build-PublicBinary {
         }
     }
     # rustc uses the last matching remap. Cargo's encoded flags preserve paths with spaces.
-    $flags = $spellings.Keys | Sort-Object { $_.Length } | ForEach-Object { "--remap-path-prefix=$_=$($spellings[$_])" }
+    $flags = $spellings.Keys | Sort-Object { $_.Length }, { $_ } -CaseSensitive |
+        ForEach-Object { "--remap-path-prefix=$_=$($spellings[$_])" }
     $previousFlags = $env:CARGO_ENCODED_RUSTFLAGS
     $previousStrip = $env:CARGO_PROFILE_RELEASE_STRIP
     $previousDebug = $env:CARGO_PROFILE_RELEASE_DEBUG
@@ -115,7 +116,7 @@ try {
         # install` then fails on the leftovers. Start from an empty tool directory.
         if (Test-Path -LiteralPath $toolDir) { Remove-Item -LiteralPath $toolDir -Recurse -Force }
         dotnet tool install vpk --tool-path $toolDir --version $vpkVersion
-        if ($LASTEXITCODE -ne 0) { throw "Installing vpk failed ($LASTEXITCODE). Install the .NET 8 SDK." }
+        if ($LASTEXITCODE -ne 0) { throw "Installing vpk failed ($LASTEXITCODE). Install a .NET SDK compatible with the pinned vpk tool." }
     }
 
     $templates = Join-Path $toolDir ".store/vpk/$vpkVersion/vpk/$vpkVersion/vendor"
