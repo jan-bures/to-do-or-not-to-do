@@ -622,6 +622,272 @@ pub fn state() -> State {
     b.state
 }
 
+/// The desktop Board's sample renovation, with the same card order and date spans.
+#[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
+pub fn workflow_state() -> State {
+    use WorkflowStatus::{Backlog, InProgress, Todo};
+    use todo_core::{
+        command::ListFeaturesPatch,
+        model::{ListView, WorkflowStatus},
+    };
+    let mut b = Builder {
+        state: State::new(),
+        at: at("2026-11-01T08:00:00Z"),
+        owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
+    };
+    for (id, name, hue) in [(10, "Home", "fern"), (11, "Work", "lagoon")] {
+        b.run(Command::CreateCollection {
+            id: coll(id),
+            name: name.into(),
+            color: Some(hue.into()),
+            placement: Placement::Last,
+        });
+    }
+    for (id, collection, name, hue) in [
+        (40, 10, "Home renovation", "clay"),
+        (41, 10, "Groceries", "teal"),
+        (42, 11, "Q4 Launch", "azure"),
+        (43, 11, "Admin", "cornflower"),
+    ] {
+        b.run(Command::CreateList {
+            id: list(id),
+            name: name.into(),
+            collection: Some(coll(collection)),
+            color: Some(hue.into()),
+            placement: Placement::Last,
+        });
+    }
+    b.run(Command::UpdateList {
+        id: list(40),
+        name: None,
+        color: None,
+        features: Some(ListFeaturesPatch {
+            workflow: Some(true),
+            timeline: Some(true),
+            default_view: Some(ListView::Board),
+        }),
+    });
+    for (n, name) in [
+        "hallway",
+        "bathroom",
+        "permits",
+        "materials",
+        "lighting",
+        "carpentry",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        b.run(Command::CreateTag {
+            id: tag(n as u128 + 1),
+            name: name.into(),
+            color: None,
+        });
+    }
+    b.at("2026-11-15T08:00:00Z");
+    let dates = |d: &str| d.parse::<Date>().ok();
+    for (n, title, stage, start, due, priority, tags) in [
+        (
+            101,
+            "Strip wallpaper and prime hallway walls",
+            InProgress,
+            "2026-11-19",
+            "2026-11-23",
+            Priority::High,
+            &[1][..],
+        ),
+        (
+            102,
+            "Pick grout colour for bathroom tiles",
+            InProgress,
+            "",
+            "2026-11-20",
+            Priority::None,
+            &[2],
+        ),
+        (
+            103,
+            "Vyřídit ohlášení drobných stavebních úprav na úřadě",
+            InProgress,
+            "2026-11-20",
+            "2026-11-26",
+            Priority::None,
+            &[3],
+        ),
+        (
+            104,
+            "Order matte oak flooring samples",
+            Todo,
+            "2026-11-23",
+            "2026-11-25",
+            Priority::Normal,
+            &[4],
+        ),
+        (
+            105,
+            "Confirm electrician visit for kitchen outlets",
+            Todo,
+            "",
+            "2026-11-24",
+            Priority::High,
+            &[],
+        ),
+        (
+            106,
+            "Measure bathroom vanity niche and mirror",
+            Todo,
+            "2026-11-26",
+            "2026-11-27",
+            Priority::None,
+            &[2],
+        ),
+        (
+            107,
+            "Compare kitchen pendant lights",
+            Backlog,
+            "",
+            "",
+            Priority::None,
+            &[5],
+        ),
+        (
+            108,
+            "Get quote for hallway built-in wardrobe",
+            Backlog,
+            "2026-12-03",
+            "2026-12-07",
+            Priority::None,
+            &[6],
+        ),
+    ] {
+        let mut draft = NewTask::new(task(n), list(40), title);
+        draft.status = stage;
+        draft.start_date = dates(start);
+        draft.due = dates(due);
+        draft.priority = priority;
+        draft.my_day = matches!(n, 101 | 102 | 105).then(|| day(21));
+        draft.tags = tags.iter().copied().map(tag).collect();
+        draft.placement = Placement::Last;
+        b.run(Command::CreateTask(Box::new(draft)));
+    }
+    b.run(Command::UpdateTask { id: task(101), patch: TaskPatch {
+        notes: Some("Use low-VOC primer from the utility cupboard. Keep door trim taped until painting starts Tuesday.".into()), ..Default::default()
+    }});
+    for (task_id, completed, steps) in [
+        (
+            101,
+            2,
+            &[
+                "Remove coat rack and switch plates",
+                "Steam and peel old hallway paper",
+                "Fill plaster cracks and sand smooth",
+                "Roll two coats of matte primer",
+            ][..],
+        ),
+        (
+            104,
+            1,
+            &["Request oak", "Request walnut", "Compare finishes"],
+        ),
+        (106, 0, &["Measure mirror", "Measure alcove"]),
+    ] {
+        for (index, title) in steps.iter().enumerate() {
+            let id = step(task_id * 10 + index as u128);
+            b.run(Command::CreateStep {
+                id,
+                task: task(task_id),
+                title: (*title).into(),
+                placement: Placement::Last,
+            });
+            if index < completed {
+                b.run(Command::CompleteStep { id });
+            }
+        }
+    }
+    b.run(Command::AddReminder {
+        id: ReminderId::from_uuid(uuid(8, 40)),
+        task: task(101),
+        at: at("2026-11-23T07:30:00Z"),
+    });
+    b.by(task(107), "pi");
+    b.at("2026-11-21T08:36:00Z");
+    for (n, agent) in [(102, "codex"), (103, "claude"), (104, "claude")] {
+        let original = b.state.tasks[&task(n)].created.clone();
+        b.by(task(n), agent);
+        if let Some(t) = b.state.tasks.get_mut(&task(n)) {
+            t.created = original;
+            t.updated.at = b.at;
+        }
+    }
+    for (n, title, when) in [
+        (
+            109,
+            "Deliver old sofa to charity depot",
+            "2026-11-21T08:15:00Z",
+        ),
+        (
+            110,
+            "Shut off radiator valve in guest room",
+            "2026-11-21T07:40:00Z",
+        ),
+        (
+            111,
+            "Send floor plan PDF to contractor",
+            "2026-11-20T09:00:00Z",
+        ),
+    ]
+    .into_iter()
+    .chain(
+        [
+            "Sketch the kitchen",
+            "Check the floor plan",
+            "Measure window trim",
+            "Catalogue paint samples",
+            "Map electrical outlets",
+            "Label storage boxes",
+            "Measure door frames",
+            "Clean the entryway",
+            "Book a delivery slot",
+            "Sort spare tiles",
+            "Find the tool manual",
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, title)| (112 + i as u128, title, "2026-11-12T08:00:00Z")),
+    ) {
+        b.at("2026-11-01T09:00:00Z");
+        b.run(Command::CreateTask(Box::new(NewTask::new(
+            task(n),
+            list(40),
+            title,
+        ))));
+        b.at(when);
+        b.run(Command::CompleteTask { id: task(n) });
+    }
+    b.at("2026-11-20T07:00:00Z");
+    for (n, target, title) in [
+        (140, 41, "Oats"),
+        (141, 41, "Lemons"),
+        (142, 41, "Chickpeas"),
+        (143, 41, "Yogurt"),
+        (144, 41, "Flour"),
+        (145, 41, "Coffee"),
+        (146, 42, "Write the launch notes"),
+        (147, 42, "Review the checklist"),
+        (148, 42, "Prepare screenshots"),
+        (149, 42, "Draft the announcement"),
+        (150, 43, "Archive the invoices"),
+        (151, 43, "Renew the library card"),
+    ] {
+        b.run(Command::CreateTask(Box::new(NewTask::new(
+            task(n),
+            list(target),
+            title,
+        ))));
+    }
+    b.state
+}
+
 /// Crowded row metadata and the same long prose as the desktop wide-detail fixture.
 #[must_use]
 #[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
@@ -718,6 +984,18 @@ pub fn finished_without_tomorrow() -> State {
 mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
+
+    #[test]
+    fn workflow_fixture_keeps_recent_and_historical_completions_separate() {
+        let s = workflow_state();
+        let board = todo_client::board::project(&s, list(40), &now().eval()).unwrap();
+        assert_eq!(board.columns.map(|c| c.cards.len()), [2, 3, 3, 3]);
+        assert_eq!(board.total_done, 14);
+        assert_eq!(
+            crate::model::date_span(day(19), day(23), now().today()),
+            "19–23 Nov"
+        );
+    }
 
     #[test]
     fn every_fixture_command_is_accepted() {

@@ -9,7 +9,8 @@ there is no token in the browser.
 The web app covers sign-in, smart lists, collections, lists, task detail, adding, completing (with the F2
 check animation), deleting, moving and merging tasks, and live updates. Edit titles, steps, notes, due dates, priority, My Day, repeat rules,
 reminders, tags and web links in detail. Upload, download and remove attachments. Create, rename, recolour, reorder
-and delete lists and collections, and move lists between collections. Activity shows confirmed changes
+and delete lists and collections, and move lists between collections. Workflow lists also support task status,
+a four-column Board, and start dates. Activity shows confirmed changes
 and lets you undo past events.
 Undo compensates the exact change. It has the desktop layout on wide
 windows and the phone layout on narrow ones, in both themes.
@@ -71,6 +72,7 @@ browsers that accept gzip.
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
 | `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
+| `src/app/workflow.rs`, `board.rs` | List settings, view selection, status and start-date controls, and the shared Board projection with pointer and keyboard input. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
 | `src/app/reminder_alerts.rs`, `static/reminder-browser.js` | Reminder scheduling, permission settings, native and in-app delivery, and cross-tab claims. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
@@ -264,7 +266,8 @@ then would drop those changes.) Once they are stored, it closes and reloads. Ver
 stores as version 2; the bump retires older senders before they can read and drop the `from_list`
 precondition on another tab's queued task move. Version 4 likewise leaves the stores unchanged but
 retires older senders before a tab can queue a bulk task command. Version 5 does the same for the
-bulk reorder action.
+bulk reorder action. Version 6 adds workflow commands and replays the confirmed cache so older snapshots
+cannot hide the new workflow fields. The outbox is kept.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -332,6 +335,29 @@ separate pickers: use the arrows to browse, Enter or Space to choose, or Back to
 **Delete** asks before hiding the item and its contents; the scrim blocks other controls and focus starts on
 **Cancel**. Undo brings back the deleted item and makes its surviving contents visible again.
 
+**List settings…** is a subpage in both menus for ordinary lists. **Workflow & Board** enables status and
+Board; **Timeline & Start dates** enables start dates and date spans. Both are off on a new list, and
+turning either off keeps the underlying task data. The switches and **Default view** sync. Saving a
+new default changes the next visit, not the view behind the menu. Use **Esc** or the back button to return
+to the menu. List and Board sit in the room eyebrow; press **V** to switch or **1** / **2** to jump to one.
+Below 556 px of room width the tabs keep only their icons and accessible labels. The Timeline segment is
+visible but disabled when enabled for the list, and a synced Timeline default falls back to List on web.
+
+**Board** groups Backlog, To do, In progress and Done using `todo_client::board`. Done shows at most 20
+completions from the last seven local days; **View all … in Completed** opens the same list's full
+Completed section. Beside docked detail, Done defaults to a 44 px rail that still accepts drops. Its explicit
+expanded or collapsed state is local to the browser. Wells scroll independently; at narrow widths the Board
+scrolls horizontally inside the room, with a modal detail. On a phone, swipe across wells and use the card
+grip to drag. **+ Add to …** opens the shared composer staged to that column, with no Add button in Done.
+
+Drag a card to reorder it, move it to another stage, or complete/reopen it in Done. The lifted card tracks
+the pointer; a bar marks legal placement. Escape or releasing outside a legal target cancels. Use **H/L**
+or **Left/Right** to focus columns, **J/K** or **Up/Down** for cards, **Alt+Left/Right** to move between
+stages and **Alt+Up/Down** to reorder. **Enter** opens detail, **E** edits its title, **Space** completes or
+reopens, and **N** opens the active column's composer. Modified clicks use the same selection as List;
+**Status** in the bulk strip changes the selected cards together. Board moves and status edits offer tracked
+Undo, and completing a card uses the same check, hold, collapse and sun timing as List.
+
 When the sidebar's sync line says **n not synced**, open it to see the refused changes and plain-language
 reasons. **Dismiss** clears one; **Dismiss all** clears only the entries shown during this opening. A refusal
 that arrives while the list is open stays for the next opening. Dismissing doesn't retry a change.
@@ -377,7 +403,16 @@ Page Up/Down by months, Enter chooses, and Esc closes the picker and returns to 
 offers the four priority levels. Picking a value removes the matching typed suffix, leaving the other one
 alone. Clearing a chip (or choosing **No date** or **None**) overrides the corresponding room default.
 
-In task detail, click **Due** or press **D** to open the same calendar on the task's due date (or today).
+Workflow lists show a geometric status mark first in List row metadata, without replacing the completion
+checkbox. Cross-list rooms show only Backlog and In progress from workflow lists, after the list chip.
+Click a mark or press **S** on a task to pick a stage; **Shift+S** cycles it. The quick-add Status button
+and removable chip share the draft with the explicit `status:` / `stav:` suffix. For a destination with
+Timeline enabled, use the **Starts** / **Due** tabs in the composer calendar or type a range such as
+`tomorrow..+4d`. A start and due appear as a compact span in rows and cards; overdue badges take precedence.
+
+Detail shows **Status** and **Starts** only when their respective list features are enabled. **Shift+D**
+opens the Starts calendar. A new start after the current due date shifts Due to the same day as one undoable
+edit. In task detail, click **Due** or press **D** to open the same calendar on the task's due date (or today).
 Choosing a day or preset saves it right away. For a repeating task, a note below the grid warns that
 **No date** also stops the repeat. **Esc** closes without saving and returns focus to Due.
 
@@ -550,7 +585,9 @@ The status bar shows shortcuts only when their actions are available.
   the server serves it, with the server's exact CSP (read from `spa.rs`). They add and complete tasks, undo,
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation. Task action tests cover context and detail menus, keyboard and filter
-  navigation, focus after deletion and moves, reduced motion and Undo. Reminder tests cover keyboard
+  navigation, focus after deletion and moves, reduced motion and Undo. Workflow tests cover both settings menus,
+  defaults, status/range edits and suffixes, pointer and keyboard Board moves, Done, narrow layout and Undo.
+  Reminder tests cover keyboard
   navigation and focus return, custom time validation, cancelling a draft, and Undo. With mocked notifications
   and clock, alert tests cover explicit permission, title-only delivery and task navigation, dedupe across tabs
   and reload, rescheduling and removal, and fallback actions. The docked splitter
@@ -576,6 +613,9 @@ The status bar shows shortcuts only when their actions are available.
   and phone (`phone-settings-{light,dark}.png`). Reminder permission states are in
   `reminder-settings-{not-enabled,allowed,blocked,unsupported}-{light,dark}.png` and fallback toasts in
   `reminder-toast-{light,dark}.png` and `reminder-toast-phone-{light,dark}.png`.
+  Workflow captures `board-{light,dark}.png`, `board-detail-{light,dark}.png`, `board-phone-{light,dark}.png`,
+  `board-drag-{light,dark}.png`, `board-move-{light,dark}.png`, `list-status-{light,dark}.png` and
+  `list-settings-{light,dark}.png` against the same renovation data as desktop.
   The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)

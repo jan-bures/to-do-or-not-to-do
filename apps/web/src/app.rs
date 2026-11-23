@@ -3,6 +3,7 @@
 
 mod activity;
 mod attachments;
+mod board;
 mod bulk;
 mod detail_splitter;
 mod device_pairing;
@@ -18,6 +19,7 @@ mod tags;
 mod task_actions;
 mod task_drag;
 mod trash;
+mod workflow;
 
 use crate::backend::{self, Sync, UndoTarget};
 use crate::changes::{self, Failure};
@@ -35,7 +37,8 @@ use std::time::Duration;
 use todo_client::room_header::Summary;
 use todo_client::{CommandId, Connection, SubmitError, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
-use todo_core::model::{Priority, Stamp};
+use todo_core::model::{ListFeatures, ListView, Priority, Stamp};
+use todo_core::query::QueryStatus;
 use todo_core::{Actor, Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
 use todo_design::{Glyph, Icon, motion};
@@ -72,6 +75,7 @@ pub struct Linger {
     section: RowSection,
     row: Row,
     index: usize,
+    board_slot: Option<(QueryStatus, usize)>,
     completion_stamp: Option<Stamp>,
     phase: Phase,
 }
@@ -131,6 +135,12 @@ pub struct Ctx {
     device_settings_open: RwSignal<bool>,
     task_actions: task_actions::Controls,
     task_drag: RwSignal<Option<task_drag::Gesture>>,
+    board_ui: board::Ui,
+    board: Memo<Option<todo_client::board::Board>>,
+    status_menu: workflow::StatusMenu,
+    room_features: Memo<ListFeatures>,
+    room_view: Memo<ListView>,
+    view_override: RwSignal<Option<ListView>>,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
     drawer: RwSignal<bool>,
@@ -280,6 +290,9 @@ impl Ctx {
         let Some(action) = self.undo.try_update(Option::take).flatten() else {
             return;
         };
+        let board_focus = pickers::focused()
+            .filter(|el| el.class_list().contains("board-title"))
+            .and_then(|el| el.id().strip_prefix("row-").and_then(|id| id.parse().ok()));
         self.toast.set(None);
         let mut waiting = WaitingUndo {
             pending: Vec::new(),
@@ -319,6 +332,9 @@ impl Ctx {
             });
         }
         self.refresh();
+        if applied && let Some(id) = board_focus {
+            board::refocus(self, id);
+        }
     }
 
     fn fold(self, id: CollectionId, folded: bool) {
@@ -352,6 +368,9 @@ impl Ctx {
 
     fn reset_room_controls(self) {
         self.cancel_task_drag();
+        self.board_ui.reset_view();
+        self.view_override.set(None);
+        self.status_menu.close(false);
         self.multi.update(todo_client::selection::Selection::clear);
         self.close_bulk_due(false);
         self.room_actions.close_menu(false);
@@ -425,6 +444,9 @@ impl Ctx {
         }) else {
             return;
         };
+        let board_slot = untrack(|| self.on_board())
+            .then(|| board::slot(self, id))
+            .flatten();
         if !self.submit_undoable(cmd, format!("Completed “{}”", row.title), Some(id)) {
             return;
         }
@@ -442,6 +464,7 @@ impl Ctx {
                 },
                 row: row.clone(),
                 index: 0, // The room model keeps held completions in order.
+                board_slot,
                 completion_stamp: Some(updated),
                 phase: Phase::Hold,
             });
@@ -458,7 +481,22 @@ impl Ctx {
                     }
                 });
                 set_timeout(
-                    move || self.lingering.update(|l| l.retain(|x| x.token != token)),
+                    move || {
+                        self.lingering.update(|l| l.retain(|x| x.token != token));
+                        if board_slot.is_some()
+                            && pickers::focused().is_some_and(|el| {
+                                el.closest("[data-board-card]")
+                                    .ok()
+                                    .flatten()
+                                    .is_some_and(|card| {
+                                        card.get_attribute("data-board-card").as_deref()
+                                            == Some(id.to_string().as_str())
+                                    })
+                            })
+                        {
+                            board::refocus(self, id);
+                        }
+                    },
                     Duration::from_millis(u64::from(motion::ROW_COLLAPSE)),
                 );
             },
@@ -559,6 +597,15 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         })
     });
     let (_, view_room) = model::room_memos(state, now, room, holding, filter_text);
+    let view_override = RwSignal::new(None);
+    let room_features = Memo::new(move |_| room.with(|r| state.with(|s| workflow::features(s, r))));
+    let room_view =
+        Memo::new(move |_| workflow::effective(room_features.get(), view_override.get()));
+    let board = Memo::new(move |_| {
+        (room_view.get() == ListView::Board)
+            .then(|| view_room.with(|r| state.with(|s| board::projection(s, r, now.get()))))
+            .flatten()
+    });
     let shown = Memo::new(move |_| {
         view_room.with(|r| lingering.with(|l| rows_with_exits(r, RowSection::Open, l)))
     });
@@ -646,6 +693,12 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
         task_drag: RwSignal::new(None),
+        board_ui: board::Ui::new(),
+        board,
+        status_menu: workflow::StatusMenu::new(),
+        room_features,
+        room_view,
+        view_override,
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
@@ -667,6 +720,15 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         sidebar,
     };
     provide_context(c);
+    Effect::new(move |_| c.room.with(|r| c.board_ui.load_rail(r)));
+    Effect::new(move |previous: Option<ListView>| {
+        let view = c.room_view.get();
+        if previous.is_some_and(|old| old != view) {
+            c.board_ui.reset_view();
+            c.status_menu.close(false);
+        }
+        view
+    });
     Effect::new(move |_| {
         let visible = c.bulk_visible();
         c.multi.update(|s| s.retain_visible(&visible));
@@ -792,6 +854,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         </div>
         <room_actions::Overlays/>
         <task_actions::Overlays/>
+        <workflow::StatusPopover/>
         <task_drag::Lift/>
         <bulk::DueDialog/>
     }
@@ -883,9 +946,10 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
-    if untrack(|| c.drag_active()) {
+    if untrack(|| c.drag_active() || c.board_ui.dragging()) {
         if key == "escape" {
             c.cancel_task_drag();
+            c.board_ui.cancel();
             ev.prevent_default();
         }
         return;
@@ -900,7 +964,20 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
     if !typing && !drawer && !c.room.with_untracked(RoomId::is_history) && bulk::key(c, ev, &key) {
         return;
     }
-    if ev.repeat() {
+    if ev.repeat()
+        && !(!typing
+            && !drawer
+            && !modal
+            && !ev.alt_key()
+            && !ev.ctrl_key()
+            && !ev.meta_key()
+            && !ev.shift_key()
+            && untrack(|| c.on_board())
+            && matches!(
+                key.as_str(),
+                "h" | "l" | "j" | "k" | "arrowleft" | "arrowright" | "arrowup" | "arrowdown"
+            ))
+    {
         // Leave typing alone, but prevent a held Enter from activating a button or submitting a form.
         let single_line = ev
             .target()
@@ -963,8 +1040,15 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         // The history has no task selection or composer. Keep native scrolling and button keys.
         return;
     }
+    if workflow::key(c, ev, &key, modal)
+        || (!modal && untrack(|| c.on_board()) && board::key(c, ev, &key))
+    {
+        ev.prevent_default();
+        return;
+    }
     if ev.alt_key() {
         if !ev.shift_key()
+            && !untrack(|| c.on_board())
             && !c.read_only()
             && matches!(key.as_str(), "arrowup" | "arrowdown")
             && c.room.with_untracked(|r| matches!(r, RoomId::List(_)))
@@ -978,6 +1062,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     match key.as_str() {
+        "j" | "k" | "arrowup" | "arrowdown" if untrack(|| c.on_board()) => {}
         "j" | "arrowdown" => {
             ev.prevent_default();
             c.step_selection(1);
@@ -1039,7 +1124,7 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
                 }
             }
         }
-        "d" | "p" if !c.read_only() => {
+        "d" | "p" if !c.read_only() && !(key == "d" && ev.shift_key()) => {
             let Some(id) = c.detail.with_untracked(|d| d.as_ref().map(|d| d.id)) else {
                 return;
             };
@@ -1777,6 +1862,7 @@ fn RoomPane() -> impl IntoView {
                     drop.position();
                     c.room_actions.position_menu();
                     c.task_actions.position();
+                    c.status_menu.position();
                     if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
                         let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
                         // Scroll metrics are rounded; also start before the last row leaves the viewport.
@@ -1790,17 +1876,25 @@ fn RoomPane() -> impl IntoView {
                 </Show>
                 <Show when=move || !c.room.with(RoomId::is_history)>
                     <RoomPills/>
-                    <QuickAdd/>
-                    <div class="task-list-area" node_ref=drop.list
-                        on:dragenter=move |ev| drop.over(c, ev, true)
-                        on:dragover=move |ev| drop.over(c, ev, false)
-                        on:dragleave=move |_| drop.leave()
-                        on:dragend=move |_| drop.clear()
-                        on:drop=move |ev| drop.receive(c, ev)>
-                        <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
-                            <Handover/>
+                    <div id="room-view-panel" class="room-view-body" class:board-active=move || c.on_board()
+                        role=move || (c.room_features.with(|f| f.workflow || f.timeline)).then_some("tabpanel")
+                        aria-labelledby=move || c.room_features.with(|f| (f.workflow || f.timeline).then(|| if c.on_board() { "view-board" } else { "view-list" }))>
+                        <Show when=move || c.on_board() fallback=move || view! {
+                            <QuickAdd/>
+                            <div class="task-list-area" node_ref=drop.list
+                                on:dragenter=move |ev| drop.over(c, ev, true)
+                                on:dragover=move |ev| drop.over(c, ev, false)
+                                on:dragleave=move |_| drop.leave()
+                                on:dragend=move |_| drop.clear()
+                                on:drop=move |ev| drop.receive(c, ev)>
+                                <Show when=move || c.tomorrow.with(Option::is_some) fallback=|| view! { <TaskList/> }>
+                                    <Handover/>
+                                </Show>
+                                <CompletedRows/>
+                            </div>
+                        }>
+                            <board::Pane/>
                         </Show>
-                        <CompletedRows/>
                     </div>
                 </Show>
                 <Show when=move || c.room.with(|r| *r == RoomId::Trash)>
@@ -1824,14 +1918,18 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
         c.view_room
             .with(|r| (r.header.progress_done, r.header.progress_total))
     });
+    let views = move || c.room_features.with(|f| f.workflow || f.timeline);
     view! {
         <header class="room-head">
             <div class="head-text">
-                <div class="eyebrow">
+                <div class="eyebrow" class:has-views=views>
                     <EyebrowLine/>
+                    <Show when=views>
+                        <div class="eyebrow-actions"><workflow::Switcher/><room_actions::RoomMenuButton/></div>
+                    </Show>
                 </div>
                 <div class="title-row">
-                    <div class="room-title-group"><RoomTitle/><room_actions::RoomMenuButton/></div>
+                    <div class="room-title-group"><RoomTitle/><Show when=move || !views()><room_actions::RoomMenuButton/></Show></div>
                     <p class="summary">
                         {move || match c.view_room.with(|r| r.header.summary) {
                             // History rooms keep no score.
@@ -2028,9 +2126,12 @@ fn CompletedRows() -> impl IntoView {
 fn ListFoot() -> impl IntoView {
     let c = ctx();
     let count = Memo::new(move |_| c.view_room.with(|r| r.completed.len()));
-    let has_completed = move || count.get() > 0;
+    let has_completed = move || !c.on_board() && count.get() > 0;
     view! {
         <div class="list-foot">
+            <Show when=move || c.on_board()>
+                <span class="board-foot-note caps">{icon(Icon::Columns3)}"Done shows last 7 days"</span>
+            </Show>
             <Show when=has_completed>
                 <button type="button" class="completed-toggle"
                     class:open=move || c.completed_open.get()
@@ -2180,6 +2281,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 <span class="meta">
                     <span class="due-slot">{due_view("due")}</span>
                     {row.chip.clone().map(|ch| chip(ch.label, ch.hue))}
+                    {phase.is_none().then(|| view! { <workflow::RowStatus id=id/> })}
                     {row.steps.map(|(d, t)| view! { <span class="steps">{bars(d, t)}{format!("{d}/{t}")}</span> })}
                     {row.email.then(|| view! { <span class="meta-icon" title="From an email" aria-label="From an email" role="img">{icon(Icon::Mail)}</span> })}
                     {(!tags.is_empty()).then(|| view! { <span class="tag" title=full_tags>{tags}</span> })}
@@ -2569,6 +2671,7 @@ fn DetailBody(
             <section class="d-section" aria-label="Schedule and priority">
                 <h3 class="caps d-caps">"Schedule and priority"</h3>
                 <dl class="props">
+                    <workflow::DetailFields id=id/>
                     <DueEditor id=id detail=d/>
                     <PriorityEditor id=id detail=d/>
                     <repeat::RepeatEditor id=id detail=d/>
@@ -3099,7 +3202,18 @@ fn StatusBar() -> impl IntoView {
                 })}
             </span>
             <span class="sb-keys" aria-hidden="true">
-                <Show when=move || !c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done)))>
+                <Show when=move || c.on_board()>
+                    <span><kbd class="keycap">"H"</kbd><kbd class="keycap">"L"</kbd>" columns"</span>
+                    <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" cards"</span>
+                    <Show when=move || !c.read_only()>
+                        <span><kbd class="keycap">"Alt ←/→"</kbd>" move status"</span>
+                        <span><kbd class="keycap">"S"</kbd>" status"</span>
+                    </Show>
+                </Show>
+                <Show when=move || c.room_features.get().workflow>
+                    <span><kbd class="keycap">"V"</kbd>" view"</span>
+                </Show>
+                <Show when=move || !c.on_board() && (!c.shown.with(Vec::is_empty) || c.tomorrow.with(|t| t.as_ref().is_some_and(|t| t.rows().any(|r| !r.done))))>
                     <span><kbd class="keycap">"J"</kbd><kbd class="keycap">"K"</kbd>" move"</span>
                 </Show>
                 <Show when=move || !c.read_only() && c.selected.with(|id| id.is_some_and(|id|

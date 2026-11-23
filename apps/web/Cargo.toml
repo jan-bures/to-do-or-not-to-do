@@ -45,6 +45,7 @@ web-sys = { version = "0.3.77", features = [
     "File", "FileList", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
     "VisibilityState", "Storage", "StorageEvent", "CssStyleDeclaration", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
     "DomRectReadOnly", "Headers", "RequestInit", "RequestCredentials", "Response", "Animation",
+    "ScrollIntoViewOptions", "ScrollLogicalPosition",
 ] }
 
 [profile.release]

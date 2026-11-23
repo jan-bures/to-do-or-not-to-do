@@ -463,7 +463,7 @@ pub struct Row {
     pub steps: Option<(usize, usize)>,
     /// Priority as a count of `!` (0–3).
     pub priority: u8,
-    /// Due date.
+    /// Due date (or a start–due span in a timeline-enabled list).
     pub due: Option<Due>,
     /// The agent that created it.
     pub agent: Option<AgentMark>,
@@ -606,6 +606,31 @@ enum ChipMode {
     Hidden,
 }
 
+pub fn date_span(start: Date, end: Date, today: Date) -> String {
+    let day_month = |d: Date| {
+        if d.year() == today.year() {
+            format!("{} {}", d.day(), month(d))
+        } else {
+            format!("{} {} {}", d.day(), month(d), d.year())
+        }
+    };
+    if start == end {
+        short_date(end, today)
+    } else if start.year() == end.year() && start.month() == end.month() {
+        format!("{}–{}", start.day(), day_month(end))
+    } else {
+        format!("{}–{}", day_month(start), day_month(end))
+    }
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn board_row(state: &State, id: TaskId, today: Date) -> Option<Row> {
+    let task = state.tasks.get(&id)?;
+    let mut row = row(state, task, today, ChipMode::Hidden);
+    row.agent = agent_mark(&task.updated.by).or(row.agent);
+    Some(row)
+}
+
 fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
     let chip = state.lists.get(&t.list).and_then(|l| {
         let hue = swatch(l.color.as_deref(), l.id.as_uuid().as_bytes());
@@ -661,7 +686,19 @@ fn row(state: &State, t: &Task, today: Date, mode: ChipMode) -> Row {
         due: if t.is_done() {
             None
         } else {
-            t.due.map(|d| due(d, today))
+            t.due.map(|d| {
+                let mut label = due(d, today);
+                if label.tone != DueTone::Overdue
+                    && state
+                        .lists
+                        .get(&t.list)
+                        .is_some_and(|l| l.features.timeline)
+                    && let Some(start) = t.start_date
+                {
+                    label.text = date_span(start, d, today);
+                }
+                label
+            })
         },
         agent: agent_mark(&t.created.by),
     }

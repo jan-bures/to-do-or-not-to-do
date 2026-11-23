@@ -2,11 +2,11 @@
 
 use leptos::prelude::*;
 use todo_client::intent::{self, calendar, quick_add};
-use todo_core::{model::Priority, time::Date};
+use todo_core::{model::Priority, query::QueryStatus, time::Date};
 use todo_design::Icon;
 
 use super::pickers::{DetailPicker, choice_focus};
-use super::{Ctx, backend, ctx, icon, platform};
+use super::{Ctx, backend, ctx, icon, model, platform, workflow};
 
 const INPUT: &str = "qa-input";
 
@@ -41,18 +41,26 @@ impl DatePicker {
             self.popup.close(true);
         } else {
             self.today.set(Some(today));
-            self.due.set(due);
-            self.month
-                .set(Some(calendar::Month::new(due.unwrap_or(today))));
+            self.show_date(today, due);
             self.popup.show(self.active_day);
         }
+    }
+
+    fn show_date(self, today: Date, day: Option<Date>) {
+        self.due.set(day);
+        self.month
+            .set(Some(calendar::Month::new(day.unwrap_or(today))));
     }
 }
 
 #[component]
-pub(super) fn QuickAdd() -> impl IntoView {
+pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl IntoView {
     let c = ctx();
-    let draft = RwSignal::new(quick_add::Draft::default());
+    let initial = move || quick_add::Draft {
+        status: column.and_then(workflow::open_stage),
+        ..Default::default()
+    };
+    let draft = RwSignal::new(initial());
     let calendar = DatePicker::new(
         DetailPicker::anchored("qa-date", "qa-calendar"),
         "qa-active-day",
@@ -60,15 +68,29 @@ pub(super) fn QuickAdd() -> impl IntoView {
     );
     let date_picker = calendar.popup;
     let priority_picker = DetailPicker::anchored("qa-priority", "qa-priority-menu");
-    let add_placeholder = Memo::new(move |_| c.view_room.with(|r| r.add_placeholder.clone()));
-    let room = Memo::new(move |_| c.view_room.with(|r| r.id.clone()));
+    let status_picker = DetailPicker::anchored("qa-status", "qa-status-menu");
+    let add_placeholder = Memo::new(move |_| {
+        column
+            .map(|s| format!("Add to {}", workflow::stage_info(s).0))
+            .or_else(|| c.view_room.with(|r| r.add_placeholder.clone()))
+    });
+    let room = Memo::new(move |_| c.room.get());
+    let features = Memo::new(move |_| {
+        c.state
+            .with(|state| intent::quick_add_features(state, (&room.get()).into()))
+    });
+    let starts = RwSignal::new(false);
     Effect::new(move |_| {
         room.track();
+        features.track();
         if c.read_only() || date_picker.open.get_untracked() {
             date_picker.close(false);
         }
         if c.read_only() || priority_picker.open.get_untracked() {
             priority_picker.close(false);
+        }
+        if c.read_only() || status_picker.open.get_untracked() {
+            status_picker.close(false);
         }
     });
     let now = move || {
@@ -87,7 +109,7 @@ pub(super) fn QuickAdd() -> impl IntoView {
         let eval = now().eval();
         let (id, commands) = c.state.with_untracked(|state| {
             draft.with_untracked(|draft| {
-                intent::submit_draft(
+                intent::submit_workflow_draft(
                     state,
                     &room.get_untracked(),
                     draft,
@@ -97,39 +119,82 @@ pub(super) fn QuickAdd() -> impl IntoView {
             })
         });
         if id.is_some() && commands.into_iter().all(|command| c.submit(command)) {
-            draft.set(quick_add::Draft::default());
+            draft.set(initial());
         }
     };
-    let parsed = Memo::new(move |_| draft.with(|draft| draft.parsed(&c.now.get().eval())));
+    let parsed = Memo::new(move |_| {
+        draft.with(|draft| draft.parsed_with_features(&c.now.get().eval(), features.get()))
+    });
     let due = Memo::new(move |_| parsed.with(|p| p.due));
+    let start = Memo::new(move |_| parsed.with(|p| p.start_date));
     let priority = Memo::new(move |_| parsed.with(|p| p.priority.unwrap_or_default()));
+    let status = Memo::new(move |_| {
+        parsed.with(|p| {
+            p.status
+                .map(workflow::stage)
+                .or(column)
+                .unwrap_or(QueryStatus::Todo)
+        })
+    });
+    let status_chip =
+        move || features.get().workflow && status.get() != column.unwrap_or(QueryStatus::Todo);
     let date = Memo::new(move |_| {
-        due.get()
-            .map(|d| quick_add::short_date(d, c.now.get().eval().today))
+        let today = c.now.get().today();
+        match (start.get(), due.get()) {
+            (Some(a), Some(b)) => Some(model::date_span(a, b, today)),
+            (Some(a), None) => Some(format!("Starts {}", quick_add::short_date(a, today))),
+            (None, day) => day.map(|d| quick_add::short_date(d, today)),
+        }
     });
     let chip_label = Memo::new(move |prev: Option<&String>| {
         date.get().or_else(|| prev.cloned()).unwrap_or_default()
     });
-    let choose_due = move |day| {
+    let pick = move |choice| {
         if !c.read_only() {
-            draft.update(|d| d.pick_due(day, &now().eval()));
+            draft.update(|d| d.pick(choice, &now().eval(), features.get_untracked()));
         }
+    };
+    let choose_day = move |day| {
+        pick(if starts.get_untracked() {
+            quick_add::Pick::Start(day)
+        } else {
+            quick_add::Pick::Due(day)
+        });
         date_picker.close(false);
         platform::focus(INPUT);
     };
+    let clear_dates = move || {
+        pick(quick_add::Pick::Start(None));
+        pick(quick_add::Pick::Due(None));
+        platform::focus(INPUT);
+    };
     let choose_priority = move |level| {
-        if !c.read_only() {
-            draft.update(|d| d.pick_priority(level, &now().eval()));
-        }
+        pick(quick_add::Pick::Priority(level));
         priority_picker.close(false);
+        platform::focus(INPUT);
+    };
+    let choose_status = move |s| {
+        pick(quick_add::Pick::Status(workflow::open_stage(s)));
+        status_picker.close(false);
         platform::focus(INPUT);
     };
     let show_date = move || {
         if !c.read_only() {
-            let eval = now().eval();
-            calendar.toggle(eval.today, draft.with_untracked(|d| d.parsed(&eval).due));
+            starts.set(false);
+            calendar.toggle(now().today(), due.get_untracked());
         }
     };
+    let switch_date = Callback::new(move |is_start| {
+        starts.set(is_start);
+        calendar.show_date(
+            now().today(),
+            if is_start {
+                start.get_untracked()
+            } else {
+                due.get_untracked()
+            },
+        );
+    });
     let show_priority = move || {
         if priority_picker.open.get_untracked() {
             priority_picker.close(true);
@@ -139,26 +204,43 @@ pub(super) fn QuickAdd() -> impl IntoView {
     };
     view! {
         <Show when=move || add_placeholder.with(Option::is_some)>
-            <form class="quick-add" on:submit=move |ev| { ev.prevent_default(); add(); }>
+            <form class="quick-add" class:column-quick-add=column.is_some()
+                on:submit=move |ev| { ev.prevent_default(); add(); }
+                on:keydown=move |ev| {
+                    if let Some(stage) = column && ev.key() == "Escape" && !ev.is_composing() {
+                        ev.prevent_default(); ev.stop_propagation();
+                        c.board_ui.composer.set(None);
+                        request_animation_frame(move || { platform::focus(super::board::add_id(stage)); });
+                    }
+                }>
                 <span class="qa-plus">{icon(Icon::Plus)}</span>
                 <input node_ref=c.quick_add id=INPUT class="qa-input" type="text"
-                    disabled=move || c.read_only() autocomplete="off" enterkeyhint="done" aria-label="Add a task"
+                    disabled=move || c.read_only() autocomplete="off" enterkeyhint="done"
+                    aria-label=move || column.map_or_else(|| "Add a task".into(), |_| add_placeholder.get().unwrap_or_default())
                     placeholder=move || add_placeholder.get().unwrap_or_default()
                     prop:value=move || draft.with(|d| d.text.clone())
-                    on:input=move |ev| draft.update(|d| d.edit(event_target_value(&ev), &c.now.get_untracked().eval())) />
+                    on:input=move |ev| draft.update(|d| d.edit_with_features(event_target_value(&ev), &c.now.get_untracked().eval(), features.get_untracked())) />
                 <span class="qa-date-announcement" role="status">{move || {
                     let mut labels = Vec::new();
-                    if let Some(date) = date.get() { labels.push(format!("Due {date}")); }
+                    if let Some(date) = date.get() { labels.push(if due.get().is_some() { format!("Due {date}") } else { date }); }
+                    if status_chip() { labels.push(workflow::stage_info(status.get()).0.into()); }
                     if priority.get() != Priority::None {
                         labels.push(format!("{} priority", quick_add::priority_option(priority.get()).label));
                     }
                     labels.join(". ")
                 }}</span>
-                <div class="qa-chips" class:has-chips=move || due.get().is_some() || priority.get() != Priority::None>
-                    <button type="button" class="qa-date-chip" class:no-date=move || due.get().is_none()
-                        disabled=move || due.get().is_none() || c.read_only()
-                        aria-label=move || format!("Remove due date: {}", chip_label.get())
-                        on:click=move |_| choose_due(None)>
+                <div class="qa-chips" class:has-chips=move || date.with(Option::is_some) || status_chip() || priority.get() != Priority::None>
+                    <Show when=status_chip>
+                        <button type="button" class="qa-status-chip" disabled=move || c.read_only()
+                            aria-label=move || format!("Remove status: {}", workflow::stage_info(status.get()).0)
+                            on:click=move |_| choose_status(column.unwrap_or(QueryStatus::Todo))>
+                            {move || workflow::mark(status.get())}{icon(Icon::X)}
+                        </button>
+                    </Show>
+                    <button type="button" class="qa-date-chip" class:no-date=move || date.with(Option::is_none)
+                        disabled=move || date.with(Option::is_none) || c.read_only()
+                        aria-label=move || format!("Remove {}: {}", if start.get().is_some() { "dates" } else { "due date" }, chip_label.get())
+                        on:click=move |_| clear_dates()>
                         {icon(Icon::Calendar)}<span>{move || chip_label.get()}</span>{icon(Icon::X)}
                     </button>
                     <Show when=move || priority.get() != Priority::None>
@@ -170,7 +252,16 @@ pub(super) fn QuickAdd() -> impl IntoView {
                     </Show>
                 </div>
                 <div class="qa-tools">
-                    <button type="button" id=date_picker.anchor data-calendar-anchor="" class="qa-tool" class:has-value=move || due.get().is_some()
+                    <Show when=move || features.get().workflow>
+                        <button type="button" id=status_picker.anchor class="qa-tool" class:has-value=status_chip
+                            title="Choose status" aria-label="Choose status" aria-haspopup="listbox" aria-controls=status_picker.id
+                            aria-expanded=move || status_picker.open.get().to_string() disabled=move || c.read_only()
+                            on:click=move |_| {
+                                if status_picker.open.get_untracked() { status_picker.close(true); }
+                                else if !c.read_only() { status_picker.show_choice(status_picker.id); }
+                            }>{move || icon(workflow::stage_info(status.get()).2)}</button>
+                    </Show>
+                    <button type="button" id=date_picker.anchor data-calendar-anchor="" class="qa-tool" class:has-value=move || date.with(Option::is_some)
                         title="Choose due date" aria-label="Choose due date" aria-haspopup="dialog" aria-controls=date_picker.id
                         aria-expanded=move || date_picker.open.get().to_string() disabled=move || c.read_only()
                         on:click=move |_| show_date()>{icon(Icon::Calendar)}</button>
@@ -182,7 +273,13 @@ pub(super) fn QuickAdd() -> impl IntoView {
                 <span class="qa-hints" aria-hidden="true" hidden=move || c.read_only()>
                     <span class="keycap">"N"</span>
                 </span>
-                <CalendarPopover c=c picker=calendar choose=Callback::new(choose_due)/>
+                <CalendarPopover c=c picker=calendar choose=Callback::new(choose_day)
+                    starts=Signal::derive(move || starts.get()) range=Signal::derive(move || features.get().timeline) switch_date=switch_date/>
+                <div class="room-action-menu status-menu" popover="auto" id=status_picker.id node_ref=status_picker.node
+                    role="listbox" aria-label="Choose status" on:toggle=move |_| status_picker.toggle_event()
+                    on:focusin=choice_focus on:keydown=move |ev| status_picker.key(c, Some(1), &ev)>
+                    <workflow::StatusOptions current=Signal::derive(move || Some(status.get())) choose=Callback::new(choose_status) open_only=true/>
+                </div>
                 <div class="room-action-menu qa-priority-menu" popover="auto" id=priority_picker.id node_ref=priority_picker.node
                     role="listbox" aria-label="Choose priority" on:toggle=move |_| priority_picker.toggle_event()
                     on:focusin=choice_focus on:keydown=move |ev| priority_picker.key(c, Some(1), &ev)>
@@ -207,6 +304,9 @@ pub(super) fn CalendarPopover(
     picker: DatePicker,
     choose: Callback<Option<Date>>,
     #[prop(optional)] repeats: Signal<bool>,
+    #[prop(optional)] starts: Signal<bool>,
+    #[prop(optional)] range: Signal<bool>,
+    #[prop(optional)] switch_date: Option<Callback<bool>>,
 ) -> impl IntoView {
     let DatePicker {
         popup,
@@ -274,14 +374,26 @@ pub(super) fn CalendarPopover(
     view! {
         // Keep shell shortcuts out from the instant the popover opens, before focusing the day on the next frame.
         <div class="room-action-menu qa-calendar" popover="auto" id=popup.id node_ref=popup.node
-            role="dialog" aria-label="Choose due date" tabindex="-1" autofocus on:toggle=move |_| popup.toggle_event()
+            role="dialog" aria-label=move || if starts.get() { "Choose start date" } else { "Choose due date" }
+            tabindex="-1" autofocus on:toggle=move |_| popup.toggle_event()
             on:keydown=move |ev| popup.key(c, None, &ev)>
+        <Show when=move || range.get()>
+            <div class="view-switcher calendar-range" role="group" aria-label="Date field">
+                {[true, false].map(|value| view! {
+                    <button type="button" aria-pressed=move || (starts.get() == value).to_string()
+                        on:click=move |_| { if let Some(switch) = switch_date { switch.run(value); } }>
+                        {if value { "Starts" } else { "Due" }}
+                    </button>
+                })}
+            </div>
+        </Show>
         <div class="qa-presets">{move || today.get().map(|today| calendar::presets(today).into_iter().map(|preset| view! {
             <button type="button" class="qa-preset" class:current=move || due.get() == preset.date
                 aria-current=move || (due.get() == preset.date).then_some("true")
                 aria-describedby=move || (preset.date.is_none() && repeats.get()).then_some("calendar-repeat-note")
                 on:click=move |_| choose.run(preset.date)>
-                {preset.label}<span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
+                {move || if preset.date.is_none() && starts.get() { "Clear" } else { preset.label }}
+                <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
             </button>
         }).collect_view())}</div>
         <div class="qa-month-title">

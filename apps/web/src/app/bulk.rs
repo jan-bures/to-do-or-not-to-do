@@ -7,6 +7,9 @@ use wasm_bindgen::JsCast;
 
 impl Ctx {
     pub(super) fn bulk_visible(self) -> Vec<TaskId> {
+        if self.on_board() {
+            return super::board::visible(self);
+        }
         let mut ids: Vec<_> = if let Some(plan) = self.tomorrow.get() {
             self.lingering.with(|leaving| {
                 plan.rows()
@@ -184,7 +187,7 @@ pub(super) fn key(c: Ctx, ev: &leptos::ev::KeyboardEvent, key: &str) -> bool {
         && !ev.meta_key()
         && matches!(
             key,
-            " " | "delete" | "m" | "d" | "p" | "r" | "t" | "l" | "f10"
+            " " | "delete" | "m" | "d" | "p" | "r" | "t" | "l" | "s" | "f10"
         )
     {
         // Do not turn a multi-selection shortcut into a stray single-task edit. Native Space on
@@ -226,6 +229,12 @@ pub(super) fn Bar() -> impl IntoView {
             <section class="bulk-bar" aria-label="Task selection">
                 <strong class="bulk-count" aria-live="polite">{move || ids.with(|ids| selection::count_label(ids.len()))}</strong>
                 <div class="bulk-tools" role="group" aria-label="Bulk actions">
+                    <Show when=move || c.on_board()>
+                        <button type="button" class="bulk-tool" id="bulk-status" aria-haspopup="listbox"
+                            disabled=move || c.read_only() on:click=move |_| c.status_menu.show(c, None, "bulk-status".into())>
+                            {icon(Icon::CircleProgress)}<span>"Status"</span>
+                        </button>
+                    </Show>
                     <For each=move || tools.get() key=|tool| format!("{tool:?}") let:tool>
                         <button type="button" class="bulk-tool" class:danger=matches!(tool, Tool::Apply(BulkTaskAction::Delete))
                             id=match tool { Tool::Move => Some("bulk-move"), Tool::Due => Some("bulk-due"), _ => None }

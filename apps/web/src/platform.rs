@@ -4,7 +4,7 @@ use crate::model::{self, Now};
 use crate::reminder_time::fixed_instant;
 use jiff::{Timestamp, civil::DateTime};
 use std::collections::BTreeSet;
-use todo_core::ids::CollectionId;
+use todo_core::ids::{CollectionId, ListId};
 use wasm_bindgen::prelude::Closure;
 use wasm_bindgen::{JsCast, JsValue};
 
@@ -49,6 +49,28 @@ pub fn save_folded(id: CollectionId, folded: bool) {
         } else {
             storage.remove_item(&key)
         };
+    }
+}
+
+/// The Done rail follows the layout until the owner explicitly sets it for this list.
+pub fn load_done_rail(id: ListId) -> Option<bool> {
+    match local_storage()?
+        .get_item(&format!("todo-board-done:{id}"))
+        .ok()?
+        .as_deref()
+    {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    }
+}
+
+pub fn save_done_rail(id: ListId, collapsed: bool) {
+    if let Some(storage) = local_storage() {
+        let _ = storage.set_item(
+            &format!("todo-board-done:{id}"),
+            if collapsed { "1" } else { "0" },
+        );
     }
 }
 

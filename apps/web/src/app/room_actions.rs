@@ -124,6 +124,7 @@ enum Item {
     Down,
     Colour,
     MoveTo,
+    Settings,
     Fold,
     Completed,
     Delete,
@@ -137,6 +138,7 @@ impl Item {
             Self::Down => "menu-move-down",
             Self::Colour => "menu-colour",
             Self::MoveTo => "menu-move-to",
+            Self::Settings => "menu-list-settings",
             Self::Fold => "menu-fold",
             Self::Completed => "menu-completed",
             Self::Delete => "menu-delete",
@@ -161,6 +163,9 @@ impl Menu {
         } else if matches!(self.origin.0, Subject::Collection(_)) {
             items.push(Item::Fold);
         }
+        if matches!(self.origin.0, Subject::List(_)) {
+            items.push(Item::Settings);
+        }
         items.push(Item::Delete);
         items
     }
@@ -171,6 +176,7 @@ enum Page {
     Actions,
     Colour,
     Move,
+    Settings,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -467,9 +473,10 @@ fn ActionMenu() -> impl IntoView {
                 <MenuItem origin=origin item=item/>
             }).collect_view())}
         </div>
-        <div id=PICKER_ID role="dialog" aria-labelledby="room-picker-heading"
+        <div id=PICKER_ID role="dialog" aria-labelledby=move || if controls.page.get() == Page::Settings { "room-picker-back" } else { "room-picker-heading" }
             inert=move || controls.page.get() == Page::Actions || origin.get().is_none()
             class="room-action-menu" class:swatch-picker=move || controls.page.get() == Page::Colour
+            class:list-settings=move || controls.page.get() == Page::Settings
             popover="auto" node_ref=controls.picker on:toggle=move |_| controls.toggle(false)
             on:keydown=move |ev| menu_key(c, &ev)>
             {move || origin.get().map(|origin| match controls.page.get() {
@@ -477,6 +484,10 @@ fn ActionMenu() -> impl IntoView {
                 Page::Colour => view! { <ColourPicker origin=origin/> }.into_any(),
                 Page::Move => match origin.0 {
                     Subject::List(id) => view! { <MovePicker origin=origin id=id/> }.into_any(),
+                    Subject::Collection(_) => ().into_any(),
+                },
+                Page::Settings => match origin.0 {
+                    Subject::List(id) => view! { <PickerBack item=Item::Settings/><super::workflow::Settings id=id/> }.into_any(),
                     Subject::Collection(_) => ().into_any(),
                 },
             })}
@@ -509,7 +520,11 @@ fn menu_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         match key.as_str() {
             "Escape" => {
                 ev.prevent_default();
-                controls.close_menu(true);
+                if page == Page::Settings {
+                    controls.page(Page::Actions, Some(Item::Settings));
+                } else {
+                    controls.close_menu(true);
+                }
             }
             "Tab" => platform::contain_tab(PICKER_ID, ev),
             _ => pickers::choice_key(PICKER_ID, if page == Page::Colour { 6 } else { 1 }, ev),
@@ -553,6 +568,7 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
         Item::Down => "Move down".into(),
         Item::Colour => "Colour…".into(),
         Item::MoveTo => "Move to…".into(),
+        Item::Settings => "List settings…".into(),
         Item::Fold => {
             if matches!(subject, Subject::Collection(id) if c.collapsed.with(|ids| ids.contains(&id)))
             {
@@ -581,13 +597,14 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
         Item::Down => Icon::ChevronDown,
         Item::Colour => Icon::Pencil,
         Item::MoveTo => Icon::ChevronRight,
+        Item::Settings => Icon::Settings,
         Item::Fold => Icon::ChevronRight,
         Item::Completed => Icon::Check,
         Item::Delete => Icon::TrashTwo,
     };
     view! {
         <button id=item.id() type="button" role="menuitem" tabindex="-1"
-            aria-haspopup=matches!(item, Item::Colour | Item::MoveTo).then_some("dialog")
+            aria-haspopup=matches!(item, Item::Colour | Item::MoveTo | Item::Settings).then_some("dialog")
             class:danger=item == Item::Delete aria-disabled=move || disabled().to_string()
             on:focus=move |_| controls.menu.update(|m| {
                 if let Some(m) = m.as_mut().filter(|m| m.origin == origin) { m.highlighted = item; }
@@ -611,10 +628,11 @@ fn activate(c: Ctx, origin: Origin, item: Item) {
     match item {
         Item::Colour => return controls.page(Page::Colour, None),
         Item::MoveTo => return controls.page(Page::Move, None),
+        Item::Settings => return controls.page(Page::Settings, None),
         _ => controls.close_menu(false),
     }
     match item {
-        Item::Colour | Item::MoveTo => {}
+        Item::Colour | Item::MoveTo | Item::Settings => {}
         Item::Rename => controls.open_edit(Edit::Rename(origin)),
         Item::Delete => controls.open_edit(Edit::Delete(origin)),
         Item::Up | Item::Down => {
@@ -637,7 +655,12 @@ fn activate(c: Ctx, origin: Origin, item: Item) {
             origin.restore_focus(controls);
         }
         Item::Completed => {
-            c.completed_open.update(|open| *open = !*open);
+            if untrack(|| c.on_board()) {
+                c.switch_view(todo_core::model::ListView::List);
+                c.completed_open.set(true);
+            } else {
+                c.completed_open.update(|open| *open = !*open);
+            }
             origin.restore_focus(controls);
         }
     }
@@ -736,7 +759,7 @@ fn PickerBack(item: Item) -> impl IntoView {
     let controls = ctx().room_actions;
     view! {
         <button type="button" id="room-picker-back" on:click=move |_| controls.page(Page::Actions, Some(item))>
-            {icon(Icon::ChevronLeft)}"Back"
+            {icon(Icon::ChevronLeft)}{if item == Item::Settings { "List settings" } else { "Back" }}
         </button>
     }
 }

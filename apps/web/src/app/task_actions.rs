@@ -395,6 +395,7 @@ fn apply_change(c: Ctx, origin: Origin, cmd: Command, label: String) {
                     section: *section,
                     row: row.clone(),
                     index,
+                    board_slot: None,
                     completion_stamp: None,
                     phase: Phase::Depart,
                 })
