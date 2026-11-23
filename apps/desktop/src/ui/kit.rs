@@ -3,7 +3,7 @@
 mod caption;
 mod scrollbar;
 
-pub use caption::{CaptionPreview, window_controls};
+pub use caption::{CaptionPreview, caption_button_tints, window_controls};
 pub use scrollbar::Scrollbar;
 
 use gpui::{

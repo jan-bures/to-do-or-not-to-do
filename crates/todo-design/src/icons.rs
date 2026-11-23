@@ -125,6 +125,10 @@ svg_set! {
         Paperclip => "paperclip",
         /// Rename; edit.
         Pencil => "pencil",
+        /// Keep a pop-out window above other windows.
+        Pin => "pin",
+        /// Keep-on-top toggle, on; only the pin's body is filled.
+        PinFilled => "pin-filled",
         /// Add.
         Plus => "plus",
         /// Redo.

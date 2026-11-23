@@ -12,7 +12,7 @@ use todo_core::ids::TaskId;
 
 use super::{Blend, FocusQuickAdd, ShellView, UndoTask, header_landscape, kit, win};
 use crate::model::popouts::Room;
-use crate::theme::{Icon, TextStyled, component, desktop, radius, space, ty};
+use crate::theme::{Icon, TextStyled, component, desktop, elevation, space, ty, with_alpha};
 use crate::ui::popouts::Settings;
 
 pub(super) struct Compact {
@@ -232,6 +232,12 @@ impl ShellView {
         }
         let focused = compact.focus.is_focused(window);
         let pinned = compact.pinned;
+        let label = if pinned {
+            "Don't keep on top"
+        } else {
+            "Keep on top"
+        };
+        let (hover, pressed) = kit::caption_button_tints(&p);
         let fill = compact.pin_fill.at(self.frame);
         if compact.pin_fill.moving(self.frame) {
             window.request_animation_frame();
@@ -240,55 +246,61 @@ impl ShellView {
             .id("pin-window")
             .track_focus(&compact.focus)
             .role(Role::Button)
-            .aria_label("Always on top")
+            .aria_label(label)
             .aria_toggled(if pinned {
                 Toggled::True
             } else {
                 Toggled::False
             })
-            .tooltip(kit::tooltip(
-                p,
-                if pinned {
-                    "Stop keeping this window on top"
-                } else {
-                    "Keep this window on top"
-                },
-            ))
+            .tooltip(kit::tooltip(p, label))
             .cursor_pointer()
+            .relative()
+            .flex_none()
+            .w(px(desktop::CAPTION_WIDTH))
+            .h_full()
             .flex()
             .items_center()
-            .gap(px(space::S1))
-            .px(px(space::S2))
-            .h(px(component::ICON_BUTTON))
-            .rounded(px(radius::BUTTON))
-            .style(ty::META)
-            .text_color(if pinned { p.accent_strong } else { p.ink_2 })
-            .when(pinned, |d| d.bg(p.wash))
-            .hover(|s| s.bg(p.hover))
+            .justify_center()
+            .hover(move |s| s.bg(hover))
+            .active(move |s| s.bg(pressed))
             .child(
                 div()
-                    .flex()
-                    .items_center()
-                    .justify_center()
+                    .relative()
                     .size(px(component::ICON_SMALL))
-                    .rounded(px(radius::XS))
-                    .border_1()
-                    .border_color(if pinned { p.accent_strong } else { p.control })
+                    .when(fill < 1., |d| {
+                        d.child(kit::icon(
+                            Icon::Pin,
+                            component::ICON_SMALL,
+                            with_alpha(p.ink_2, 1. - fill),
+                        ))
+                    })
                     .when(fill > 0., |d| {
                         d.child(
-                            div()
-                                .size_full()
-                                .flex()
-                                .items_center()
-                                .justify_center()
-                                .rounded(px(radius::XS))
-                                .bg(p.accent_strong)
-                                .opacity(fill)
-                                .child(kit::icon(Icon::Check, space::S3, p.pane)),
+                            kit::icon(
+                                Icon::PinFilled,
+                                component::ICON_SMALL,
+                                with_alpha(p.accent_strong, fill),
+                            )
+                            .absolute()
+                            .inset_0(),
                         )
                     }),
             )
-            .child("Pin")
+            .when(focused, |d| {
+                d.child(
+                    div()
+                        .absolute()
+                        .inset_0()
+                        .border(px(elevation::FOCUS_RING))
+                        .border_color(p.tint)
+                        .child(
+                            div()
+                                .size_full()
+                                .border(px(elevation::HAIRLINE))
+                                .border_color(p.accent),
+                        ),
+                )
+            })
             .on_click(cx.listener(|this, _, window, cx| this.toggle_pin(window, cx)));
         let bar = div()
             .h(px(desktop::TITLEBAR))
@@ -322,7 +334,7 @@ impl ShellView {
                             .child(title),
                     ),
             )
-            .child(super::menu::ring(&p, focused, radius::BUTTON, pin))
+            .child(pin)
             .child(kit::window_controls(&p, window, self.caption_preview).flex_none());
         let summary = div()
             .px(px(desktop::LIST_PAD_X))

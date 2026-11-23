@@ -1,8 +1,8 @@
 //! Windows caption controls. GPUI owns their non-client hit tests and native actions.
 
 use gpui::{
-    Bounds, Div, IntoElement, PathBuilder, Window, WindowControlArea, canvas, div, fill, point,
-    prelude::*, px, size,
+    Bounds, Div, Hsla, IntoElement, PathBuilder, Window, WindowControlArea, canvas, div, fill,
+    point, prelude::*, px, size,
 };
 
 use crate::theme::{Palette, chrome, color, desktop, with_alpha};
@@ -101,14 +101,11 @@ fn glyph(glyph: Glyph) -> impl IntoElement {
     .flex_none()
 }
 
-/// Minimize, maximize/restore and close, after a drag area filling the rest of their parent.
-pub fn window_controls(p: &Palette, window: &Window, preview: CaptionPreview) -> Div {
-    let active = preview != CaptionPreview::Live || window.is_window_active();
-    let maximized = preview == CaptionPreview::CloseHover || window.is_maximized();
-    let white = color(chrome::CAPTION_WHITE);
+/// Hover and press fills for ordinary caption buttons (Close has its own red fills).
+pub fn caption_button_tints(p: &Palette) -> (Hsla, Hsla) {
     let (base, hover, pressed) = if p.night() {
         (
-            white,
+            color(chrome::CAPTION_WHITE),
             chrome::CAPTION_HOVER_DARK,
             chrome::CAPTION_PRESSED_DARK,
         )
@@ -119,6 +116,15 @@ pub fn window_controls(p: &Palette, window: &Window, preview: CaptionPreview) ->
             chrome::CAPTION_PRESSED_LIGHT,
         )
     };
+    (with_alpha(base, hover), with_alpha(base, pressed))
+}
+
+/// Minimize, maximize/restore and close, after a drag area filling the rest of their parent.
+pub fn window_controls(p: &Palette, window: &Window, preview: CaptionPreview) -> Div {
+    let active = preview != CaptionPreview::Live || window.is_window_active();
+    let maximized = preview == CaptionPreview::CloseHover || window.is_maximized();
+    let white = color(chrome::CAPTION_WHITE);
+    let (hover, pressed) = caption_button_tints(p);
     let ink = if active { p.ink } else { p.ink_2 };
     let control = |id, symbol, area, preview_hover| {
         let button = div()
@@ -141,8 +147,6 @@ pub fn window_controls(p: &Palette, window: &Window, preview: CaptionPreview) ->
                 .active(move |s| s.bg(pressed).text_color(white))
                 .when(preview_hover, |b| b.bg(hover).text_color(white))
         } else {
-            let hover = with_alpha(base, hover);
-            let pressed = with_alpha(base, pressed);
             button
                 .hover(move |s| s.bg(hover))
                 .active(move |s| s.bg(pressed))

@@ -405,7 +405,8 @@ Right-click a list or a built-in smart list in the sidebar, or open its **…** 
 **Pop out**. Choose it again to bring the same window forward. The compact window keeps the room's hue,
 progress landscape, quick-add, task rows, Completed toggle where applicable, and Undo. It has no sidebar,
 detail pane, or My Day hand-over. The Windows caption controls still support resize, minimize and Snap
-Layouts. **Pin** starts on and keeps the window above ordinary windows; turn it off for normal stacking.
+Layouts. The pin beside the caption buttons starts filled and keeps the window above ordinary windows.
+Choose **Don't keep on top** to unpin it, or **Keep on top** to pin it again.
 
 The main window and all list windows share one sync session and outbox, even offline. The window where a
 completion is made plays the normal row choreography; other windows show the optimistic change on their

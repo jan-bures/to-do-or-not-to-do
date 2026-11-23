@@ -84,6 +84,7 @@ fn assert_single_colour(name: &str, svg: &str) {
 #[test]
 fn filled_variants_keep_the_outline_geometry() {
     for (outline, filled, shape) in [
+        (Icon::Pin, Icon::PinFilled, "<path"),
         (Icon::Star, Icon::StarFilled, "<path"),
         (Icon::Sun, Icon::SunFilled, "<circle"),
     ] {
@@ -114,7 +115,10 @@ fn icons_are_listed_and_single_colour() {
         assert_single_colour(icon.key(), icon.svg());
         assert_eq!(
             icon.svg().matches("fill=\"currentColor\"").count(),
-            usize::from(matches!(icon, Icon::SunFilled | Icon::StarFilled)),
+            usize::from(matches!(
+                icon,
+                Icon::PinFilled | Icon::SunFilled | Icon::StarFilled
+            )),
             "{}",
             icon.key()
         );

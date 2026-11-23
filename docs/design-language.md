@@ -197,8 +197,10 @@ Clicking the scrim or pressing Esc closes it. The room title keeps its full size
 move to a line of their own under it, so the title never gives way to them.
 
 **A desktop pop-out** keeps just the room: its title in the 36 px caption bar, a slim sky and progress strip,
-quick-add, and the same task rows and Undo inset. Its labelled **Pin** control sits outside the drag area,
-uses a filled box with a tick when on, and keeps the name *Always on top* for assistive technology.
+quick-add, and the same task rows and Undo inset. Its keep-on-top toggle sits outside the drag area and
+shares the native caption buttons' hit size. The Lucide pin is outlined when off and filled with the room's
+accent when on. The tooltip and accessible label name the next action (*Keep on top* or *Don't keep on top*),
+and the button exposes its pressed state.
 
 **Desktop and web pane dividers.** Drag the docked detail’s left edge, or the sidebar’s right edge on
 desktop. The 12 px hit strip (`desktop::PANE_HANDLE_HIT`) starts 1 px before the divider and extends into
