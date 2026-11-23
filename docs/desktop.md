@@ -326,20 +326,28 @@ and any unapproved proposal.
 
 1. Open **AI assistant…** in Settings. Enter your OpenAI-compatible server's base URL (for example
    `https://mac.tailnet.example/v1`) and its optional API key. This is not your To-do key or password.
+   An HTTPS address outside loopback or Tailscale is blocked until you confirm that it is your own
+   server, keeps data private, uses local weights, and has no per-token billing. This confirmation
+   applies only to that URL. Editing the URL clears the confirmation, key, and list access.
 2. Choose **Test connection** to fetch the models. Pick a listed model or enter its ID. **Test model**
    sends an invented prompt to check streaming and tool calls; without this test, or if only text
    works, the model has no task tools.
 3. Choose which lists the assistant can read. Lists are hidden by default, including new lists.
    **Private only** and **All models** both allow the configured private provider; no cloud provider
    is available. Select **Enable assistant on this device**, then **Done** to save. No tests or
-   inference run in the background. **Forget server** removes the protected profile from this device.
+   inference run in the background. **Forget server** clears the key and removes the protected
+   profile and any orphaned files from an interrupted settings save.
 
-The desktop provider accepts HTTPS with normal certificate verification. Plain HTTP works only on
-loopback or for Tailscale MagicDNS names and Tailscale IP ranges. Use the latter only with Tailscale
-active and routing to your private peer. Prefer HTTPS if you cannot verify the route. No redirects,
-HTTP proxies or alternate providers are used. A missing or rejected key, missing model, server
-unavailability (including sleep), or usage limit needs your attention; nothing is sent again until
-you choose **Retry** or send a new message. See [provider architecture](ai-assistant-architecture.md#3-provider-choices).
+The panel shows the configured destination: **This device**, **Tailscale**, **Your server** (confirmed
+HTTPS), or **Not private** (blocked). HTTPS uses normal certificate verification. Plain HTTP on
+loopback supports a model running on the same PC. Direct Tailscale HTTP is unencrypted by the app and
+relies on the tunnel. On every such request, Windows must report an up interface with a Tailscale
+address; otherwise no request is sent. The interface check does not prove the route or peer identity.
+Prefer HTTPS when you cannot verify the intended route. No redirects, HTTP proxies or alternate
+providers are used. A missing or rejected key, missing model, server unavailability (including sleep),
+or usage limit needs your attention; nothing is sent again until you choose **Retry** or send a new
+message. The app waits at most five minutes for a server's `Retry-After` hint. See
+[provider architecture](ai-assistant-architecture.md#3-provider-choices).
 
 Prompts and allowed task summaries go directly to the server you entered, not through the To-do
 server. Task notes and attachments are not shared. A model can prepare new tasks, title/due/priority

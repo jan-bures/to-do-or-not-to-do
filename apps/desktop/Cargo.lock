@@ -7384,6 +7384,7 @@ dependencies = [
  "unicode-general-category",
  "url",
  "uuid",
+ "zeroize",
 ]
 
 [[package]]

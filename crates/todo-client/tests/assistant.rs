@@ -855,9 +855,26 @@ fn capability_flags_control_buffering_cloud_visibility_and_billing() {
     block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
     let requests = provider.requests();
     assert_eq!(requests[0].mode, RoundMode::Buffered);
-    assert!(
-        matches!(requests[1].history.last(), Some(Message::Tool { untrusted_data, .. }) if untrusted_data["items"].as_array().unwrap().len() == 1)
+    let Some(Message::Tool { untrusted_data, .. }) = requests[1].history.last() else {
+        panic!("expected scoped tool result");
+    };
+    let items = untrusted_data["items"].as_array().unwrap();
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0]["id"], json!(INBOX));
+    assert!(!untrusted_data.to_string().contains(&HIDDEN.to_string()));
+
+    let (chat, provider) = fixture(
+        Capabilities {
+            billing: BillingClass::Unknown,
+            ..caps
+        },
+        [],
     );
+    assert_eq!(
+        chat.start(intent(&chat, 1)).err(),
+        Some(AssistantError::Billing)
+    );
+    assert!(provider.requests().is_empty());
 
     let (chat, provider) = fixture(
         Capabilities {

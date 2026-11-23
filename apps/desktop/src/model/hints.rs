@@ -1085,8 +1085,14 @@ mod tests {
         assert_eq!(tab(first, false), Some(add));
         assert_eq!(tab(last, true), Some(Stop::AssistantSplitter));
         assert_eq!(tab(Stop::AssistantSplitter, false), Some(last));
-        assert_eq!(tab(Stop::AssistantSplitter, true), Some(Stop::UpdateIndicator));
-        assert_eq!(tab(Stop::UpdateIndicator, false), Some(Stop::AssistantSplitter));
+        assert_eq!(
+            tab(Stop::AssistantSplitter, true),
+            Some(Stop::UpdateIndicator)
+        );
+        assert_eq!(
+            tab(Stop::UpdateIndicator, false),
+            Some(Stop::AssistantSplitter)
+        );
         assert_eq!(tab(Stop::UpdateIndicator, true), Some(Stop::DismissUpdate));
         assert_eq!(tab(Stop::DismissUpdate, true), Some(Stop::New));
     }

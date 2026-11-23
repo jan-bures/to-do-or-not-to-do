@@ -13,7 +13,7 @@ default = []
 # In-memory assistant controller and owner approval action; combine with `native` for Chat Completions.
 assistant = []
 # tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
-native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "uuid/v4"]
+native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "dep:zeroize", "uuid/v4"]
 # A bundled-SQLite `Storage` (native only).
 sqlite = ["native", "dep:rusqlite"]
 # Browser implementations of the platform traits: fetch, IndexedDB, setTimeout, Web Crypto. The module
@@ -43,6 +43,7 @@ tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
 reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"] }
 unicode-general-category = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
+zeroize = { workspace = true, optional = true }
 # `sqlite`
 rusqlite = { workspace = true, optional = true }
 # `web`

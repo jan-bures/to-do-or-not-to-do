@@ -3,7 +3,7 @@
 use super::*;
 use std::sync::{
     Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -253,6 +253,142 @@ fn explicit_https_or_direct_loopback_and_tailscale_only() {
             LocalProvider::new("https://mac.tailnet.example", "fixture-key").unwrap()
         )
         .contains("fixture-key")
+    );
+}
+
+#[tokio::test]
+async fn public_https_requires_attestation_even_for_catalog_and_bearer() {
+    let address = "https://unverified.example.com/v1";
+    let provider = LocalProvider::new(address, "fixture-key").unwrap();
+    let caps = provider.capabilities(MODEL);
+    assert_eq!(
+        (caps.data_class, caps.billing),
+        (DataClass::Cloud, BillingClass::Unknown)
+    );
+    assert_eq!(
+        endpoint_info(address, false).unwrap().destination,
+        Destination::NotPrivate
+    );
+    assert_eq!(
+        provider.list_models().await.unwrap_err(),
+        ProviderError::NotPrivate
+    );
+    assert_eq!(
+        run(&provider, RoundMode::Streaming).await.unwrap_err(),
+        ProviderError::NotPrivate
+    );
+    let provider = LocalProvider::configured(address, "fixture-key", true).unwrap();
+    let caps = provider.capabilities(MODEL);
+    assert_eq!(
+        (caps.data_class, caps.billing),
+        (DataClass::Local, BillingClass::NoPerTokenCharge)
+    );
+    assert_eq!(
+        endpoint_info(address, true).unwrap().destination,
+        Destination::YourServer
+    );
+    assert_eq!(
+        LocalProvider::configured("http://unverified.example.com/v1", "", true).unwrap_err(),
+        SetupError::Insecure
+    );
+    for (address, class) in [
+        ("https://localhost", Destination::ThisDevice),
+        ("http://127.0.0.1", Destination::ThisDevice),
+        ("https://sample.example.ts.net", Destination::Tailscale),
+        ("http://100.64.0.1", Destination::Tailscale),
+        ("https://[fd7a:115c:a1e0::1]", Destination::Tailscale),
+    ] {
+        let caps = LocalProvider::new(address, "").unwrap().capabilities(MODEL);
+        assert_eq!(
+            (caps.data_class, caps.billing),
+            (DataClass::Local, BillingClass::NoPerTokenCharge)
+        );
+        assert_eq!(endpoint_info(address, false).unwrap().destination, class);
+    }
+}
+
+struct Interface(Arc<AtomicBool>);
+impl TailnetInterface for Interface {
+    fn connected(&self) -> bool {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[tokio::test]
+async fn cleartext_tailnet_checks_interface_for_get_and_post_before_any_network() {
+    for address in [
+        "http://100.64.0.1/v1",
+        "http://[fd7a:115c:a1e0::1]/v1",
+        "http://sample.example.ts.net/v1",
+    ] {
+        let provider = LocalProvider::new(address, "fixture-key").unwrap();
+        assert_eq!(
+            provider.list_models().await.unwrap_err(),
+            ProviderError::TailnetDisconnected
+        );
+        assert_eq!(
+            run(&provider, RoundMode::Streaming).await.unwrap_err(),
+            ProviderError::TailnetDisconnected
+        );
+    }
+    let server = Server::start(|_| Reply::json(json!({"data": [{"id": MODEL}]}))).await;
+    let port = Url::parse(&server.address).unwrap().port().unwrap();
+    let link = Arc::new(AtomicBool::new(false));
+    let mut provider = LocalProvider::new(
+        &format!("http://sample.example.ts.net:{port}/v1"),
+        "fixture-key",
+    )
+    .unwrap()
+    .with_tailnet_interface(Interface(link.clone()));
+    // Inject only the connector in this fixture. A positive interface result reaches loopback,
+    // never a real tailnet server; production DNS filtering is unchanged.
+    provider.client = Client::builder()
+        .no_proxy()
+        .resolve("sample.example.ts.net", ([127, 0, 0, 1], port).into())
+        .build()
+        .unwrap();
+    assert_eq!(
+        provider.list_models().await.unwrap_err(),
+        ProviderError::TailnetDisconnected
+    );
+    assert!(server.calls().is_empty());
+    link.store(true, Ordering::SeqCst);
+    assert_eq!(provider.list_models().await.unwrap()[0].id, MODEL);
+    assert!(
+        server.calls()[0]
+            .head
+            .to_ascii_lowercase()
+            .contains("authorization: bearer fixture-key")
+    );
+    link.store(false, Ordering::SeqCst);
+    assert_eq!(
+        run(&provider, RoundMode::Streaming).await.unwrap_err(),
+        ProviderError::TailnetDisconnected
+    );
+    assert_eq!(server.calls().len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_model_ids_are_not_listed_and_retry_after_is_bounded() {
+    let server = Server::start(|request| if request.head.starts_with("GET") {
+        Reply::json(json!({"data": [{"id":"safe/model"}, {"id":"bad\u{202e}id"}, {"id":"bad\u{200b}id"}, {"id":"bad\u{2028}id"}]}))
+    } else { Reply::status("429 Too Many Requests").header("Retry-After", u64::MAX.to_string()) }).await;
+    let provider = server.provider();
+    assert_eq!(
+        provider
+            .list_models()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|m| m.id)
+            .collect::<Vec<_>>(),
+        ["safe/model"]
+    );
+    assert_eq!(
+        run(&provider, RoundMode::Streaming).await.unwrap_err(),
+        ProviderError::RateLimited {
+            retry_after: Some(MAX_RETRY_AFTER)
+        }
     );
 }
 

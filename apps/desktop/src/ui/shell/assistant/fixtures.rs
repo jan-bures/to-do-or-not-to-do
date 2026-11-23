@@ -207,13 +207,21 @@ impl ShellView {
             ),
             _ => (Vec::new(), Composer::Ready),
         };
-        let mut capabilities = LocalProvider::new("https://mac.tailnet.example", "")
+        let address = if name == "ai-blocked" {
+            "https://mac.tailnet.example/v1"
+        } else {
+            "http://100.64.0.1:11434/v1"
+        };
+        self.ai.profile.url = address.into();
+        self.ai.profile.model = "local-model".into();
+        self.ai.profile.enabled = true;
+        let capabilities = LocalProvider::new(address, "")
             .map(|p| {
                 p.with_support("local-model".into(), Support::StreamingTools)
                     .capabilities("local-model")
             })
             .ok();
-        let model = capabilities.take().map(|capabilities| ModelSelection {
+        let model = capabilities.map(|capabilities| ModelSelection {
             model: "local-model".into(),
             capabilities,
         });
@@ -224,9 +232,6 @@ impl ShellView {
             turns,
         });
         if name == "ai-settings" {
-            self.ai.profile.url = "https://mac.tailnet.example/v1".into();
-            self.ai.profile.model = "local-model".into();
-            self.ai.profile.enabled = true;
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
             self.ai.profile.lists.insert(errands.id, Access::Private);
             self.ai.profile.lists.insert(reading.id, Access::All);

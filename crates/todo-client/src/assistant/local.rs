@@ -1,6 +1,7 @@
 //! Native, owner-configured Chat Completions transport. Building a provider is entirely offline.
 //! This client has no access to the todo server, device credentials, sync, or write authority.
 
+pub use super::provider::TailnetInterface;
 use super::{
     provider::{
         BillingClass, Cancel, Capabilities, DataClass, Message, Model, Provider, ProviderError,
@@ -22,7 +23,9 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use unicode_general_category::{GeneralCategory, get_general_category};
 use url::{Host, Url};
+use zeroize::Zeroizing;
 
 const CONNECT: Duration = Duration::from_secs(4);
 const CHECK: Duration = Duration::from_secs(8);
@@ -30,6 +33,7 @@ const IDLE: Duration = Duration::from_secs(20);
 const ROUND: Duration = Duration::from_secs(75);
 const CATALOG_BYTES: usize = 128 * 1024;
 const MAX_MODELS: usize = 256;
+pub const MAX_RETRY_AFTER: Duration = Duration::from_secs(300);
 
 #[cfg(test)]
 mod tests;
@@ -54,7 +58,8 @@ enum Cleartext {
     Tailnet,
 }
 
-fn tailnet_ip(ip: IpAddr) -> bool {
+/// Classifies an address, not its route. The platform check separately looks for an up interface.
+pub fn is_tailnet_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
             let [a, b, ..] = ip.octets();
@@ -64,7 +69,39 @@ fn tailnet_ip(ip: IpAddr) -> bool {
     }
 }
 
-fn base(input: &str) -> Result<(Url, Option<Cleartext>), SetupError> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destination {
+    ThisDevice,
+    Tailscale,
+    YourServer,
+    NotPrivate,
+}
+
+impl Destination {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ThisDevice => "This device",
+            Self::Tailscale => "Tailscale",
+            Self::YourServer => "Your server",
+            Self::NotPrivate => "Not private",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct EndpointInfo {
+    pub destination: Destination,
+    pub tailnet_http: bool,
+}
+
+pub fn endpoint_info(input: &str, attested: bool) -> Result<EndpointInfo, SetupError> {
+    base(input, attested).map(|(_, destination, cleartext)| EndpointInfo {
+        destination,
+        tailnet_http: cleartext == Some(Cleartext::Tailnet),
+    })
+}
+
+fn base(input: &str, attested: bool) -> Result<(Url, Destination, Option<Cleartext>), SetupError> {
     let input = input.trim();
     let (_, location) = input.split_once("://").ok_or(SetupError::Address)?;
     let authority = location.split(['/', '?', '#']).next().unwrap_or_default();
@@ -82,20 +119,23 @@ fn base(input: &str) -> Result<(Url, Option<Cleartext>), SetupError> {
     if url.query().is_some() || url.fragment().is_some() || url.port() == Some(0) {
         return Err(SetupError::Address);
     }
-    let host = url.host().ok_or(SetupError::Address)?;
-    let policy = match url.scheme() {
-        "https" => None,
-        "http" => Some(match host {
-            Host::Domain("localhost") => Cleartext::Loopback,
-            Host::Ipv4(ip) if ip.is_loopback() => Cleartext::Loopback,
-            Host::Ipv6(ip) if ip.is_loopback() => Cleartext::Loopback,
-            Host::Domain(host) if host.trim_end_matches('.').ends_with(".ts.net") => {
-                Cleartext::Tailnet
-            }
-            Host::Ipv4(ip) if tailnet_ip(ip.into()) => Cleartext::Tailnet,
-            Host::Ipv6(ip) if tailnet_ip(ip.into()) => Cleartext::Tailnet,
-            _ => return Err(SetupError::Insecure),
-        }),
+    let destination = match url.host().ok_or(SetupError::Address)? {
+        Host::Domain(host) if host.trim_end_matches('.') == "localhost" => Destination::ThisDevice,
+        Host::Ipv4(ip) if ip.is_loopback() => Destination::ThisDevice,
+        Host::Ipv6(ip) if ip.is_loopback() => Destination::ThisDevice,
+        Host::Domain(host) if host.trim_end_matches('.').ends_with(".ts.net") => {
+            Destination::Tailscale
+        }
+        Host::Ipv4(ip) if is_tailnet_ip(ip.into()) => Destination::Tailscale,
+        Host::Ipv6(ip) if is_tailnet_ip(ip.into()) => Destination::Tailscale,
+        _ if attested => Destination::YourServer,
+        _ => Destination::NotPrivate,
+    };
+    let policy = match (url.scheme(), destination) {
+        ("https", _) => None,
+        ("http", Destination::ThisDevice) => Some(Cleartext::Loopback),
+        ("http", Destination::Tailscale) => Some(Cleartext::Tailnet),
+        ("http", _) => return Err(SetupError::Insecure),
         _ => return Err(SetupError::Address),
     };
     let path = url.path().trim_end_matches('/');
@@ -105,7 +145,7 @@ fn base(input: &str) -> Result<(Url, Option<Cleartext>), SetupError> {
         format!("{path}/v1/")
     };
     url.set_path(&path);
-    Ok((url, policy))
+    Ok((url, destination, policy))
 }
 
 struct DirectDns(Cleartext);
@@ -120,7 +160,7 @@ impl reqwest::dns::Resolve for DirectDns {
                 .await?
                 .filter(|peer| match class {
                     Cleartext::Loopback => peer.ip().is_loopback(),
-                    Cleartext::Tailnet => tailnet_ip(peer.ip()),
+                    Cleartext::Tailnet => is_tailnet_ip(peer.ip()),
                 })
                 .collect();
             if peers.is_empty() {
@@ -154,6 +194,9 @@ pub struct LocalProvider {
     client: Client,
     base: Url,
     auth: Option<HeaderValue>,
+    destination: Destination,
+    cleartext: Option<Cleartext>,
+    tailnet_interface: Option<Arc<dyn TailnetInterface>>,
     tested: Option<(String, Support)>,
 }
 
@@ -163,7 +206,12 @@ type Events = Pin<Box<dyn Stream<Item = Result<StreamEvent, ProviderError>> + Se
 
 impl LocalProvider {
     pub fn new(address: &str, key: &str) -> Result<Self, SetupError> {
-        let (base, cleartext) = base(address)?;
+        Self::configured(address, key, false)
+    }
+
+    /// `attested` must come from an explicit owner decision for this exact configured URL.
+    pub fn configured(address: &str, key: &str, attested: bool) -> Result<Self, SetupError> {
+        let (base, destination, cleartext) = base(address, attested)?;
         let key = key.trim();
         let auth = if key.is_empty() {
             None
@@ -171,8 +219,8 @@ impl LocalProvider {
             if key.len() > 4096 || !key.bytes().all(|b| b.is_ascii_graphic()) {
                 return Err(SetupError::Credential);
             }
-            let mut header = HeaderValue::from_str(&format!("Bearer {key}"))
-                .map_err(|_| SetupError::Credential)?;
+            let bearer = Zeroizing::new(format!("Bearer {key}"));
+            let mut header = HeaderValue::from_str(&bearer).map_err(|_| SetupError::Credential)?;
             header.set_sensitive(true);
             Some(header)
         };
@@ -184,19 +232,33 @@ impl LocalProvider {
             .redirect(reqwest::redirect::Policy::none())
             .retry(reqwest::retry::never())
             .no_proxy();
-        if let Some(cleartext) = cleartext {
-            client = client.dns_resolver(Arc::new(DirectDns(cleartext)));
+        // A DNS-derived local classification must remain local at the connector, also for HTTPS.
+        let direct = match destination {
+            Destination::ThisDevice => Some(Cleartext::Loopback),
+            Destination::Tailscale => Some(Cleartext::Tailnet),
+            _ => None,
+        };
+        if let Some(direct) = direct {
+            client = client.dns_resolver(Arc::new(DirectDns(direct)));
         }
         Ok(Self {
             client: client.build().map_err(|_| SetupError::Client)?,
             base,
             auth,
+            destination,
+            cleartext,
+            tailnet_interface: None,
             tested: None,
         })
     }
 
     pub fn base_url(&self) -> &str {
         self.base.as_str()
+    }
+
+    pub fn with_tailnet_interface(mut self, interface: impl TailnetInterface + 'static) -> Self {
+        self.tailnet_interface = Some(Arc::new(interface));
+        self
     }
 
     pub fn with_support(mut self, model: String, support: Support) -> Self {
@@ -209,6 +271,18 @@ impl LocalProvider {
         method: reqwest::Method,
         path: &str,
     ) -> Result<reqwest::RequestBuilder, ProviderError> {
+        if self.destination == Destination::NotPrivate {
+            return Err(ProviderError::NotPrivate);
+        }
+        // Check immediately before every request, even if the connector can reuse a socket.
+        if self.cleartext == Some(Cleartext::Tailnet)
+            && !self
+                .tailnet_interface
+                .as_ref()
+                .is_some_and(|interface| interface.connected())
+        {
+            return Err(ProviderError::TailnetDisconnected);
+        }
         let url = self
             .base
             .join(path)
@@ -334,7 +408,17 @@ async fn collect(
 }
 
 pub fn valid_model(id: &str) -> bool {
-    !id.trim().is_empty() && id.len() <= 256 && !id.chars().any(char::is_control)
+    !id.trim().is_empty()
+        && id.len() <= 256
+        && !id.chars().any(|c| {
+            c.is_control()
+                || matches!(
+                    get_general_category(c),
+                    GeneralCategory::Format
+                        | GeneralCategory::LineSeparator
+                        | GeneralCategory::ParagraphSeparator
+                )
+        })
 }
 
 impl Provider for LocalProvider {
@@ -398,8 +482,16 @@ impl Provider for LocalProvider {
             max_output_tokens: Some(2048),
             usage: true,
             model_listing: true,
-            data_class: DataClass::Local,
-            billing: BillingClass::NoPerTokenCharge,
+            data_class: if self.destination == Destination::NotPrivate {
+                DataClass::Cloud
+            } else {
+                DataClass::Local
+            },
+            billing: if self.destination == Destination::NotPrivate {
+                BillingClass::Unknown
+            } else {
+                BillingClass::NoPerTokenCharge
+            },
         }
     }
 
@@ -565,7 +657,7 @@ fn check_status(response: &Response, chat: bool) -> Result<(), ProviderError> {
                 .get(RETRY_AFTER)
                 .and_then(|v| v.to_str().ok())
                 .and_then(|v| v.parse::<u64>().ok())
-                .map(Duration::from_secs),
+                .map(|seconds| Duration::from_secs(seconds).min(MAX_RETRY_AFTER)),
         },
         StatusCode::NOT_FOUND
         | StatusCode::METHOD_NOT_ALLOWED

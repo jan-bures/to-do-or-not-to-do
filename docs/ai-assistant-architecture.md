@@ -191,12 +191,22 @@ change destination, resend the transcript or fall back to a cloud model automati
   fallback on the Mac: use local weights and disable Ollama cloud features if applicable.
 - **Windows GPUI:** Connect directly with normal TLS verification for HTTPS. The native provider also
   accepts explicitly entered HTTP endpoints on loopback or Tailscale: `.ts.net` MagicDNS names,
-  `100.64.0.0/10`, and `fd7a:115c:a1e0::/48`. For HTTP names the client filters the actual DNS results
-  supplied to the connector: loopback stays on loopback and MagicDNS must resolve into those ranges.
-  An address in those ranges is not proof of a WireGuard route. Use this option only with Tailscale
-  active and routing to the intended private peer; HTTPS is recommended, especially if that cannot be
-  guaranteed. Never expose an HTTP inference listener to an untrusted network. Other remote URLs
+  `100.64.0.0/10`, and `fd7a:115c:a1e0::/48`. Loopback HTTP supports a model running on the same PC.
+  The connector filters actual DNS results for local names: loopback stays on loopback and MagicDNS
+  must resolve into those ranges. Before each direct HTTP tailnet request (including the catalog),
+  the adapter requires a platform check that an up local interface has a Tailscale address. The
+  interface check is not proof of a WireGuard route or of peer identity. Use this option only with
+  Tailscale active and routing to the intended peer. HTTPS is recommended, especially if that cannot
+  be guaranteed. Never expose an HTTP inference listener to an untrusted network. Other remote URLs
   require HTTPS. The todo-server transport and pairing policy are unchanged.
+- **Destination and billing:** Loopback and Tailscale destinations are classified as local and not
+  billed per token. Other HTTPS destinations count as cloud with unknown billing and are blocked
+  before sending a key, a catalog request or inference. To use a private deployment with a custom
+  HTTPS address, the owner must attest that it is theirs, uses local weights, keeps data private and
+  does not bill per token. This attestation (not a remote capability or billing check) belongs to
+  the exact configured URL, lives in the protected device-local profile and is cleared along with
+  its key and scope on URL changes. `Private only` lists are never included for cloud destinations.
+  A rate-limit wait hint is capped at five minutes and never schedules an automatic retry.
 - **Android Compose/FFI:** The device needs the Tailscale VPN active and the app routed through it,
   including on mobile data or when LAN routing is unavailable. Use the same Serve HTTPS URL. Android
   release policy [denies general cleartext](../apps/android/app/src/main/res/xml/network_security_config.xml).

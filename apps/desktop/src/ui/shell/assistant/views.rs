@@ -312,7 +312,23 @@ impl ShellView {
                 Agent::Assistant,
                 component::AGENT_MARK,
             ))
-            .child(one_line(text(ty::NAV_COLLECTION, p.ink, title)).flex_1())
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(one_line(text(ty::NAV_COLLECTION, p.ink, title)))
+                    .child(text(
+                        ty::META,
+                        if self.ai.blocked() {
+                            p.danger_ink
+                        } else {
+                            p.ink_3
+                        },
+                        self.ai.route_label(),
+                    )),
+            )
             .child(self.ai_icon(
                 "assistant-new",
                 Icon::Plus,
@@ -452,7 +468,8 @@ impl ShellView {
 
     fn ai_empty(&self, view: &AssistantView, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
-        let ready = view.model.is_some();
+        let blocked = self.ai.blocked();
+        let ready = view.model.is_some() && !blocked;
         let examples = [
             (
                 Icon::Calendar,
@@ -478,8 +495,8 @@ impl ShellView {
         let mut result = div().flex().flex_col().gap(px(space::S3)).p(px(space::S4)).pb(px(space::S5))
             .child(div().size(px(component::BUTTON)).flex().items_center().justify_center().bg(p.wash).rounded(px(radius::LG)).border_1().border_color(p.line)
                 .child(kit::icon(Icon::Sparkles, component::ICON, p.accent_strong)))
-            .child(text(ty::DETAIL_TITLE, p.ink, if ready { "What can I help plan?" } else { "Connect a model" }))
-            .child(text(ty::NOTES, p.ink_2, if ready {
+            .child(text(ty::DETAIL_TITLE, p.ink, if blocked { "Connection blocked" } else if ready { "What can I help plan?" } else { "Connect a model" }))
+            .child(text(ty::NOTES, p.ink_2, if blocked { NOT_PRIVATE } else if ready {
                 "Ask about your tasks, or describe changes to make. Every edit or new task waits for your approval first."
             } else { "Connect your own model server to ask about tasks and prepare changes. Nothing is sent until you choose to connect or send a message." }));
         if ready {
@@ -550,12 +567,14 @@ impl ShellView {
     fn ai_composer(&self, view: &AssistantView, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let streaming = matches!(view.composer, Composer::Streaming { .. });
-        let ready = view.composer != Composer::ChooseModel;
+        let blocked = self.ai.blocked();
+        let ready = !blocked && view.composer != Composer::ChooseModel;
         let body = self.ai.composer.read(cx);
         let focused = body.focus_handle.is_focused(window);
         let can_send =
             streaming || (ready && !body.content.trim().is_empty() && self.retry_seconds() == 0);
         let placeholder = match view.composer {
+            _ if blocked => "Confirm your server in AI settings",
             Composer::ChooseModel => "Choose a model to start",
             Composer::Review { .. } => "Approve above, or reply to adjust…",
             _ => "Ask anything, or propose a change…",
@@ -625,19 +644,15 @@ impl ShellView {
                 .filter(|&&id| state.is_live(id.into()) && !self.ai.profile.lists.contains_key(&id))
                 .count()
         };
-        let model = view
-            .model
-            .as_ref()
-            .map_or("No model enabled", |m| m.model.as_str());
+        let model = view.model.as_ref().map_or_else(
+            || "No model enabled".into(),
+            |m| model::labels::one_line(&m.model),
+        );
         let failed = view
             .turns
             .last()
             .is_some_and(|t| matches!(t.error, Some(AssistantError::Provider(_))));
-        let route = if ready {
-            "Private network"
-        } else {
-            "Assistant off"
-        };
+        let route = self.ai.route_label();
         let privacy = self
             .ai_action(
                 "assistant-route",
@@ -646,7 +661,7 @@ impl ShellView {
                     .items_center()
                     .gap(px(space::S2))
                     .min_w_0()
-                    .child(dot(if failed {
+                    .child(dot(if failed || blocked {
                         p.danger
                     } else if ready {
                         p.success
@@ -1662,8 +1677,16 @@ impl ShellView {
         let setup = self.ai.settings.as_ref()?;
         let p = self.palette;
         let running = matches!(setup.check, Check::Running(_));
-        let allowed = !running && self.retry_seconds() == 0;
+        let endpoint = setup.draft.endpoint();
+        let destination = endpoint.map(|info| info.destination);
+        let blocked = destination == Some(Destination::NotPrivate);
+        let route = destination.map_or("No address", Destination::label);
+        let allowed = !blocked && !running && self.retry_seconds() == 0;
         let (indicator, connection) = match &setup.check {
+            Check::NotTested if blocked => (
+                p.danger,
+                "Blocked · confirm ownership before testing or sending.".into(),
+            ),
             Check::NotTested => (p.ink_3, "Connection not tested".into()),
             Check::Running(label) => (p.accent, (*label).into()),
             Check::Catalog { count, elapsed } => (
@@ -1688,9 +1711,10 @@ impl ShellView {
                         .flex_col()
                         .children(setup.models.iter().enumerate().map(|(index, model)| {
                             let id = model.id.clone();
+                            let label = model::labels::one_line(&model.label);
                             self.ai_action(
                                 format!("assistant-model-option-{index}"),
-                                one_line(text(ty::COUNT, p.ink, model.label.clone()))
+                                one_line(text(ty::COUNT, p.ink, label.clone()))
                                     .px(px(space::S2))
                                     .py(px(space::S1))
                                     .bg(if setup.draft.model == model.id {
@@ -1708,7 +1732,7 @@ impl ShellView {
                                 },
                                 cx,
                             )
-                            .aria_label(model.label.clone())
+                            .aria_label(label)
                         })),
                 ),
             )
@@ -1745,11 +1769,63 @@ impl ShellView {
                                         .flex()
                                         .items_center()
                                         .gap(px(space::S1))
-                                        .child(dot(p.success))
-                                        .child(text(ty::CAPS_LABEL, p.ink_2, "PRIVATE NETWORK")),
+                                        .child(dot(if blocked {
+                                            p.danger
+                                        } else if destination.is_some() {
+                                            p.success
+                                        } else {
+                                            p.ink_3
+                                        }))
+                                        .child(text(ty::CAPS_LABEL, p.ink_2, route.to_uppercase())),
                                 ),
                         )
                         .child(self.ai_setting_field("Base URL", self.ai.url.clone(), window, cx))
+                        .when(endpoint.is_some_and(|info| info.tailnet_http), |form| {
+                            form.child(text(
+                                ty::META,
+                                p.sun_ink,
+                                "Unencrypted · relies on Tailscale",
+                            ))
+                        })
+                        .when(
+                            matches!(
+                                destination,
+                                Some(Destination::NotPrivate | Destination::YourServer)
+                            ),
+                            |form| {
+                                form.child(
+                                    self.ai_action(
+                                        "assistant-attestation",
+                                        div()
+                                            .flex()
+                                            .items_start()
+                                            .gap(px(space::S2))
+                                            .p(px(space::S2))
+                                            .rounded(px(radius::MD))
+                                            .bg(if setup.draft.attested {
+                                                p.wash
+                                            } else {
+                                                p.canvas
+                                            })
+                                            .child(kit::icon(
+                                                if setup.draft.attested {
+                                                    Icon::CircleCheck
+                                                } else {
+                                                    Icon::Circle
+                                                },
+                                                component::ICON_SMALL,
+                                                p.accent_strong,
+                                            ))
+                                            .child(text(ty::META, p.ink, PRIVATE_ATTESTATION)),
+                                        true,
+                                        |this, _, cx| this.toggle_ai_attestation(cx),
+                                        cx,
+                                    )
+                                    .aria_label(PRIVATE_ATTESTATION)
+                                    .aria_toggled(toggled(setup.draft.attested)),
+                                )
+                            },
+                        )
                         .child(
                             div()
                                 .flex()
@@ -2007,7 +2083,7 @@ impl ShellView {
                 .child(text(ty::META, p.ink_3, "New lists are hidden. Changes apply to this device only. Select a row to change its access.").flex_none())
                 .child(list_controls))
             .child(div().flex_none().flex().justify_between().items_center().gap(px(space::S2)).bg(p.canvas).border_t_1().border_color(p.line).px(px(space::S5)).py(px(space::S3))
-                .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, !self.ai.profile.url.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
+                .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
                 .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
         Some(
             div()

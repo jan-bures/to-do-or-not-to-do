@@ -58,6 +58,10 @@ pub enum ProviderError {
     Timeout,
     #[error("the model provider's TLS connection could not be verified")]
     Tls,
+    #[error("Tailscale isn't connected on this PC")]
+    TailnetDisconnected,
+    #[error("this destination isn't verified as private")]
+    NotPrivate,
     #[error("the model provider rejected sign-in")]
     Unauthorized,
     #[error("the model provider's limit was reached")]
@@ -204,6 +208,12 @@ pub enum StreamEvent {
 }
 
 opaque_debug!(Message, ToolCall, StreamEvent);
+
+/// A platform check for direct cleartext Tailscale. Implementations inspect current local
+/// interface state without performing network I/O; an unsupported platform should refuse it.
+pub trait TailnetInterface: MaybeSend + MaybeSync {
+    fn connected(&self) -> bool;
+}
 
 pub trait Provider: MaybeSend + MaybeSync + 'static {
     type Stream: Stream<Item = Result<StreamEvent, ProviderError>> + Unpin + MaybeSend;

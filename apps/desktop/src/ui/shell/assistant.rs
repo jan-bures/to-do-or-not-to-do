@@ -18,7 +18,7 @@ use todo_client::{
     assistant::{
         Approval, ApprovalOutcome, AssistantError, AssistantView, Composer, Controller,
         ProposalCard, ProposalStatus, SendIntent, TurnView,
-        local::{LocalProvider, Support, valid_model},
+        local::{Destination, LocalProvider, MAX_RETRY_AFTER, Support, valid_model},
         provider::{Model, Provider, ProviderError},
     },
     native::{OsEntropy, TokioClock},
@@ -75,8 +75,13 @@ enum Check {
     Failed(String),
 }
 
+const PRIVATE_ATTESTATION: &str =
+    "This server is mine and keeps data private (local weights, no per-token billing).";
+const NOT_PRIVATE: &str = "This address isn't automatically recognized as private. Confirm that it is your own private server in AI settings. No prompt or API key will be sent until you confirm.";
+
 struct Setup {
     draft: Profile,
+    saved_file: bool,
     check: Check,
     models: Vec<Model>,
     pick_model: bool,
@@ -221,6 +226,19 @@ impl Ai {
         }
     }
 
+    fn destination(&self) -> Option<Destination> {
+        self.profile.endpoint().map(|endpoint| endpoint.destination)
+    }
+
+    fn blocked(&self) -> bool {
+        self.destination() == Some(Destination::NotPrivate)
+    }
+
+    fn route_label(&self) -> &'static str {
+        self.destination()
+            .map_or("Assistant off", Destination::label)
+    }
+
     fn view(&self) -> AssistantView {
         self.fixture
             .clone()
@@ -284,6 +302,10 @@ fn problem(error: ProviderError) -> String {
             "Couldn't verify your server's HTTPS certificate. Check the address and certificate."
                 .into()
         }
+        ProviderError::TailnetDisconnected => {
+            "Tailscale isn't connected on this PC. Connect it and retry.".into()
+        }
+        ProviderError::NotPrivate => NOT_PRIVATE.into(),
         ProviderError::Unauthorized => {
             "API key required or invalid. Check the key in AI settings.".into()
         }
@@ -314,15 +336,10 @@ impl ShellView {
 
     pub(super) fn ai_destination(&self) -> Option<SharedString> {
         self.ai.open.then(|| {
+            let route = self.ai.route_label();
             self.ai.view().model.as_ref().map_or_else(
-                || "Assistant off".into(),
-                |model| {
-                    format!(
-                        "Private network · {}",
-                        model::labels::one_line(&model.model)
-                    )
-                    .into()
-                },
+                || route.into(),
+                |model| format!("{route} · {}", model::labels::one_line(&model.model)).into(),
             )
         })
     }
@@ -450,7 +467,7 @@ impl ShellView {
     }
 
     fn focus_ai(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ai.view().composer == Composer::ChooseModel {
+        if self.ai.blocked() || self.ai.view().composer == Composer::ChooseModel {
             window.focus(&self.ai.panel, cx);
         } else {
             window.focus(&self.ai.composer.read(cx).focus_handle.clone(), cx);
@@ -495,6 +512,7 @@ impl ShellView {
 
     fn send_ai(&mut self, text: String, cx: &mut Context<Self>) {
         if text.trim().is_empty()
+            || self.ai.blocked()
             || self.ai.modal()
             || self.ai.rate_until.is_some_and(|end| end > Instant::now())
         {
@@ -627,7 +645,7 @@ impl ShellView {
         let Some(delay) = retry.filter(|d| !d.is_zero()) else {
             return;
         };
-        self.ai.rate_until = Instant::now().checked_add(delay);
+        self.ai.rate_until = Instant::now().checked_add(delay.min(MAX_RETRY_AFTER));
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor()
@@ -837,9 +855,14 @@ impl ShellView {
         self.ai
             .url
             .update(cx, |i, cx| i.set_text(p.url.clone(), cx));
-        self.ai
-            .model
-            .update(cx, |i, cx| i.set_text(p.model.clone(), cx));
+        self.ai.model.update(cx, |i, cx| {
+            let model = if valid_model(&p.model) {
+                model::labels::one_line(&p.model)
+            } else {
+                String::new()
+            };
+            i.set_text(model, cx);
+        });
         self.ai.key.update(cx, |i, cx| {
             i.set_text("", cx);
             i.placeholder = if p.key.is_empty() {
@@ -850,10 +873,15 @@ impl ShellView {
             .into();
         });
         self.ai.settings = Some(Setup {
+            saved_file: self
+                .store
+                .session()
+                .is_some_and(|session| Profile::exists(session.data())),
             draft: Profile {
                 url: p.url.clone(),
                 model: p.model.clone(),
                 enabled: p.enabled,
+                attested: p.attested,
                 lists: p.lists.clone(),
                 support: p.support,
                 key: p.key.clone(),
@@ -892,9 +920,7 @@ impl ShellView {
             Field::Url => {
                 let url = self.ai.url.read(cx).content.to_string();
                 // A credential saved for the old destination must never be tested against a new URL.
-                setup.draft.key = Zeroizing::default();
-                setup.draft.url = url;
-                setup.draft.lists.clear();
+                setup.draft.change_url(url);
                 self.ai.key.update(cx, |i, cx| {
                     i.set_text("", cx);
                     i.placeholder = "Optional bearer key".into();
@@ -911,6 +937,17 @@ impl ShellView {
         cx.notify();
     }
 
+    fn toggle_ai_attestation(&mut self, cx: &mut Context<Self>) {
+        if let Some(setup) = &mut self.ai.settings {
+            setup.draft.attested = !setup.draft.attested;
+            setup.draft.support = None;
+            setup.models.clear();
+            setup.pick_model = false;
+            setup.invalidate();
+            cx.notify();
+        }
+    }
+
     fn test_ai(&mut self, capability: bool, cx: &mut Context<Self>) {
         if self.ai.rate_until.is_some_and(|end| end > Instant::now()) {
             return;
@@ -921,7 +958,7 @@ impl ShellView {
         if matches!(setup.check, Check::Running(_)) || session.client().revocation().is_revoked() {
             return;
         }
-        let provider = match LocalProvider::new(&setup.draft.url, &setup.draft.key) {
+        let provider = match setup.draft.provider() {
             Ok(provider) => provider,
             Err(error) => {
                 setup.check = Check::Failed(error.to_string());
@@ -1040,6 +1077,7 @@ impl ShellView {
             || old.url != next.url
             || old.model != next.model
             || old.key != next.key
+            || old.attested != next.attested
             || old.support != next.support;
         let endpoint_changed = old.url != next.url;
         let generation = self.ai.controller.view().generation;
@@ -1063,20 +1101,35 @@ impl ShellView {
         let Some(session) = self.store.session() else {
             return;
         };
-        if Profile::forget(session.data()).is_err() {
-            if let Some(setup) = self.ai.settings.as_mut() {
-                setup.check =
-                    Check::Failed("Couldn't remove the protected assistant settings.".into());
-            }
-            cx.notify();
-            return;
-        }
+        // Cancel all in-flight work and release plaintext immediately, even if disk cleanup fails.
         self.ai.controller.configure(None);
         self.ai.clear_chat_state();
         self.ai.profile = Profile::default();
         self.ai.rate_until = None;
         self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
-        self.close_ai_settings(window, cx);
+        self.ai.key.update(cx, |i, cx| {
+            i.set_text("", cx);
+            i.placeholder = "Optional bearer key".into();
+        });
+        self.ai.url.update(cx, |i, cx| i.set_text("", cx));
+        self.ai.model.update(cx, |i, cx| i.set_text("", cx));
+        if let Some(setup) = &mut self.ai.settings {
+            setup.invalidate();
+            setup.draft = Profile::default();
+            setup.models.clear();
+            setup.pick_model = false;
+        }
+        if Profile::forget(session.data()).is_err() {
+            if let Some(setup) = &mut self.ai.settings {
+                setup.saved_file = true;
+                setup.check = Check::Failed(
+                    "Couldn't remove all protected assistant settings. Try Forget again.".into(),
+                );
+            }
+            cx.notify();
+        } else {
+            self.close_ai_settings(window, cx);
+        }
     }
 }
 

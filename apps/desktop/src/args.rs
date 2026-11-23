@@ -39,7 +39,7 @@ Options:
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
                     quick-add-calendar, quick-add-priority, detail-due-calendar, pairing, pairing-code, open-failed or open-failed-confirm.
-                    Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-error.
+                    Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-error, ai-blocked.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -57,6 +57,7 @@ pub const FIXTURES: &[&str] = &[
     "ai-batch",
     "ai-settings",
     "ai-error",
+    "ai-blocked",
     "multi-select",
     "drag-reorder",
     "drag-destination",

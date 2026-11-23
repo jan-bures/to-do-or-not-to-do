@@ -1,6 +1,9 @@
 //! One locally configured inference destination per pairing. No transcript or proposal on disk.
 
-use crate::{config::DataDir, platform::dpapi};
+use crate::{
+    config::DataDir,
+    platform::{dpapi, tailnet::WindowsTailnet},
+};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -9,7 +12,7 @@ use std::{
 };
 use todo_client::assistant::{
     ListAccess, Selection,
-    local::{LocalProvider, SetupError, Support, valid_model},
+    local::{EndpointInfo, LocalProvider, SetupError, Support, endpoint_info, valid_model},
 };
 use todo_core::ids::ListId;
 use zeroize::Zeroizing;
@@ -46,6 +49,8 @@ pub struct Profile {
     pub url: String,
     pub model: String,
     pub enabled: bool,
+    #[serde(default)]
+    pub attested: bool,
     pub lists: BTreeMap<ListId, Access>,
     pub support: Option<Support>,
     #[serde(with = "secret")]
@@ -84,7 +89,7 @@ impl Profile {
         if !self.enabled || !valid_model(&self.model) {
             return None;
         }
-        let mut provider = LocalProvider::new(&self.url, &self.key).ok()?;
+        let mut provider = self.provider().ok()?;
         if let Some(support) = self.support {
             provider = provider.with_support(self.model.clone(), support);
         }
@@ -96,8 +101,29 @@ impl Profile {
         })
     }
 
+    pub fn provider(&self) -> Result<LocalProvider, SetupError> {
+        Ok(
+            LocalProvider::configured(&self.url, &self.key, self.attested)?
+                .with_tailnet_interface(WindowsTailnet),
+        )
+    }
+
+    pub fn endpoint(&self) -> Option<EndpointInfo> {
+        endpoint_info(&self.url, self.attested).ok()
+    }
+
+    pub fn change_url(&mut self, url: String) {
+        if self.url != url {
+            self.attested = false;
+            self.key = Zeroizing::default();
+            self.support = None;
+            self.lists.clear();
+            self.url = url;
+        }
+    }
+
     pub fn normalize(&mut self) -> Result<(), SetupError> {
-        self.url = LocalProvider::new(&self.url, &self.key)?.base_url().into();
+        self.url = self.provider()?.base_url().into();
         Ok(())
     }
 
@@ -135,13 +161,37 @@ impl Profile {
         Ok(result?)
     }
 
+    pub fn exists(data: &DataDir) -> bool {
+        data.check().is_ok()
+            && (std::fs::symlink_metadata(data.path().join(FILE)).is_ok()
+                || std::fs::read_dir(data.path()).ok().is_some_and(|entries| {
+                    entries
+                        .flatten()
+                        .any(|entry| is_temporary(&entry.file_name()))
+                }))
+    }
+
     pub fn forget(data: &DataDir) -> anyhow::Result<()> {
         data.check()?;
-        match std::fs::remove_file(data.path().join(FILE)) {
-            Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
-            _ => Ok(()),
+        let mut failure = std::fs::remove_file(data.path().join(FILE))
+            .err()
+            .filter(|error| error.kind() != ErrorKind::NotFound);
+        for entry in std::fs::read_dir(data.path())? {
+            let entry = entry?;
+            if is_temporary(&entry.file_name())
+                && let Err(error) = std::fs::remove_file(entry.path())
+                && error.kind() != ErrorKind::NotFound
+            {
+                failure = Some(error);
+            }
         }
+        failure.map_or(Ok(()), |error| Err(error.into()))
     }
+}
+
+fn is_temporary(name: &std::ffi::OsStr) -> bool {
+    name.to_str()
+        .is_some_and(|name| name.starts_with("assistant-") && name.ends_with(".tmp"))
 }
 
 #[cfg(test)]
@@ -158,6 +208,7 @@ mod tests {
         let mut profile = Profile {
             url: "https://mac.tailnet.example".into(),
             model: "sample-model".into(),
+            attested: true,
             key: Zeroizing::new("synthetic-secret".into()),
             ..Profile::default()
         };
@@ -171,6 +222,7 @@ mod tests {
         let loaded = Profile::load(&data).expect("open fixture profile");
         assert_eq!(*loaded.key, *profile.key);
         assert_eq!(loaded.url, profile.url);
+        assert!(loaded.attested);
         assert!(loaded.selection().is_none());
         Profile::forget(&data).expect("forget assistant profile");
         assert!(
@@ -178,6 +230,123 @@ mod tests {
                 .expect("default profile")
                 .url
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn forget_works_for_bad_or_empty_settings_and_orphaned_temporary_files() {
+        let dir = tempfile::tempdir_in("target").expect("fixture profile directory");
+        let data = Paths::in_dir(dir.path().to_owned()).data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("create fixture pairing");
+        Profile {
+            key: Zeroizing::new("fixture-key".into()),
+            ..Profile::default()
+        }
+        .save(&data)
+        .expect("save a key without URL");
+        assert!(Profile::exists(&data));
+        assert!(Profile::load(&data).expect("load fixture").url.is_empty());
+        std::fs::write(data.path().join(FILE), b"not a protected record")
+            .expect("fixture invalid profile");
+        assert!(Profile::load(&data).is_err());
+        let orphan = data.path().join("assistant-orphan.tmp");
+        let other = data.path().join("unrelated.tmp");
+        std::fs::write(&orphan, b"orphan").expect("fixture temporary file");
+        std::fs::write(&other, b"unrelated").expect("fixture unrelated file");
+        assert!(Profile::exists(&data));
+        Profile::forget(&data).expect("forget corrupt profile and orphan");
+        assert!(!Profile::exists(&data));
+        assert!(!orphan.exists());
+        assert!(other.exists());
+        std::fs::write(&orphan, b"orphan only").expect("fixture temporary file without profile");
+        assert!(Profile::exists(&data));
+        Profile::forget(&data).expect("forget only the orphan");
+        assert!(!Profile::exists(&data));
+    }
+
+    #[test]
+    fn legacy_profiles_do_not_inherit_attestation() {
+        use todo_client::assistant::local::Destination;
+        let old = r#"{"url":"https://mac.tailnet.example/v1","model":"fixture-model","enabled":true,"lists":{},"support":null,"key":""}"#;
+        let profile: Profile = serde_json::from_str(old).expect("legacy profile");
+        assert!(!profile.attested);
+        assert_eq!(
+            profile.endpoint().expect("legacy URL").destination,
+            Destination::NotPrivate
+        );
+    }
+
+    #[tokio::test]
+    async fn changing_url_cannot_send_the_saved_key_to_the_new_host() {
+        use todo_client::assistant::provider::Provider;
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+        };
+
+        async fn server(host: &str) -> (String, tokio::task::JoinHandle<String>) {
+            let listener = TcpListener::bind((host, 0))
+                .await
+                .expect("bind fixture server");
+            let address = format!(
+                "http://{host}:{}/v1",
+                listener
+                    .local_addr()
+                    .expect("fixture listener address")
+                    .port()
+            );
+            let task = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.expect("accept fixture request");
+                let mut data = Vec::new();
+                let mut buf = [0u8; 1024];
+                loop {
+                    let n = stream.read(&mut buf).await.expect("read fixture request");
+                    assert!(n > 0 && data.len() < 8192);
+                    data.extend_from_slice(&buf[..n]);
+                    if data.windows(4).any(|chunk| chunk == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 11\r\nConnection: close\r\n\r\n{\"data\":[]}").await.expect("send fixture catalog");
+                String::from_utf8(data)
+                    .expect("fixture HTTP header")
+                    .to_ascii_lowercase()
+            });
+            (address, task)
+        }
+        let (old, old_request) = server("127.0.0.1").await;
+        let (new, new_request) = server("localhost").await;
+        let mut profile = Profile {
+            url: old,
+            attested: true,
+            key: Zeroizing::new("fixture-key".into()),
+            ..Profile::default()
+        };
+        profile
+            .provider()
+            .expect("old provider")
+            .list_models()
+            .await
+            .expect("old catalog");
+        assert!(
+            old_request
+                .await
+                .expect("old request")
+                .contains("authorization: bearer fixture-key")
+        );
+        profile.change_url(new);
+        assert!(!profile.attested && profile.key.is_empty());
+        profile
+            .provider()
+            .expect("new provider")
+            .list_models()
+            .await
+            .expect("new catalog");
+        assert!(
+            !new_request
+                .await
+                .expect("new request")
+                .contains("authorization:")
         );
     }
 }

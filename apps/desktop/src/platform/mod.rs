@@ -7,6 +7,7 @@ pub mod dpapi;
 pub mod hotkey;
 pub mod icon;
 pub mod single_instance;
+pub mod tailnet;
 pub mod toast;
 pub mod tray;
 pub mod win;
