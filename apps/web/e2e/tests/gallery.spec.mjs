@@ -293,8 +293,9 @@ for (const scheme of ["light", "dark"]) {
         await page.getByRole("button", { name: "Prepare the November board update", exact: true }).click();
         const due = page.getByRole("button", { name: /^Edit due date:/ });
         await due.click();
-        await expect(page.getByRole("dialog", { name: "Choose due date" })
-          .getByRole("button", { name: "Saturday, 21 November 2026" })).toBeFocused();
+        const calendar = page.getByRole("dialog", { name: "Choose due date" });
+        await expect(calendar.getByRole("button", { name: "Saturday, 21 November 2026" })).toBeFocused();
+        await expect(calendar.getByText("This task repeats. No date also stops the repeat.")).toBeInViewport();
         await shot(page, `${layout}-detail-due-calendar-${scheme}`);
         await page.keyboard.press("Escape");
         await expect(due).toBeFocused();

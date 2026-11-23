@@ -182,6 +182,12 @@ pub fn quick_add_month(
     }
 }
 
+/// Shared warning for the detail calendar of a repeating task.
+#[uniffi::export]
+pub fn calendar_repeat_clear_note() -> String {
+    calendar::REPEAT_CLEAR_NOTE.into()
+}
+
 /// Move the calendar's keyboard cursor by a day or week, including across a month boundary.
 #[uniffi::export]
 pub fn calendar_move_days(cursor: String, days: i32) -> Option<String> {

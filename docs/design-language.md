@@ -366,8 +366,9 @@ Days outside the month are blank. The selected date has a wash and a stronger la
 the keyboard focus edge are separate. The picker opens on the pending date or today. The arrow keys move by
 one day or one week, Page Up/Down move by a month, Enter chooses, and Esc dismisses without changing the
 draft. Task detail's Due row opens this same picker on the saved date or today. Choosing there saves
-immediately rather than staging a draft. The Flag opens the same four choices as task detail with the
-current choice ticked.
+immediately rather than staging a draft. For a repeating task only, an `ink-3` caption below the grid
+warns that **No date** also stops the repeat. The Flag opens the same four choices as task detail with
+the current choice ticked.
 
 A choice sets the pending field and takes out that field's typed suffix, not the title or the other suffix.
 Typing another valid suffix replaces the corresponding choice. Removing a chip clears that field; **No date**

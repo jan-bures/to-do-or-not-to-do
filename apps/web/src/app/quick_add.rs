@@ -206,6 +206,7 @@ pub(super) fn CalendarPopover(
     c: Ctx,
     picker: DatePicker,
     choose: Callback<Option<Date>>,
+    #[prop(optional)] repeats: Signal<bool>,
 ) -> impl IntoView {
     let DatePicker {
         popup,
@@ -278,6 +279,7 @@ pub(super) fn CalendarPopover(
         <div class="qa-presets">{move || today.get().map(|today| calendar::presets(today).into_iter().map(|preset| view! {
             <button type="button" class="qa-preset" class:current=move || due.get() == preset.date
                 aria-current=move || (due.get() == preset.date).then_some("true")
+                aria-describedby=move || (preset.date.is_none() && repeats.get()).then_some("calendar-repeat-note")
                 on:click=move |_| choose.run(preset.date)>
                 {preset.label}<span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
             </button>
@@ -313,6 +315,9 @@ pub(super) fn CalendarPopover(
                 }).collect_view()}
             })}
         </div>
+        <Show when=move || repeats.get()>
+            <p class="calendar-repeat-note" id="calendar-repeat-note">{calendar::REPEAT_CLEAR_NOTE}</p>
+        </Show>
         </div>
     }
 }

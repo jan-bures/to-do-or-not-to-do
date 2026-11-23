@@ -18,8 +18,11 @@ import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.test.pressKey
 import app.todoornot.core.RepeatChoice
 import app.todoornot.core.RepeatPreset
+import app.todoornot.core.calendarRepeatClearNote
 import app.todoornot.design.TodoTheme
+import app.todoornot.model.Actions
 import app.todoornot.model.TodoModel
+import app.todoornot.ui.Composer
 import app.todoornot.ui.DetailPane
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,6 +62,7 @@ class DetailCalendarTest {
             val due = compose.onNodeWithText("Due", substring = false)
             val original = compose.onNodeWithContentDescription("Sunday, 22 November 2026")
             val clear = compose.onNodeWithText("No date")
+            val warning = compose.onNodeWithText(calendarRepeatClearNote())
             fun open() {
                 due.performKeyInput { pressKey(Key.Enter) }
                 compose.waitUntilExactlyOneExists(hasText("No date"), timeoutMillis = 5_000)
@@ -66,6 +70,7 @@ class DetailCalendarTest {
 
             due.performSemanticsAction(SemanticsActions.RequestFocus)
             open()
+            warning.assertExists()
             original.assertIsSelected().assertIsFocused().performKeyInput { pressKey(Key.PageDown) }
             compose.onNodeWithContentDescription("Tuesday, 22 December 2026").assertIsFocused()
                 .performKeyInput { pressKey(Key.Escape) }
@@ -90,8 +95,22 @@ class DetailCalendarTest {
             open()
             compose.onNodeWithContentDescription("Saturday, 21 November 2026").assertIsFocused()
             clear.assertIsSelected()
+            warning.assertDoesNotExist()
         } finally {
             scope.cancel()
         }
+    }
+
+    @Test
+    fun quick_add_calendar_has_no_repeat_warning() {
+        val actions = object : Actions by Actions.None {
+            override fun composerNow() = FIXTURE_NOW
+        }
+        compose.setContent {
+            TodoTheme(false, "my-day") { Composer("Add a task", "", false, actions, null) }
+        }
+        compose.onNodeWithContentDescription("Choose due date").performClick()
+        compose.waitUntilExactlyOneExists(hasText("No date"), timeoutMillis = 5_000)
+        compose.onNodeWithText(calendarRepeatClearNote()).assertDoesNotExist()
     }
 }

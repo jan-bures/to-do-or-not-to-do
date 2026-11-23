@@ -69,6 +69,7 @@ import app.todoornot.core.ActivityRow
 import app.todoornot.core.ColorTarget
 import app.todoornot.core.CustomRepeat
 import app.todoornot.core.RepeatChoice
+import app.todoornot.core.RepeatPreset
 import app.todoornot.core.RepeatUnit
 import app.todoornot.ui.MergeConfirmCard
 import app.todoornot.ui.MergeTaskCard
@@ -627,26 +628,34 @@ class GalleryTest {
         return s.copy(detail = detail.copy(subtitle = "Created 21 Nov", activity = detail.activity.map { it.copy(relative = "Just now") }))
     }
 
-    /** The shared calendar at rest above the Due row on a dated task, and below it on an undated task. */
+    /** The warning above the Due row of a repeating task; no warning on an undated task. */
     @Test
     fun detail_due_calendar() {
         val spacing = Tokens.Space
         val (e, admin, id) = admin()
+        val original = requireNotNull(state(e, admin, select = id).detail)
+        e.setRepeat(id, RepeatChoice.Preset(RepeatPreset.DAILY), FIXTURE_NOW)
         val dated = state(e, admin, select = id).let { s ->
             val detail = requireNotNull(s.detail)
-            s.copy(detail = detail.copy(notes = detail.notes + "\nBring a copy of the form."))
+            s.copy(detail = detail.copy(
+                subtitle = original.subtitle,
+                activity = original.activity,
+                notes = detail.notes + "\nBring a copy of the form.\nCheck which entrance is open.\nWrite down the appointment number.",
+            ))
         }
         val undated = freshCarService(e, admin)
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
             for ((label, state) in listOf("dated" to dated, "undated" to undated)) {
-                val date = requireNotNull(state.detail).due
+                val detail = requireNotNull(state.detail)
+                val date = detail.due
                 overlaid("detail_due_calendar_${label}_$theme", COVER, state, dark) {
                     Box(Modifier.fillMaxSize().navigationBarsPadding()) {
                         val anchor = if (date == null) Modifier.align(Alignment.BottomEnd)
                             .padding(bottom = (spacing.S10 + Tokens.Metrics.Phone.TOUCH - spacing.S1).dp)
-                        else Modifier.align(Alignment.TopEnd).padding(top = spacing.S10.dp + spacing.S3.dp)
-                        DateCalendar(quickAddMonth(FIXTURE_NOW, date, null), date, {}, {}, anchor.padding(end = spacing.S6.dp))
+                        else Modifier.align(Alignment.TopEnd).padding(top = spacing.S10.dp + spacing.S8.dp)
+                        DateCalendar(quickAddMonth(FIXTURE_NOW, date, null), date, {}, {},
+                            anchor.padding(end = spacing.S6.dp), repeats = detail.repeats)
                     }
                 }
             }

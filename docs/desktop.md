@@ -421,7 +421,8 @@ The Flag offers the same four levels as the task Priority row. A pick replaces o
 its chip's remove button clears the field, including the Planned or Important default. The fixed global
 quick-add window still takes typed syntax only. Task detail's **Due** row opens the same calendar on the
 saved date or today. Choose a preset or any day, including past dates, to save it right away. **No date**
-clears the due date and any repeat rule. **Esc** returns to the Due row without saving.
+clears the due date and any repeat rule. For a repeating task the note below the grid explains this
+before you choose. **Esc** returns to the Due row without saving.
 
 ## The shell
 
@@ -729,7 +730,7 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
 menu and the detail pane's priority picker. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
-calendar anchored to the selected task's Due row. `task-context-menu` is a task's menu on the row below the selected
+calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected
 one, as a right-click leaves it; `move-to-picker` is the selected task's list picker as M opens it, grouped by
 collection with the keyboard on the task's own list; `sync-failures` is "3 couldn't sync" opened, with three
 refused changes in plain words. `merge-task-picker` shows the destination search and list locations;

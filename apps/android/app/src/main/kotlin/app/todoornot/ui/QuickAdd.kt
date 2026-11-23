@@ -56,6 +56,7 @@ import app.todoornot.core.LocalNow
 import app.todoornot.core.QuickAddDraft
 import app.todoornot.core.QuickAddMonth
 import app.todoornot.core.calendarMoveDays
+import app.todoornot.core.calendarRepeatClearNote
 import app.todoornot.core.quickAddEdit
 import app.todoornot.core.quickAddMonth
 import app.todoornot.core.quickAddPickDue
@@ -189,13 +190,13 @@ private fun QuickChip(label: String, description: String, date: Boolean, onClick
 
 /** The same anchored date picker, whether a choice edits a draft or saves a task. */
 @Composable
-internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit) {
+internal fun CalendarPopup(now: LocalNow, date: String?, onChoose: (String?) -> Unit, onDismiss: () -> Unit, repeats: Boolean = false) {
     val selected = remember { date }
     var cursor by remember { mutableStateOf<String?>(null) }
     val month = remember(now, cursor) { quickAddMonth(now, selected, cursor) }
     AnchoredPopup(onDismiss = onDismiss) { overlay ->
         DateCalendar(month, selected, { day -> overlay.choose { onChoose(day) } }, { cursor = it },
-            Modifier.padding(S.S2.dp), dismiss = overlay::close)
+            Modifier.padding(S.S2.dp), dismiss = overlay::close, repeats = repeats)
     }
 }
 
@@ -208,6 +209,7 @@ internal fun DateCalendar(
     shift: (String) -> Unit,
     modifier: Modifier = Modifier,
     dismiss: (() -> Unit)? = null,
+    repeats: Boolean = false,
 ) {
     val design = LocalDesign.current
     val r = design.room
@@ -282,6 +284,12 @@ internal fun DateCalendar(
                     }
                 }
             }
+        }
+        if (repeats) {
+            val note = remember { calendarRepeatClearNote() }
+            Label(note, Tokens.Type.META_PHONE, r.ink3,
+                Modifier.fillMaxWidth().padding(top = S.S1.dp).hairline(r.line, top = true).padding(top = S.S2.dp),
+                maxLines = Int.MAX_VALUE)
         }
     }
 }

@@ -88,7 +88,8 @@ What the first version does:
 - **Due date and priority.** Tap **Due** to open the same calendar as quick-add, anchored to the row.
   It opens on the saved date or today. Choose **Today**, **Tomorrow**, **Next week** (next Monday), or
   any day in the Monday-first grid to save it immediately. **No date** removes the due date and any
-  repeat rule (`intent::set_due`). Back or **Esc** closes without saving. On a hardware keyboard,
+  repeat rule (`intent::set_due`). For a repeating task, a note below the grid warns that **No date**
+  also stops the repeat. Back or **Esc** closes without saving. On a hardware keyboard,
   arrows move by day or week, **Page Up/Down** move by month and **Enter** chooses. The **Priority** row
   opens a picker with all four levels, highest first
   (**High** `!!!`, **Normal** `!!`, **Low** `!`, **None**), the current one ticked. The star still sets
@@ -372,8 +373,8 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
 The gallery draws everything at rest, and freezes the motion at chosen moments (`GalleryTest.motion_frames`:
 the fill, the hold, the collapse half way, the sun half way, dusk half way and the hand-over entering).
 Popups and dialogs are windows of their own, which Paparazzi can't draw, so the overlay shots draw their
-cards in place over the screen, at rest: the shared calendar (`detail_due_calendar`, on dated and undated
-tasks in both themes), the priority picker, a step being renamed and a step's
+cards in place over the screen, at rest: the shared calendar (`detail_due_calendar`, on a repeating task
+and an undated task in both themes), the priority picker, a step being renamed and a step's
 menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
 rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the

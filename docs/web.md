@@ -378,8 +378,8 @@ offers the four priority levels. Picking a value removes the matching typed suff
 alone. Clearing a chip (or choosing **No date** or **None**) overrides the corresponding room default.
 
 In task detail, click **Due** or press **D** to open the same calendar on the task's due date (or today).
-Choosing a day or preset saves it right away. **No date** also clears any repeat rule. **Esc** closes
-without saving and returns focus to Due.
+Choosing a day or preset saves it right away. For a repeating task, a note below the grid warns that
+**No date** also stops the repeat. **Esc** closes without saving and returns focus to Due.
 
 Drop `.eml` files onto the task list to [create tasks from email](desktop.md#drop-an-email-onto-the-task-list).
 The area below quick-add highlights and names the destination while dragging, even if the browser

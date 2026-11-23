@@ -381,7 +381,8 @@ private fun Fields(detail: TaskDetail, actions: Actions) {
             FieldEdit.DUE -> Box {
                 FieldRow(f, "Change the due date", expanded = calendarNow != null) { calendarNow = actions.composerNow() }
                 calendarNow?.let { opened ->
-                    CalendarPopup(opened, detail.due, onChoose = { actions.setDue(detail.id, it) }, onDismiss = { calendarNow = null })
+                    CalendarPopup(opened, detail.due, onChoose = { actions.setDue(detail.id, it) },
+                        onDismiss = { calendarNow = null }, repeats = detail.repeats)
                 }
             }
             FieldEdit.PRIORITY -> Box {

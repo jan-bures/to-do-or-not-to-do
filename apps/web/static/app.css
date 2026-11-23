@@ -1676,6 +1676,14 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 .qa-day[aria-current="date"] { border: var(--hairline) solid var(--color-control); }
 .qa-day:focus-visible { position: relative; z-index: 1; }
 
+.calendar-repeat-note {
+  margin: var(--space-1) 0 0;
+  padding-block-start: var(--space-2);
+  border-block-start: var(--hairline) solid var(--color-line);
+  color: var(--color-ink-3);
+  font: var(--text-meta);
+}
+
 /* ---- rows ------------------------------------------------------------------------------------------- */
 
 .rows {
@@ -3418,6 +3426,7 @@ a.source:hover {
   }
   .qa-calendar button, .qa-priority-menu button { min-height: var(--phone-touch); }
   .qa-calendar button.qa-preset { font: var(--text-button); }
+  .calendar-repeat-note { font: var(--text-meta-phone); }
 
   .qa-hints {
     display: none;

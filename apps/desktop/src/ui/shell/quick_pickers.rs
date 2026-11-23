@@ -359,9 +359,16 @@ impl ShellView {
         }
     }
 
+    fn calendar_repeat_note(&self, c: Calendar) -> Option<&'static str> {
+        let task = c.task?;
+        self.store.view().tasks.get(&task)?.recurrence.as_ref()?;
+        Some(calendar::REPEAT_CLEAR_NOTE)
+    }
+
     pub(super) fn calendar_body(&self, c: Calendar, live: bool, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let selected = c.selected;
+        let repeat_note = self.calendar_repeat_note(c);
         let presets = calendar::presets(c.today);
         let preset_count = presets.len();
         let presets = presets
@@ -383,6 +390,10 @@ impl ShellView {
                         )
                         .relative()
                         .flex_1()
+                        .when_some(
+                            repeat_note.filter(|_| live && preset.date.is_none()),
+                            |el, note| el.aria_description(note),
+                        )
                         .style(ty::BUTTON_SMALL)
                         .child(preset.label)
                         .when(selected == preset.date, |el| {
@@ -485,6 +496,18 @@ impl ShellView {
             .child(header)
             .child(weekdays)
             .children(rows)
+            .when_some(repeat_note, |el, note| {
+                el.child(
+                    div()
+                        .mt(px(space::S1))
+                        .pt(px(space::S2))
+                        .border_t(px(elevation::HAIRLINE))
+                        .border_color(p.line)
+                        .style(ty::META)
+                        .text_color(p.ink_3)
+                        .child(note),
+                )
+            })
     }
 
     #[expect(
@@ -643,6 +666,11 @@ mod tests {
             assert_eq!(calendar.task, Some(task));
             assert_eq!(calendar.month.cursor, due);
             assert_eq!(calendar.selected, Some(due));
+            assert_eq!(
+                view.calendar_repeat_note(calendar),
+                Some(calendar::REPEAT_CLEAR_NOTE)
+            );
+            assert_eq!(view.calendar_repeat_note(view.quick_calendar()), None);
         });
         press(cx, "pagedown");
         press(cx, "escape");
@@ -670,6 +698,15 @@ mod tests {
             assert_eq!(state.tasks[&task].due, None);
             assert_eq!(state.tasks[&task].recurrence, None);
         });
+        press(cx, "enter");
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            let MenuKind::Date(calendar) = view.menu.as_ref().expect("date picker").kind else {
+                panic!("expected the calendar");
+            };
+            assert_eq!(view.calendar_repeat_note(calendar), None);
+        });
+        press(cx, "escape");
         press(cx, "ctrl-z");
         cx.update(|_, cx| {
             let state = shell.read(cx).store.view();

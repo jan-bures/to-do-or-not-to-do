@@ -149,6 +149,7 @@ test("quick-add keeps typed and picked values in agreement and navigates the cal
   await page.keyboard.press("Enter");
   await expect(calendar.getByRole("button", { name: "Sunday, 22 November 2026" })).toBeFocused();
   await expect(calendar.getByRole("columnheader").first()).toHaveText("Mon");
+  await expect(calendar.locator(".calendar-repeat-note")).toHaveCount(0);
   await page.keyboard.press("PageDown");
   await expect(calendar.getByRole("grid", { name: "December 2026" })).toBeVisible();
   await expect(calendar.getByRole("button", { name: "Tuesday, 22 December 2026" })).toBeFocused();
@@ -322,9 +323,12 @@ test("detail due uses the calendar for presets, past dates and clearing a repeat
   const calendar = page.getByRole("dialog", { name: "Choose due date" });
   const day = (name) => calendar.getByRole("button", { name, exact: true });
   const today = day("Saturday, 21 November 2026");
+  const warning = calendar.getByText("This task repeats. No date also stops the repeat.", { exact: true });
   await page.keyboard.press("d");
   await expect(due).toHaveAttribute("aria-expanded", "true");
   await expect(today).toBeFocused();
+  await expect(warning).toBeVisible();
+  await expect(day("No date")).toHaveAccessibleDescription("This task repeats. No date also stops the repeat.");
   await expect(calendar.getByRole("gridcell", { selected: true })).toContainText("21");
   await page.keyboard.press("PageDown");
   await expect(day("Monday, 21 December 2026")).toBeFocused();
@@ -351,6 +355,8 @@ test("detail due uses the calendar for presets, past dates and clearing a repeat
   await expect(today).toBeFocused();
   await expect(today).toHaveAttribute("aria-current", "date");
   await expect(day("No date")).toHaveAttribute("aria-current", "true");
+  await expect(warning).toHaveCount(0);
+  await expect(day("No date")).not.toHaveAttribute("aria-describedby");
   await page.keyboard.press("Escape");
   await w.check();
 });

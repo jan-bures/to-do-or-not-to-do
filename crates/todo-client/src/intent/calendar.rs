@@ -5,6 +5,9 @@ use todo_core::time::{Date, Weekday, add_days};
 
 pub const WEEK_START: Weekday = Weekday::Mon;
 
+/// Shown below the calendar when editing the due date of a repeating task.
+pub const REPEAT_CLEAR_NOTE: &str = "This task repeats. No date also stops the repeat.";
+
 pub fn next_monday(today: Date) -> Option<Date> {
     add_days(today, 7 - today.weekday().to_monday_zero_offset() as i64)
 }

@@ -2806,6 +2806,10 @@ fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let due = Memo::new(move |_| detail.with(|d| d.as_ref().and_then(|d| d.due.clone())));
     let popup = pickers::DetailPicker::new(c, id, DUE_ANCHOR, DUE_PICKER);
     let calendar = DatePicker::new(popup, "detail-active-day", "detail-month-label");
+    let repeats = Signal::derive(move || {
+        c.state
+            .with(|s| s.tasks.get(&id).is_some_and(|t| t.recurrence.is_some()))
+    });
     let start = move |_| {
         if c.read_only() {
             return;
@@ -2838,7 +2842,7 @@ fn DueEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
                     on:click=start>
                     {move || due.with(|d| d.as_ref().map(|(_, label)| label.clone()).unwrap_or_else(|| "Set date".into()))}
                 </button>
-                <CalendarPopover c=c picker=calendar choose=Callback::new(choose)/>
+                <CalendarPopover c=c picker=calendar repeats=repeats choose=Callback::new(choose)/>
             </dd>
         </div>
     }
