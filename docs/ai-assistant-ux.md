@@ -97,7 +97,7 @@ Keep conversation management lightweight — no nested sidebar inside the Assist
 
 ### 2.7 Proposal cards (single & batched)
 
-Every write the assistant wants to perform is emitted as a **Proposal Card** (`raised` fill, `radius::LG` `10 px`, `1 px` `line-strong` border, inset `3 px` leading semantic bar `component::PROPOSAL_BAR`). Mutations are visually distinguished by **icon, mono caps label, leading bar colour, and structural layout** (never colour alone):
+Every write the assistant wants to perform is emitted as a **Proposal Card** (`raised` fill, `radius::LG` `10 px`, `1 px` `line-strong` border, inset `3 px` leading semantic bar `component::PROPOSAL_BAR`). Mutations are visually distinguished by **icon, mono caps label, leading bar color, and structural layout** (never color alone):
 
 | Proposal kind | Leading bar (`3 px`) | Header treatment | Body layout | Action buttons (left → right) |
 |---|---|---|---|---|
