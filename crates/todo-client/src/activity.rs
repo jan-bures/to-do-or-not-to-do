@@ -138,6 +138,9 @@ pub fn actor_name(actor: &Actor) -> String {
 /// Display name from an agent ID (the event log doesn't carry a separate display name).
 #[must_use]
 pub fn agent_name(id: &str) -> String {
+    if id == todo_core::actor::ASSISTANT_AGENT_ID {
+        return "In-app assistant".to_owned();
+    }
     let mut chars = id.chars();
     chars.next().map_or_else(String::new, |first| {
         first.to_uppercase().chain(chars).collect()

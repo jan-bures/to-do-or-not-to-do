@@ -45,6 +45,7 @@ use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::time::Timestamp;
 use todo_core::undo::{UndoOptions, undo_batch};
 use todo_core::{Actor, AgentId, Grants, State, apply, decide};
+use todo_tools::assistant::approval::{ApprovalRequest, BatchError};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
@@ -121,6 +122,12 @@ pub enum EngineError {
         /// This log's epoch.
         current: Uuid,
     },
+    /// Another write landed since the owner reviewed the approval.
+    #[error("the task snapshot changed; request a new proposal")]
+    ApprovalStale,
+    /// A restricted approval failed validation or did not reproduce the reviewed effects.
+    #[error(transparent)]
+    ApprovalInvalid(#[from] BatchError),
     /// The event at the undo's sequence number is not the one the client meant.
     #[error("event {seq} is not the expected event")]
     UndoTargetMismatch {
@@ -794,6 +801,49 @@ impl Engine {
             },
             events,
             |s, ev| summary::command(s, command, ev),
+            |_| Ok(()),
+        )
+    }
+
+    /// Commit an authenticated owner's frozen approval. The attributed actor and its scratch-only
+    /// grants come from re-deciding the restricted batch, never from a request field.
+    pub fn approve_assistant(
+        &self,
+        req: &ApprovalRequest,
+        cancel: &Cancel,
+    ) -> Result<Outcome, EngineError> {
+        const KIND: &str = "assistant_approval";
+        let mut w = self.writer(cancel)?;
+        if req.batch.revision.epoch != self.epoch {
+            return Err(EngineError::EpochMismatch {
+                current: self.epoch,
+            });
+        }
+        let actor = Actor::agent(todo_core::actor::ASSISTANT_AGENT_ID)
+            .map_err(|_| BatchError::InvalidDraft)?;
+        let hash = request_hash(KIND, &actor, &req.batch)?;
+        if let Some(outcome) = self.replay(w.conn()?, req.command_id, KIND, &hash)? {
+            return Ok(outcome);
+        }
+        if req.batch.revision.cursor != self.head_seq() {
+            return Err(EngineError::ApprovalStale);
+        }
+        let base = self.state();
+        let events = req.redecide(&base)?;
+        let now = self.next_now(&mut w);
+        self.commit(
+            &mut w,
+            &base,
+            Pending {
+                actor: &actor,
+                command_id: req.command_id,
+                now,
+                kind: KIND,
+                request_hash: hash,
+                cancel,
+            },
+            events,
+            |_, _| "Approved in-app assistant changes".to_owned(),
             |_| Ok(()),
         )
     }

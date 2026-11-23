@@ -4,6 +4,7 @@
 //! for the selected provider profile. The projection does not expose the source snapshot. It does
 //! not track replica revisions or execute proposals; the host must discard it when scope changes.
 
+pub mod approval;
 mod projection;
 
 use crate::{args::*, descriptor};

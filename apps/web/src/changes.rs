@@ -16,7 +16,7 @@ impl Failure {
         let what = failure::what(&f.entry);
         let what = failure::name(&f.entry, state)
             .map_or_else(|| what.to_owned(), |name| format!("{what}: “{name}”"));
-        let why = if f.entry.command().is_none() {
+        let why = if f.entry.is_undo() {
             undo_failure(&f.rejection.code)
         } else {
             failure::why(f)

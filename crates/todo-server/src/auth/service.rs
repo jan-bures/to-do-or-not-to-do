@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError, RwLock};
 use std::time::Duration;
-use todo_core::{AccessLevel, AgentId, DeviceId, Grants};
+use todo_core::{AccessLevel, AgentId, DeviceId, Grants, actor::ASSISTANT_AGENT_ID};
 use tokio::sync::watch;
 use webauthn_rs::prelude::{
     CreationChallengeResponse, Passkey, PasskeyAuthentication, PasskeyRegistration,
@@ -638,7 +638,8 @@ impl AuthService {
         }
         let mut grants = BTreeMap::new();
         for a in self.store.agents()? {
-            if a.revoked_at.is_some() {
+            // A database from an older deployment might already contain this once-valid slug.
+            if a.revoked_at.is_some() || a.agent.as_str() == ASSISTANT_AGENT_ID {
                 continue;
             }
             if let Some(h) = crate::config::decode_hash(&a.token_hash) {
@@ -1749,6 +1750,13 @@ impl AuthService {
         expires_in_days: Option<u32>,
         ip: Option<IpAddr>,
     ) -> Result<(i64, String), ApiError> {
+        if agent.as_str() == ASSISTANT_AGENT_ID {
+            return Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "reserved_agent",
+                "this identity is reserved for the in-app assistant",
+            ));
+        }
         let token = format!("{AGENT_TOKEN_PREFIX}{}", secret::random_token::<32>()?);
         let wph = writes_per_hour
             .unwrap_or(self.cfg.agent_writes_per_hour)

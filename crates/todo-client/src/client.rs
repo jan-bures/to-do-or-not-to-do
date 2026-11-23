@@ -780,9 +780,85 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                     epoch: s.replica.epoch()?,
                     cursor: s.replica.cursor(),
                 },
-                state: Arc::new(s.replica.confirmed().clone()),
+                state: s.replica.assistant_base()?,
                 stale: !s.caught_up,
             })
+        })
+    }
+
+    /// Called only by the controller while consuming the current review. Do not notify while its
+    /// chat lock is held; the caller signals after dropping that lock.
+    #[cfg(feature = "assistant")]
+    pub(crate) fn enqueue_approval(
+        &self,
+        id: CommandId,
+        batch: todo_tools::assistant::approval::ApprovedBatch,
+    ) -> Result<crate::assistant::Approval, crate::assistant::ReviewError> {
+        use crate::assistant::{Approval, ReviewError};
+        let now = self.inner.clock.now();
+        self.with(|s| {
+            if self.revocation().is_revoked() || s.replica.assistant_base().is_none() {
+                return Err(ReviewError::NotReady);
+            }
+            if s.replica.epoch() != Some(batch.revision.epoch)
+                || s.replica.cursor() != batch.revision.cursor
+            {
+                return Err(ReviewError::Stale);
+            }
+            if s.resync_requested
+                || !s.caught_up
+                || s.stream != StreamState::Live
+                || s.send != SendState::Ok
+                || s.replica.received() != s.replica.cursor()
+                || !s.replica.outbox().is_empty()
+            {
+                return Err(ReviewError::NotReady);
+            }
+            s.enqueue(Operation::AssistantApproval { batch }, id, now)?;
+            Ok(Approval {
+                id,
+                target: s.replica.track(id),
+            })
+        })
+    }
+
+    #[cfg(feature = "assistant")]
+    pub(crate) fn approval_enqueued(&self) {
+        self.inner.outbox_changed.notify();
+        self.changed();
+    }
+
+    /// Pending until the entire confirmed batch arrives; a POST receipt alone isn't confirmation.
+    #[cfg(feature = "assistant")]
+    pub fn approval_outcome(
+        &self,
+        approval: &crate::assistant::Approval,
+    ) -> crate::assistant::ApprovalOutcome {
+        use crate::assistant::ApprovalOutcome;
+        self.with(|s| {
+            if let Some((epoch, first_event)) = s.replica.confirmed_receipt(&approval.target) {
+                ApprovalOutcome::Confirmed { epoch, first_event }
+            } else if s
+                .replica
+                .outbox()
+                .iter()
+                .any(|e| e.command_id == approval.id)
+            {
+                if s.replica.is_durable(approval.id) {
+                    ApprovalOutcome::Pending
+                } else {
+                    ApprovalOutcome::Saving
+                }
+            } else if let Some(failed) = s
+                .replica
+                .failed()
+                .iter()
+                .find(|f| f.entry.command_id == approval.id)
+            {
+                ApprovalOutcome::Rejected(failed.rejection.clone())
+            } else {
+                ApprovalOutcome::Unavailable
+            }
         })
     }
 
@@ -1613,7 +1689,7 @@ enum ConfirmFailure {
     Step(Step),
 }
 
-/// Replaces the server's message of a stale undo with one that says what happened.
+/// Explains why a frozen operation cannot be applied to a different log.
 fn explain(entry: &OutboxEntry, mut rejection: Rejection) -> Rejection {
     if let Operation::Undo { seq, .. } = entry.op
         && (rejection.code == EPOCH_MISMATCH || rejection.code == EVENT_MISMATCH)
@@ -1621,6 +1697,11 @@ fn explain(entry: &OutboxEntry, mut rejection: Rejection) -> Rejection {
         rejection.message = format!(
             "not undone: the server's history was replaced (restored from a backup) after this undo was queued, so event {seq} is no longer the change it was meant for"
         );
+    }
+    if matches!(entry.op, Operation::AssistantApproval { .. }) && rejection.code == EPOCH_MISMATCH {
+        rejection.message =
+            "The log was replaced after this proposal was approved. Request a new proposal."
+                .to_owned();
     }
     rejection
 }

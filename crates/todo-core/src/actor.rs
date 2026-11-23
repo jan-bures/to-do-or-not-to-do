@@ -4,6 +4,9 @@ use crate::ids::ParseIdError;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::fmt;
 
+/// Reserved for owner-approved in-app assistant batches; never a provisionable agent token.
+pub const ASSISTANT_AGENT_ID: &str = "assistant";
+
 fn valid_slug(s: &str) -> bool {
     !s.is_empty()
         && s.len() <= 64
@@ -73,7 +76,7 @@ pub enum Actor {
         /// The device session.
         device: DeviceId,
     },
-    /// An AI agent identified by its token.
+    /// An external AI agent or the reserved in-app assistant.
     Agent {
         /// The agent.
         agent_id: AgentId,

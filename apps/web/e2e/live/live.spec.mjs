@@ -1393,6 +1393,58 @@ test("Dismiss all does not drop a refusal that arrived after opening Not synced"
   await page.close();
 });
 
+test("a frozen assistant approval survives an IndexedDB reload without being rebased", async ({ browser }) => {
+  // This release has no assistant UI. Seed exactly the outbox record the approved operation
+  // would have persisted, then exercise the real IndexedDB reader, web sender and owner REST API.
+  const isolated = await browser.newContext({ baseURL });
+  try {
+    await isolated.addCookies(await context.cookies());
+    const before = await isolated.newPage();
+    await before.goto("/app");
+    await expect(before.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
+    const log = JSON.parse((await serverLog(before)).body);
+    expect(log.head_seq).toBeGreaterThan(0);
+    const submitted = {
+      command_id: "00000000-0000-7000-8000-000000000044",
+      submitted_at: "2030-01-01T00:00:00Z",
+      op: { op: "assistant_approval", batch: {
+        schema: 1, revision: { epoch: log.epoch, cursor: log.head_seq - 1 },
+        scope_revision: 7, allowed_lists: [], at: "2030-01-01T00:00:00Z",
+        commands: [{ cmd: "complete_task", id: "00000000-0000-7000-8000-000000000045" }],
+        digest: Array(32).fill(42),
+      } },
+    };
+    const path = "**/api/v1/assistant/approvals";
+    await isolated.route(path, (r) => r.abort("internetdisconnected"));
+    await before.evaluate((record) => new Promise((resolve, reject) => {
+      const open = indexedDB.open("todo-replica");
+      open.onerror = () => reject(open.error);
+      open.onsuccess = () => {
+        const db = open.result;
+        const tx = db.transaction("outbox", "readwrite");
+        tx.oncomplete = () => { db.close(); resolve(); };
+        tx.onerror = () => { db.close(); reject(tx.error); };
+        tx.objectStore("outbox").put(JSON.stringify(record), record.command_id);
+      };
+    }), submitted);
+    await committed(before, submitted.command_id);
+    await before.close();
+    await isolated.unroute(path);
+    const after = await isolated.newPage();
+    const delivery = after.waitForResponse((res) => res.url().endsWith("/api/v1/assistant/approvals"));
+    await after.goto("/app");
+    const response = await delivery;
+    expect(response.status()).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "approval_stale" } });
+    expect(response.request().postDataJSON()).toEqual({ command_id: submitted.command_id, batch: submitted.op.batch });
+    await expect.poll(() => failedCount(after)).toBe(1);
+    expect(await stored(after, submitted.command_id)).toBe(0);
+    expect(JSON.parse((await serverLog(after)).body).head_seq).toBe(log.head_seq);
+  } finally {
+    await isolated.close();
+  }
+});
+
 test("two tabs queue edits offline: both survive closing every tab, and each is sent once", async () => {
   const a = await openApp();
   const b = await openApp();

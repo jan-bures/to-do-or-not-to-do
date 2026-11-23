@@ -184,10 +184,10 @@ fn hostile_email_and_titles_have_no_path_to_sync_writes() {
     .unwrap();
     let pending = chat.pending().unwrap();
     let preview = pending.preview();
-    assert_eq!(
-        chat.approve(preview.id, preview.digest),
-        Err(ReviewError::NotImplemented)
-    );
+    assert!(matches!(
+        chat.approve(&client, preview.id, preview.digest),
+        Err(ReviewError::NotReady)
+    ));
     chat.discard(preview.id, preview.digest).unwrap();
     let provider_requests = provider.requests();
     assert_eq!(provider_requests.len(), 4);

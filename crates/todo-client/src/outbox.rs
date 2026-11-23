@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use todo_core::command::Command;
 use todo_core::ids::EventId;
 use todo_core::time::Timestamp;
+use todo_tools::assistant::approval::ApprovedBatch;
 use uuid::Uuid;
 
 /// The server's log epoch: a random ID that changes when the log is replaced (restored from a
@@ -22,6 +23,8 @@ pub enum Operation {
         /// The command.
         command: Command,
     },
+    /// `POST /api/v1/assistant/approvals`. Never projected optimistically.
+    AssistantApproval { batch: ApprovedBatch },
     /// `POST /api/v1/events/{seq}/undo`.
     Undo {
         /// Sequence number of any event of the command to undo.
@@ -79,13 +82,24 @@ impl OutboxEntry {
 }
 
 impl OutboxEntry {
-    /// The command, unless this is an undo.
+    /// The ordinary command, if any.
     #[must_use]
     pub fn command(&self) -> Option<&Command> {
         match &self.op {
             Operation::Command { command } => Some(command),
-            Operation::Undo { .. } | Operation::UndoAfter { .. } => None,
+            Operation::AssistantApproval { .. }
+            | Operation::Undo { .. }
+            | Operation::UndoAfter { .. } => None,
         }
+    }
+
+    /// A local or checked undo, not an ordinary command or assistant approval.
+    #[must_use]
+    pub fn is_undo(&self) -> bool {
+        matches!(
+            self.op,
+            Operation::Undo { .. } | Operation::UndoAfter { .. }
+        )
     }
 
     /// The event ID for a checked undo, once its target is known.

@@ -1,8 +1,5 @@
 use super::provider::{ToolCall, ToolDefinition};
-use super::{
-    AssistantError,
-    proposal::{Batch, ListRef, TaskRef},
-};
+use super::{AssistantError, ListRef, TaskRef};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, io};
@@ -11,7 +8,7 @@ use todo_core::{
     ids::{ListId, TaskId},
     query::{EvalContext, parse_date},
 };
-use todo_tools::assistant::{self, Projection, ReadError};
+use todo_tools::assistant::{self, Projection, ReadError, approval::Batch};
 
 const MAX_RESULT_BYTES: usize = 24 * 1024;
 

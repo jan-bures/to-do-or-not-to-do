@@ -453,6 +453,21 @@ impl From<EngineError> for ApiError {
                 format!("command id {id} was already used for a different request"),
             ),
             EngineError::EpochMismatch { current } => Self::epoch_mismatch(current),
+            EngineError::ApprovalStale => {
+                Self::new(StatusCode::CONFLICT, "approval_stale", e.to_string())
+            }
+            EngineError::ApprovalInvalid(
+                todo_tools::assistant::approval::BatchError::DigestMismatch,
+            ) => Self::new(
+                StatusCode::CONFLICT,
+                "approval_digest_mismatch",
+                e.to_string(),
+            ),
+            EngineError::ApprovalInvalid(_) => Self::new(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                "invalid_approval",
+                e.to_string(),
+            ),
             EngineError::UndoTargetMismatch {
                 seq,
                 expected,

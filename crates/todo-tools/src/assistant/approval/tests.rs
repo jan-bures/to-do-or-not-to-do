@@ -1,3 +1,5 @@
+#![allow(clippy::unwrap_used)]
+
 use super::*;
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -144,28 +146,30 @@ proptest! {
         let simulated = batch.scratch.clone();
         let pending = batch.freeze().unwrap().unwrap();
         let at = Timestamp::from_millisecond(at_ms).unwrap();
-        let mut replay = new_batch(&base, NOW);
+        let req = ApprovalRequest { command_id: pending.preview().id, batch: pending.approval().unwrap() };
+        let req: ApprovalRequest = serde_json::from_slice(&serde_json::to_vec(&req).unwrap()).unwrap();
+        let all_events = req.redecide(&base).unwrap();
         let mut retimed = new_batch(&base, at);
-        let mut all_events = Vec::new();
         let mut ids = BTreeSet::new();
+        for event in &all_events {
+            prop_assert!(ids.insert(event.id));
+            prop_assert_eq!(event.group, all_events[0].id);
+        }
         for (command, item) in pending.commands().iter().zip(&pending.preview().items) {
-            let seed = format!("{}:{}", pending.preview().id, item.index);
-            let events = decide_seeded(&replay.scratch, &replay.actor, command, NOW, &seed).unwrap();
-            prop_assert!(!events.is_empty());
-            for event in events {
-                prop_assert!(ids.insert(event.id));
-                apply(&mut replay.scratch, &event).unwrap();
-                all_events.push(event);
-            }
             prop_assert!(retimed.push(command.clone(), item.index).unwrap());
         }
         let mut rebuilt = new_batch(&base, NOW).scratch;
         for event in &all_events { apply(&mut rebuilt, event).unwrap(); }
-        prop_assert_eq!(&rebuilt, &simulated);
+        // Event fingerprints include the server's final group ID, unlike the scratch journal.
+        prop_assert!(rebuilt.data_eq(&simulated));
+        let undo = todo_core::undo::undo_batch(&rebuilt, &all_events, &Actor::owner("test").unwrap(), at, todo_core::UndoOptions::default()).unwrap();
+        for event in &undo { apply(&mut rebuilt, event).unwrap(); }
+        prop_assert_eq!(displayed(&rebuilt), displayed(&base));
         let replayed = retimed.freeze().unwrap().unwrap();
-        // Different event stamps/IDs don't change the actual effect review.
-        prop_assert_eq!(pending.preview(), replayed.preview());
-        prop_assert_eq!(displayed(&rebuilt), visible);
+        // The effect review is the same, but the digest binds the decision timestamp.
+        prop_assert_eq!(&pending.preview().items, &replayed.preview().items);
+        prop_assert_ne!(pending.preview().digest, replayed.preview().digest);
+        prop_assert_eq!(displayed(&simulated), visible);
     }
 }
 
@@ -201,6 +205,64 @@ fn destructive_effects_can_be_displayed_but_cannot_be_drafted() {
     let events = todo_core::decide(&batch.scratch, &Actor::System, &delete, NOW).unwrap();
     let effect = batch.effect(&events[0].payload).unwrap().unwrap();
     assert_eq!(effect.kind(), ProposalKind::Destructive);
-    assert_eq!(batch.push(delete, 0), Err(AssistantError::UnsupportedTool));
+    assert_eq!(batch.push(delete, 0), Err(BatchError::UnsupportedTool));
     assert!(batch.freeze().unwrap().is_none());
+}
+
+#[test]
+fn model_titles_reject_controls_format_and_unicode_line_breaks() {
+    for bad in [
+        '\n', '\r', '\t', '\u{0085}', '\u{202e}', '\u{200b}', '\u{2066}', '\u{2028}', '\u{2029}',
+    ] {
+        let title = format!("Vis{bad}ible");
+        let mut batch = new_batch(&base(), NOW);
+        for cmd in [
+            json!({"cmd":"create_task","id":NEW,"list":LIST,"title":title}),
+            json!({"cmd":"update_task","id":TASK,"patch":{"title":title}}),
+        ] {
+            assert_eq!(batch.push(command(cmd), 0), Err(BatchError::InvalidDraft));
+        }
+    }
+}
+
+#[test]
+fn caps_commands_and_events_before_adding_to_the_batch() {
+    let mut batch = new_batch(&base(), NOW);
+    for n in 0..MAX_COMMANDS {
+        assert!(
+            batch
+                .push(
+                    command(json!({"cmd":"update_task","id":TASK,"patch":{"title":n.to_string()}})),
+                    n
+                )
+                .unwrap()
+        );
+    }
+    let extra = command(json!({"cmd":"complete_task","id":TASK}));
+    assert_eq!(
+        batch.push(extra.clone(), MAX_COMMANDS),
+        Err(BatchError::Limit)
+    );
+    let mut req = ApprovalRequest {
+        command_id: ID,
+        batch: batch.freeze().unwrap().unwrap().approval().unwrap(),
+    };
+    req.batch
+        .commands
+        .push(ApprovalCommand::try_from(&extra).unwrap());
+    assert_eq!(req.redecide(&base()), Err(BatchError::Limit));
+
+    // Current supported commands are typically one event. Prime the counter to exercise the
+    // independent event budget without advertising other commands that have broader effects.
+    let mut batch = new_batch(&base(), NOW);
+    let event = todo_core::decide(&batch.scratch, &Actor::System, &extra, NOW)
+        .unwrap()
+        .remove(0);
+    batch.events.resize(MAX_EVENTS - 1, event);
+    assert!(batch.push(extra, 0).unwrap());
+    assert_eq!(
+        batch.push(command(json!({"cmd":"uncomplete_task","id":TASK})), 1),
+        Err(BatchError::Limit)
+    );
+    assert!(batch.scratch.tasks[&TASK].is_done());
 }

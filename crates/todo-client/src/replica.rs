@@ -250,7 +250,7 @@ fn checked_undo(epoch: Epoch, event: EventRef) -> Operation {
 pub struct Replica {
     actor: Actor,
     storage: Box<dyn Storage>,
-    confirmed: State,
+    confirmed: Arc<State>,
     cursor: u64,
     epoch: Option<Epoch>,
     outbox: Vec<OutboxEntry>,
@@ -500,7 +500,7 @@ impl Replica {
         let mut r = Self {
             actor,
             storage,
-            confirmed: State::new(),
+            confirmed: Arc::new(State::new()),
             cursor: 0,
             epoch: None,
             outbox: Vec::new(),
@@ -563,7 +563,7 @@ impl Replica {
             outbox = r.outbox.len(),
             "replica loaded"
         );
-        self.confirmed = r.confirmed;
+        self.confirmed = Arc::new(r.confirmed);
         self.cursor = r.cursor;
         self.epoch = r.epoch;
         self.outbox = r.outbox;
@@ -682,6 +682,16 @@ impl Replica {
         &self.confirmed
     }
 
+    #[cfg(feature = "assistant")]
+    pub(crate) fn is_durable(&self, id: CommandId) -> bool {
+        self.storage.is_durable(id)
+    }
+
+    #[cfg(feature = "assistant")]
+    pub(crate) fn assistant_base(&self) -> Option<Arc<State>> {
+        self.actor.is_owner().then(|| self.confirmed.clone())
+    }
+
     /// Pending entries, oldest first.
     #[must_use]
     pub fn outbox(&self) -> &[OutboxEntry] {
@@ -705,18 +715,27 @@ impl Replica {
     }
 
     fn build_view(&self) -> State {
-        let keep_batches = self.outbox.iter().any(|e| e.command().is_none());
-        let mut view = self.confirmed.clone();
+        let keep_batches = self
+            .outbox
+            .iter()
+            .any(|e| matches!(e.op, Operation::Undo { .. } | Operation::UndoAfter { .. }));
+        let mut view = (*self.confirmed).clone();
         let mut batches = BTreeMap::new();
         for entry in &self.outbox {
-            if let Some(command) = entry.command() {
-                if let Some(events) = overlay(&mut view, &self.actor, entry, command)
-                    && keep_batches
-                {
-                    batches.insert(entry.command_id, events);
+            match &entry.op {
+                Operation::Command { command } => {
+                    if let Some(events) = overlay(&mut view, &self.actor, entry, command)
+                        && keep_batches
+                    {
+                        batches.insert(entry.command_id, events);
+                    }
                 }
-            } else if let Some(events) = self.undo_events(&entry.op, &batches) {
-                self.project_undo(&mut view, events, entry.submitted_at);
+                Operation::Undo { .. } | Operation::UndoAfter { .. } => {
+                    if let Some(events) = self.undo_events(&entry.op, &batches) {
+                        self.project_undo(&mut view, events, entry.submitted_at);
+                    }
+                }
+                Operation::AssistantApproval { .. } => {} // Confirmed in full via the event log.
             }
         }
         view
@@ -781,7 +800,10 @@ impl Replica {
             self.hold_log(entry.command_id, original, None);
         }
         // Commands can extend the cached view; undos need the original's batch.
-        if entry.command().is_none() {
+        if matches!(
+            entry.op,
+            Operation::Undo { .. } | Operation::UndoAfter { .. }
+        ) {
             self.view = None;
         } else if let (Some(events), Some(view)) = (decided, self.view.as_mut()) {
             let view = Arc::make_mut(view);
@@ -809,6 +831,13 @@ impl Replica {
         self.undo_targets
             .retain(|id, _| self.outbox.iter().any(|e| e.command_id == *id));
         self.tracked.retain(|_, log| log.handle.strong_count() > 0);
+    }
+
+    #[cfg(feature = "assistant")]
+    pub(crate) fn confirmed_receipt(&self, target: &TrackedCommand) -> Option<(Epoch, EventRef)> {
+        let log = self.tracked(target)?;
+        let (epoch, first) = log.first?;
+        (self.epoch == Some(epoch) && log.batch(self.cursor).is_some()).then_some((epoch, first))
     }
 
     fn tracked(&self, target: &TrackedCommand) -> Option<&CommandLog> {
@@ -1265,7 +1294,7 @@ impl Replica {
         for (i, e) in received[..whole].iter().enumerate() {
             let Some(seq) = e.event.seq else { break };
             // `apply` leaves the state untouched when it fails.
-            let state = next.get_or_insert_with(|| self.confirmed.clone());
+            let state = next.get_or_insert_with(|| (*self.confirmed).clone());
             if let Err(error) = apply(state, &e.event) {
                 failure = Some(ConfirmError::Diverged { seq, error });
                 diverged = true;
@@ -1397,7 +1426,7 @@ impl Replica {
             }
         }
         if let Some(state) = next {
-            self.confirmed = state;
+            self.confirmed = Arc::new(state);
             self.cursor = cursor;
         }
         if snapshot {
@@ -1468,7 +1497,7 @@ impl Replica {
         for e in &mut self.outbox {
             *e = e.unacknowledged();
         }
-        self.confirmed = State::new();
+        self.confirmed = Arc::new(State::new());
         self.cursor = 0;
         self.held.clear();
         self.recent_events.clear();

@@ -4255,7 +4255,6 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
- "sha2 0.10.9",
  "tempfile",
  "thiserror 2.0.21",
  "todo-core",
@@ -4414,12 +4413,14 @@ dependencies = [
  "base64 0.23.1",
  "hex",
  "jiff 1.0.1",
+ "proptest",
  "schemars 1.2.3",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "todo-core",
+ "unicode-general-category",
  "uuid",
 ]
 

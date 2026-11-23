@@ -107,8 +107,9 @@ become an oracle for omitted note text. Local cursors bind to scope and resolve 
    before/after state, not model wording: name the source and destination lists, show exact changes
    and any user-visible side effects, including transient/destructive steps if a final-state diff
    would hide them. Ignore generated event IDs, bookkeeping timestamps and rank-only changes when
-   hashing effects, but include semantic order/membership, explicit dates and body fields. Drop an
-   all-no-op batch. An edit, subset selection or regenerated plan makes a new preview for approval;
+   hashing effects, but include semantic order/membership, explicit dates and body fields. The digest
+   also binds the frozen decision timestamp and the versioned batch-ID/command-ordinal seed scheme.
+   Drop an all-no-op batch. An edit, subset selection or regenerated plan makes a new preview for approval;
    the existing approval never follows it. Unapproved drafts are not synced or written to disk.
 3. **Enqueue exactly once.** An owner UI action on the current proposal ID/digest consumes that
    approval under the client lock. Extend `todo-client` with an approved-assistant-batch outbox
@@ -345,8 +346,10 @@ confirmed replica with `SyncClient::assistant_snapshot`, feeds sync changes to `
 runs the future returned by a deliberate `start`. Model adapters supply normalized round events;
 `RoundDecoder` can frame SSE or buffered JSON without owning a transport. A framed successful
 `finish_reason` can complete a round on clean EOF without `[DONE]`; EOF without positive completion
-cannot freeze a draft. Proposal cards use simulated core effects, not streamed prose. The approval
-method is a non-writing stub until PR 3, and v1 does not advertise destructive tools.
+cannot freeze a draft. Proposal cards use simulated core effects, not streamed prose. The explicit
+`approve` action takes an owner sync client and the displayed proposal ID and digest. It returns a
+handle for saving/pending/confirmed/rejected status and whole-group Undo; no provider code holds
+that sync client. V1 does not advertise destructive tools.
 
 | PR | Scope and release tests |
 |---|---|

@@ -75,6 +75,9 @@ fn restore(id: EntityId) -> &'static str {
 /// What the refused change was, in a few words: "Delete a task", "Add a list", "Undo a change".
 #[must_use]
 pub fn what(entry: &OutboxEntry) -> &'static str {
+    if matches!(entry.op, Operation::AssistantApproval { .. }) {
+        return "Apply in-app assistant changes";
+    }
     let Some(command) = entry.command() else {
         return "Undo a change";
     };
@@ -180,10 +183,26 @@ pub fn name<'a>(entry: &'a OutboxEntry, state: &'a State) -> Option<&'a str> {
 /// Why the server refused it, in one short sentence: from the rejection's code, never its message.
 #[must_use]
 pub fn why(failed: &FailedEntry) -> &'static str {
+    if matches!(failed.entry.op, Operation::AssistantApproval { .. }) {
+        return approval_message(&failed.rejection.code);
+    }
     reason(
         &failed.rejection,
         matches!(failed.entry.op, Operation::Command { .. }),
     )
+}
+
+/// A frozen approval is never updated or retried with a new revision after a conflict.
+#[must_use]
+pub fn approval_message(code: &str) -> &'static str {
+    match code {
+        "approval_stale" => "Tasks changed since the review. Request a new proposal.",
+        "epoch_mismatch" => "The server’s history changed. Request a new proposal.",
+        "approval_digest_mismatch" => {
+            "The changes no longer match the review. Request a new proposal."
+        }
+        _ => "The server refused the approval.",
+    }
 }
 
 /// A short undo refusal for a toast or an activity row, based only on the machine-readable code.

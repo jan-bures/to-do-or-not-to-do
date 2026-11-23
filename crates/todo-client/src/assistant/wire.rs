@@ -14,7 +14,7 @@ pub struct RoundDecoder {
     body: Body,
     bytes: usize,
     round: Assembly,
-    failed: bool,
+    failed: Option<ProviderError>,
 }
 
 opaque_debug!(RoundDecoder);
@@ -46,75 +46,87 @@ impl RoundDecoder {
             body,
             bytes: 0,
             round: Assembly::default(),
-            failed: false,
+            failed: None,
         }
     }
 
+    /// Feed one chunk. If a later frame fails, return earlier deltas first, then return the error
+    /// on the next push or EOF. Chunk boundaries never affect which deltas reach the caller.
     pub fn push(&mut self, bytes: &[u8]) -> Result<Vec<StreamEvent>, ProviderError> {
-        if self.failed {
-            return Err(ProviderError::InvalidResponse);
+        if let Some(error) = self.failed {
+            return Err(error);
         }
-        self.bytes = self.bytes.saturating_add(bytes.len());
-        let result = if self.bytes > MAX_BODY_BYTES {
-            Err(ProviderError::Limit)
-        } else {
-            self.push_inner(bytes)
-        };
-        self.failed = result.is_err();
-        result
+        let accepted = bytes.len().min(MAX_BODY_BYTES - self.bytes);
+        self.bytes += accepted;
+        let mut out = Vec::new();
+        self.failed = self
+            .push_inner(&bytes[..accepted], &mut out)
+            .err()
+            .or_else(|| (accepted < bytes.len()).then_some(ProviderError::Limit));
+        match self.failed {
+            Some(error) if out.is_empty() => Err(error),
+            _ => Ok(out),
+        }
     }
 
-    fn push_inner(&mut self, bytes: &[u8]) -> Result<Vec<StreamEvent>, ProviderError> {
-        let mut out = Vec::new();
+    fn push_inner(
+        &mut self,
+        bytes: &[u8],
+        out: &mut Vec<StreamEvent>,
+    ) -> Result<(), ProviderError> {
         match &mut self.body {
             Body::Json(body) => body.extend_from_slice(bytes),
             Body::Sse { parser, utf8_tail } => {
                 // The shared sync parser replaces invalid UTF-8. Inference must reject it so an
                 // invalid byte cannot silently change a tool argument. Carry at most three bytes.
-                let joined;
-                let bytes = if utf8_tail.is_empty() {
-                    bytes
-                } else {
-                    joined = [utf8_tail.as_slice(), bytes].concat();
-                    utf8_tail.clear();
-                    &joined
-                };
-                let good = match std::str::from_utf8(bytes) {
-                    Ok(text) => text.as_bytes(),
-                    Err(error) if error.error_len().is_none() => {
-                        utf8_tail.extend_from_slice(&bytes[error.valid_up_to()..]);
-                        &bytes[..error.valid_up_to()]
-                    }
-                    Err(_) => return Err(ProviderError::InvalidResponse),
-                };
-                for frame in parser.push(good).map_err(|_| ProviderError::Limit)? {
-                    if let SseFrame::Event { event, data, .. } = frame {
-                        if self.round.ended || event != "message" {
-                            return Err(ProviderError::InvalidResponse);
+                for part in bytes.split_inclusive(|b| matches!(b, b'\r' | b'\n')) {
+                    let joined;
+                    let bytes = if utf8_tail.is_empty() {
+                        part
+                    } else {
+                        joined = [utf8_tail.as_slice(), part].concat();
+                        utf8_tail.clear();
+                        &joined
+                    };
+                    let (good, invalid) = match std::str::from_utf8(bytes) {
+                        Ok(text) => (text.as_bytes(), false),
+                        Err(error) => {
+                            let (prefix, tail) = bytes.split_at(error.valid_up_to());
+                            let invalid = error.error_len().is_some();
+                            if !invalid {
+                                utf8_tail.extend_from_slice(tail);
+                            }
+                            (prefix, invalid)
                         }
-                        if data.trim() == "[DONE]" {
-                            self.round.end(&mut out)?;
-                        } else {
-                            self.round.chunk(data.as_bytes(), false, &mut out)?;
+                    };
+                    for frame in parser.push(good).map_err(|_| ProviderError::Limit)? {
+                        if let SseFrame::Event { event, data, .. } = frame {
+                            if self.round.done_marker || event != "message" {
+                                return Err(ProviderError::InvalidResponse);
+                            }
+                            if data.trim() == "[DONE]" {
+                                self.round.check_finish()?;
+                                self.round.done_marker = true;
+                            } else {
+                                self.round.chunk(data.as_bytes(), false, out)?;
+                            }
                         }
                     }
-                }
-                if self.round.ended && (!utf8_tail.is_empty() || !parser.at_frame_boundary()) {
-                    return Err(ProviderError::InvalidResponse);
+                    if invalid {
+                        return Err(ProviderError::InvalidResponse);
+                    }
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 
     /// Call on clean EOF, not a transport failure. A fully framed successful `finish_reason`
-    /// suffices when an endpoint omits `[DONE]`; a truncated response is never a successful draft.
+    /// suffices when an endpoint omits `[DONE]`. Wait for EOF even with `[DONE]` so tool delivery
+    /// cannot depend on whether malformed trailing data was in the same network chunk.
     pub fn finish(mut self) -> Result<Vec<StreamEvent>, ProviderError> {
-        if self.failed {
-            return Err(ProviderError::InvalidResponse);
-        }
-        if self.round.ended {
-            return Ok(Vec::new());
+        if let Some(error) = self.failed {
+            return Err(error);
         }
         let mut out = Vec::new();
         match &self.body {
@@ -184,7 +196,8 @@ struct PartialCall {
 struct Assembly {
     calls: Vec<PartialCall>,
     finish: Option<bool>, // Whether the model explicitly finished with tool calls.
-    ended: bool,
+    done_marker: bool,
+    usage_seen: bool,
 }
 
 impl Assembly {
@@ -199,6 +212,7 @@ impl Assembly {
         if chunk.choices.len() > 1 || (buffered && chunk.choices.len() != 1) {
             return Err(bad);
         }
+        let mut text = None;
         for choice in chunk.choices {
             if choice.index != 0 || self.finish.is_some() {
                 return Err(bad);
@@ -216,9 +230,7 @@ impl Assembly {
             if content.function_call.is_some() || content.refusal.is_some() {
                 return Err(bad);
             }
-            if let Some(text) = content.content.filter(|text| !text.is_empty()) {
-                out.push(StreamEvent::Text(text));
-            }
+            text = content.content.filter(|text| !text.is_empty());
             for (position, delta) in content
                 .tool_calls
                 .unwrap_or_default()
@@ -240,6 +252,12 @@ impl Assembly {
                     _ => return Err(bad),
                 });
             }
+        }
+        if chunk.usage.is_some() && std::mem::replace(&mut self.usage_seen, true) {
+            return Err(bad);
+        }
+        if let Some(text) = text {
+            out.push(StreamEvent::Text(text));
         }
         if let Some(usage) = chunk.usage {
             out.push(StreamEvent::Usage(Usage {
@@ -285,20 +303,33 @@ impl Assembly {
         Ok(())
     }
 
-    fn end(&mut self, out: &mut Vec<StreamEvent>) -> Result<(), ProviderError> {
-        let failure = ProviderError::Incomplete;
-        let tools = self.finish.ok_or(failure)?;
+    fn check_finish(&self) -> Result<(), ProviderError> {
+        let tools = self.finish.ok_or(ProviderError::Incomplete)?;
         if tools == self.calls.is_empty() {
-            return Err(failure);
+            return Err(ProviderError::Incomplete);
         }
+        Ok(())
+    }
+
+    fn end(&mut self, out: &mut Vec<StreamEvent>) -> Result<(), ProviderError> {
+        self.check_finish()?;
+        let failure = ProviderError::Incomplete;
+        let mut calls = Vec::new();
         for partial in self.calls.drain(..) {
-            out.push(StreamEvent::Tool(ToolCall::parse(
+            let call = ToolCall::parse(
                 partial.id.ok_or(failure)?,
                 partial.name.ok_or(failure)?,
                 &partial.arguments,
-            )?));
+            )?;
+            if calls
+                .iter()
+                .any(|previous: &ToolCall| previous.id == call.id)
+            {
+                return Err(ProviderError::InvalidResponse);
+            }
+            calls.push(call);
         }
-        self.ended = true;
+        out.extend(calls.into_iter().map(StreamEvent::Tool));
         out.push(StreamEvent::Finished);
         Ok(())
     }

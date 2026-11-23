@@ -7378,6 +7378,7 @@ dependencies = [
  "todo-core",
  "todo-design",
  "todo-fs",
+ "todo-tools",
  "tokio",
  "tracing",
  "unicode-general-category",
@@ -7513,6 +7514,7 @@ dependencies = [
  "sha2 0.10.9",
  "thiserror 2.0.21",
  "todo-core",
+ "unicode-general-category",
  "uuid",
 ]
 

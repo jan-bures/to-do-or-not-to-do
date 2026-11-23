@@ -155,6 +155,7 @@ pub fn router(state: AppState) -> Router<AppState> {
                 .layer(axum::extract::DefaultBodyLimit::max(8192)),
         )
         .route("/commands", post(commands::post_command))
+        .route("/assistant/approvals", post(commands::post_approval))
         .route("/events", get(events::get_events))
         .route("/events/{seq}/undo", post(commands::post_undo))
         .route("/activity", get(read::activity))

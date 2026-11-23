@@ -8,9 +8,12 @@ use std::time::Duration;
 use todo_core::command::Command;
 use todo_core::event::Event;
 use todo_core::ids::EventId;
+use todo_tools::assistant::approval::ApprovalRequest;
 
 /// `POST` path for commands.
 pub const COMMANDS_PATH: &str = "/api/v1/commands";
+/// `POST` path for owner-approved assistant batches.
+pub const APPROVALS_PATH: &str = "/api/v1/assistant/approvals";
 
 /// The SSE event name of an event frame.
 pub const EVENT_FRAME: &str = "event";
@@ -167,6 +170,13 @@ pub fn entry_request(command_id: CommandId, op: &Operation) -> Result<Request, s
             serde_json::to_vec(&CommandRequest {
                 command_id,
                 command,
+            })?,
+        ),
+        Operation::AssistantApproval { batch } => Request::post(
+            APPROVALS_PATH,
+            serde_json::to_vec(&ApprovalRequest {
+                command_id,
+                batch: batch.clone(),
             })?,
         ),
         Operation::UndoAfter { .. } => {

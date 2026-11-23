@@ -38,6 +38,7 @@ impl Modify for ApiAuth {
     ),
     paths(
         commands::post_command,
+        commands::post_approval,
         commands::post_undo,
         events::get_events,
         read::activity,
