@@ -8,10 +8,10 @@ use todo_client::{
 };
 use todo_core::{
     Actor, Command, State, apply,
-    command::{NewTask, Placement},
+    command::{ListFeaturesPatch, NewTask, Placement},
     decide,
     ids::{ListId, TaskId},
-    model::{ListFeatures, ListView, WorkflowStatus},
+    model::{ListView, WorkflowStatus},
     query::{EvalContext, QueryStatus},
     time::{Date, Timestamp},
 };
@@ -24,10 +24,10 @@ fn time(d: Date, hour: i8) -> Timestamp {
     format!("{d}T{hour:02}:00:00Z").parse().unwrap()
 }
 
-const FEATURES: ListFeatures = ListFeatures {
-    workflow: true,
-    timeline: true,
-    default_view: ListView::Board,
+const FEATURES: ListFeaturesPatch = ListFeaturesPatch {
+    workflow: Some(true),
+    timeline: Some(true),
+    default_view: Some(ListView::Board),
 };
 
 struct World {
@@ -188,6 +188,28 @@ fn timeline_shapes_clip_inclusively_and_planned_includes_start_only_tasks() {
     w.run(shift);
     assert_eq!(w.state.tasks[&range].due, Some(date(10)));
     assert_eq!(w.state.tasks[&range].start_date, Some(date(10)));
+}
+
+#[test]
+fn start_picker_does_not_overwrite_a_newer_due_date() {
+    let mut w = World::new();
+    w.enable();
+    let id = w.task(WorkflowStatus::Todo, Some(date(5)), Some(date(9)));
+    let local_edit = workflow::set_start(&w.state, id, Some(date(10))).unwrap();
+    let Command::UpdateTask { patch, .. } = &local_edit else {
+        panic!("expected a patch")
+    };
+    assert_eq!(patch.due, None);
+    w.run(intent::set_due(&w.state, id, Some(date(12))).unwrap());
+    w.run(local_edit);
+    let task = &w.state.tasks[&id];
+    assert_eq!(
+        (task.start_date, task.due),
+        (Some(date(10)), Some(date(12)))
+    );
+    w.run(intent::set_due(&w.state, id, Some(date(8))).unwrap());
+    let task = &w.state.tasks[&id];
+    assert_eq!((task.start_date, task.due), (Some(date(8)), Some(date(8))));
 }
 
 #[test]

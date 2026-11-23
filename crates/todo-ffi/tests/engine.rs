@@ -118,7 +118,7 @@ fn my_day() -> RoomKey {
 #[test]
 fn workflow_bindings_share_preview_projection_and_tracked_changes() {
     use todo_ffi::engine::workflow::{
-        BoardSlot, ListFeatures, ListView, OpenStage, TimelineBar, WorkflowStage,
+        BoardSlot, ListFeatures, ListFeaturesPatch, ListView, OpenStage, TimelineBar, WorkflowStage,
     };
     use todo_ffi::quick_add::{QuickAddDraft, WorkflowQuickAddDraft, workflow_quick_add_preview};
 
@@ -135,7 +135,24 @@ fn workflow_bindings_share_preview_projection_and_tracked_changes() {
     };
     assert!(engine.board(list.clone(), now.clone()).is_none());
     engine
-        .set_list_features(list.clone(), features)
+        .set_list_features(
+            list.clone(),
+            ListFeaturesPatch {
+                workflow: Some(true),
+                default_view: Some(ListView::Board),
+                ..ListFeaturesPatch::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+    engine
+        .set_list_features(
+            list.clone(),
+            ListFeaturesPatch {
+                timeline: Some(true),
+                ..ListFeaturesPatch::default()
+            },
+        )
         .unwrap()
         .unwrap();
     let draft = WorkflowQuickAddDraft {

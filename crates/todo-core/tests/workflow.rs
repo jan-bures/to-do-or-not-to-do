@@ -4,8 +4,11 @@
 mod common;
 
 use common::World;
-use todo_core::command::{Command, NewTask, Placement, TaskPatch};
+use todo_core::command::{
+    BulkTaskAction, Command, ListFeaturesPatch, NewTask, Placement, TaskPatch,
+};
 use todo_core::error::{DomainError, UndoError};
+use todo_core::event::{EventPayload, FieldChange};
 use todo_core::model::{ListFeatures, ListView, WorkflowStatus};
 use todo_core::query::{EvalContext, Query, QueryStatus};
 use todo_core::recurrence::{Recurrence, Rule};
@@ -73,18 +76,18 @@ fn disable_only_hides_data_and_bad_date_writes_and_undos_are_refused() {
         color: None,
         features: Some(features),
     };
-    let disabled = ListFeatures {
-        default_view: ListView::Board,
-        ..ListFeatures::default()
+    let disabled = ListFeaturesPatch {
+        default_view: Some(ListView::Board),
+        ..ListFeaturesPatch::default()
     };
     let owner = w.owner.clone();
     assert!(matches!(
         w.run_as(&owner, settings(disabled)),
         Err(DomainError::Invalid { .. })
     ));
-    let enabled = ListFeatures {
-        workflow: true,
-        timeline: true,
+    let enabled = ListFeaturesPatch {
+        workflow: Some(true),
+        timeline: Some(true),
         ..disabled
     };
     w.run(settings(enabled));
@@ -96,19 +99,24 @@ fn disable_only_hides_data_and_bad_date_writes_and_undos_are_refused() {
         ..TaskPatch::default()
     }));
     let task_before = w.state.tasks[&id].clone();
-    let disabled = w.run(settings(ListFeatures {
-        timeline: false,
-        ..disabled
+    let disabled = w.run(settings(ListFeaturesPatch {
+        workflow: Some(false),
+        timeline: Some(false),
+        ..ListFeaturesPatch::default()
     }));
     assert_eq!(w.state.lists[&list].features, ListFeatures::default());
     assert_eq!(w.state.tasks[&id], task_before);
     w.undo_group(&disabled).unwrap();
-    assert_eq!(w.state.lists[&list].features, enabled);
+    assert_eq!(
+        w.state.lists[&list].features,
+        enabled.merge(ListFeatures::default())
+    );
     assert!(
         w.run_as(
             &owner,
             patch(TaskPatch {
                 due: Some(Some(date(7))),
+                start_date: Some(Some(date(8))),
                 ..TaskPatch::default()
             })
         )
@@ -134,6 +142,143 @@ fn disable_only_hides_data_and_bad_date_writes_and_undos_are_refused() {
         Err(UndoError::Conflict(_))
     ));
     assert_eq!(state, w.state);
+}
+
+#[test]
+fn one_endpoint_edits_preserve_the_requested_date_and_undo_together() {
+    let mut w = World::new();
+    let list = w.list(None, "Project");
+    let id = w.ids.task();
+    let mut task = NewTask::new(id, list, "Task");
+    task.status = WorkflowStatus::InProgress;
+    task.start_date = Some(date(8));
+    task.due = Some(date(12));
+    task.recurrence = Some(Recurrence::new(Rule::Daily { interval: 1 }));
+    w.run(Command::CreateTask(Box::new(task)));
+    let before = w.state.clone();
+    let legacy: Command = serde_json::from_value(serde_json::json!({
+        "cmd": "update_task", "id": id, "patch": {"due": "2030-01-05", "title": null, "notes": null, "priority": null}
+    })).unwrap();
+    for (command, day) in [
+        (legacy, date(5)),
+        (
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    start_date: Some(Some(date(16))),
+                    ..TaskPatch::default()
+                },
+            },
+            date(16),
+        ),
+    ] {
+        let events = w.run(command);
+        let [event] = events.as_slice() else {
+            panic!("expected one event")
+        };
+        let EventPayload::Updated { changes, .. } = &event.payload else {
+            panic!("expected an update")
+        };
+        assert!(
+            changes
+                .iter()
+                .any(|c| matches!(c, FieldChange::StartDate(c) if c.new == Some(day)))
+        );
+        assert!(
+            changes
+                .iter()
+                .any(|c| matches!(c, FieldChange::Due(c) if c.new == Some(day)))
+        );
+        let task = &w.state.tasks[&id];
+        assert_eq!(task.status, WorkflowStatus::InProgress);
+        assert_eq!(task.recurrence, before.tasks[&id].recurrence);
+        w.undo_group(&events).unwrap();
+        assert!(before.data_eq(&w.state));
+    }
+}
+
+#[test]
+fn bulk_due_reconciles_each_span_and_undoes_as_one_group() {
+    let mut w = World::new();
+    let list = w.list(None, "Project");
+    let moving = w.task(list, "Later start");
+    let unchanged_start = w.task(list, "Earlier start");
+    let without_start = w.task(list, "Due only");
+    for (id, start) in [
+        (moving, Some(date(8))),
+        (unchanged_start, Some(date(2))),
+        (without_start, None),
+    ] {
+        w.run(Command::UpdateTask {
+            id,
+            patch: TaskPatch {
+                start_date: Some(start),
+                due: Some(Some(date(10))),
+                ..TaskPatch::default()
+            },
+        });
+    }
+    let before = w.state.clone();
+    let ids = vec![moving, unchanged_start, without_start];
+    for (due, moving_start) in [(Some(date(5)), Some(date(5))), (None, Some(date(8)))] {
+        let events = w.run(Command::BulkTasks {
+            tasks: ids.clone(),
+            action: BulkTaskAction::Due { date: due },
+        });
+        assert_eq!(events.len(), 3);
+        assert!(events.iter().all(|e| e.group == events[0].id));
+        for (id, start) in [
+            (moving, moving_start),
+            (unchanged_start, Some(date(2))),
+            (without_start, None),
+        ] {
+            let task = &w.state.tasks[&id];
+            assert_eq!((task.start_date, task.due), (start, due));
+        }
+        w.undo_group(&events).unwrap();
+        assert!(before.data_eq(&w.state));
+    }
+}
+
+#[test]
+fn disjoint_feature_patches_keep_each_others_changes() {
+    let mut w = World::new();
+    let id = w.list(None, "Project");
+    let patch = |features| Command::UpdateList {
+        id,
+        name: None,
+        color: None,
+        features: Some(features),
+    };
+    // Both commands can be built from the same initial checklist without copying its other fields.
+    let board = patch(ListFeaturesPatch {
+        workflow: Some(true),
+        default_view: Some(ListView::Board),
+        ..ListFeaturesPatch::default()
+    });
+    let timeline = patch(ListFeaturesPatch {
+        timeline: Some(true),
+        ..ListFeaturesPatch::default()
+    });
+    w.run(board);
+    let events = w.run(timeline);
+    assert_eq!(
+        w.state.lists[&id].features,
+        ListFeatures {
+            workflow: true,
+            timeline: true,
+            default_view: ListView::Board
+        }
+    );
+    w.undo_group(&events).unwrap();
+    assert_eq!(
+        w.state.lists[&id].features,
+        ListFeatures {
+            workflow: true,
+            timeline: false,
+            default_view: ListView::Board
+        }
+    );
 }
 
 #[test]

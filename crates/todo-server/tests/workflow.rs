@@ -135,8 +135,8 @@ async fn projected_event_pages_streams_and_activity_keep_legacy_reads_and_edits_
         legacy_changes(&item["event"]);
     }
 
-    // An older client submits only fields it knows: not even a stale rename of the list can
-    // reset the flags, and a due edit or clear cannot reset the start date or stored stage.
+    // An older client submits only fields it knows. A stale rename preserves the flags;
+    // clearing due leaves start and status alone; a crossing due edit adjusts rather than rejects.
     for command in [
         json!({ "cmd": "update_list", "id": list, "name": "Renamed", "color": null }),
         json!({ "cmd": "update_task", "id": task, "patch": { "title": "Edited offline", "notes": null, "priority": null, "due": null } }),
@@ -146,10 +146,18 @@ async fn projected_event_pages_streams_and_activity_keep_legacy_reads_and_edits_
         let (code, _, result) = t.command_with_id(TOKEN_B, &id(), command).await;
         assert_eq!(code, StatusCode::OK, "{result}");
     }
-    let (code, _) = t
-        .command(json!({"cmd":"update_task", "id":task, "patch":{"due":"2030-01-01"}}))
+    let detail = t.get_ok(&format!("/api/v1/tasks/{task}")).await;
+    assert_eq!(detail["task"]["start_date"], "2030-01-02");
+    assert!(detail["task"]["due"].is_null());
+    let (code, _, result) = t.command_with_id(TOKEN_B, &id(),
+        json!({"cmd": "update_task", "id": task, "patch": {"due": "2030-01-01", "title": null, "notes": null, "priority": null}}),
+    ).await;
+    assert_eq!(code, StatusCode::OK, "{result}");
+    let seq = first_seq(&result);
+    let legacy = t.get_ok(&format!("/api/v1/events?since={}", seq - 1)).await;
+    assert_eq!(legacy_changes(&legacy["events"][0]), 2); // Due and Touch, not StartDate.
+    t.ok(json!({"cmd": "update_list", "id": list, "features": {"timeline": false}}))
         .await;
-    assert_eq!(code, StatusCode::UNPROCESSABLE_ENTITY);
     let before = t.server.engine.state();
     // A restart folds the same authoritative event log, never the legacy projection.
     let t = t.restart().await;
@@ -158,10 +166,14 @@ async fn projected_event_pages_streams_and_activity_keep_legacy_reads_and_edits_
     let task = &detail["task"];
     assert_eq!(task["title"], "Edited offline");
     assert_eq!(task["status"], "in_progress");
-    assert_eq!(task["start_date"], "2030-01-02");
-    assert!(task["due"].is_null() && task["completed_at"].is_null());
+    assert_eq!(task["start_date"], "2030-01-01");
+    assert_eq!(task["due"], "2030-01-01");
+    assert!(task["completed_at"].is_null());
     let lists = t.get_ok("/api/v1/lists").await;
-    assert_eq!(lists["items"][0]["features"]["default_view"], "board");
+    assert_eq!(
+        lists["items"][0]["features"],
+        json!({"workflow": true, "timeline": false, "default_view": "board"})
+    );
     let full = t
         .get_ok("/api/v1/events?since=0&workflow_fields=true")
         .await;

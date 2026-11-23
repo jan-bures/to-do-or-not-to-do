@@ -327,7 +327,8 @@ pub struct UpdateTaskArgs {
     /// Open stage: `backlog`, `todo`, or `in_progress`. Use `complete_task` for Done.
     #[serde(default)]
     pub status: Option<String>,
-    /// Start date, `YYYY-MM-DD`, or `null` to clear. Cannot be after the due date.
+    /// Start date, `YYYY-MM-DD`, or `null` to clear. Editing only one date can shift the other
+    /// to keep start on or before due. When supplying both, give a valid span.
     #[serde(default, deserialize_with = "double_option")]
     pub start_date: Option<Option<String>>,
     /// New priority.
@@ -1110,7 +1111,7 @@ impl TodoMcp {
     }
 
     #[tool(
-        description = "Change a task's title, notes, open status, start date, due date, priority or repeat rule (plan level). Omitted fields stay as they are. Null clears start_date, due or recurrence; a repeat rule needs a due date. Use complete_task for Done.",
+        description = "Change a task's title, notes, open status, start date, due date, priority or repeat rule (plan level). Omitted fields stay as they are, except that a one-date edit can shift the other date to keep start on or before due. Null clears start_date, due or recurrence; a repeat rule needs a due date. Use complete_task for Done.",
         annotations(
             read_only_hint = false,
             destructive_hint = false,

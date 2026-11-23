@@ -293,9 +293,9 @@ pub struct ListFeatures {
 ### 8.2 Commands, events & undo (`command.rs`, `event.rs`, `decide.rs`, `undo.rs`)
 
 - **Commands:**
-  - `UpdateList`: add `#[serde(default)] features: Option<ListFeatures>`.
+  - `UpdateList`: `features` is an optional `ListFeaturesPatch`. It updates only the supplied `workflow`, `timeline`, or `default_view`; the event records the resulting settings together.
   - `NewTask`: add `#[serde(default)] status: WorkflowStatus`, `#[serde(default)] start_date: Option<Date>`.
-  - `TaskPatch`: add `#[serde(default)] status: Option<WorkflowStatus>` and `start_date: Option<Option<Date>>` (using `double_option`, matching `due`).
+  - `TaskPatch`: `status: Option<WorkflowStatus>` and `start_date: Option<Option<Date>>` (using `double_option`, matching `due`). The server reconciles a one-date update against the current other endpoint: if they cross, the unchanged endpoint moves to match the edited one in the same event. If both dates are supplied, reject an inverted span.
   - `BulkTaskAction`: add `Status { status: WorkflowStatus }` (completing via bulk already uses `Completion { done: true }`; setting status to an open stage on a completed task can optionally reopen or ignore completed rows — recommend matching `Reorder`: act on open tasks, or offer explicit `SetStatusAndReopen` only from board drag-out-of-Done as a 2-event command group).
   - **Board drag across columns:** Either extend `UpdateTask` with an optional `placement: Option<Placement>` (atomic status + position change in one event group, single undo!) or emit a single command `MoveTaskStatus { id, status, placement }` / `CompleteTask` when targeting `Done`. Keeping status + reorder in **one command group** ensures `Ctrl+Z` reverses both cleanly in a single step.
 - **Events & conflict keys:**

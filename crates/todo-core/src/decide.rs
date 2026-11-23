@@ -394,9 +394,17 @@ impl<'a> Decider<'a> {
                 ch.push(FieldChange::Notes(Change::new(t.notes.clone(), v.clone())));
             }
         }
-        let due = p.due.unwrap_or(t.due);
-        let start_date = p.start_date.unwrap_or(t.start_date);
-        validate_span(start_date, due)?;
+        let mut due = p.due.unwrap_or(t.due);
+        let mut start_date = p.start_date.unwrap_or(t.start_date);
+        // Honor a one-endpoint edit against the current span, including writes from older clients
+        // that only know about due dates. If both endpoints are explicit, validate them as given.
+        if start_date.zip(due).is_some_and(|(start, end)| start > end) {
+            match (p.start_date, p.due) {
+                (None, Some(_)) => start_date = due,
+                (Some(_), None) => due = start_date,
+                _ => validate_span(start_date, due)?,
+            }
+        }
         if start_date != t.start_date {
             ch.push(FieldChange::StartDate(Change::new(
                 t.start_date,
@@ -928,7 +936,8 @@ impl<'a> Decider<'a> {
                     .get(id)
                     .ok_or(DomainError::NotFound((*id).into()))?;
                 let mut ch = self.name_changes(&l.name, &l.color, name, col, MAX_NAME)?;
-                if let Some(mut next) = *features {
+                if let Some(patch) = features {
+                    let mut next = patch.merge(l.features);
                     if !next.allows(next.default_view) {
                         if l.features.default_view == next.default_view {
                             // Switching off the current default view falls back in the same event.

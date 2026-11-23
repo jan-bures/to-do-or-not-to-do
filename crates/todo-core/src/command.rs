@@ -6,7 +6,7 @@
 use crate::ids::{
     AttachmentId, CollectionId, EntityId, LinkId, ListId, ReminderId, StepId, TagId, TaskId,
 };
-use crate::model::{Entity, LinkKind, ListFeatures, Priority, Task, WorkflowStatus};
+use crate::model::{Entity, LinkKind, ListFeatures, ListView, Priority, Task, WorkflowStatus};
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -199,7 +199,8 @@ pub struct TaskPatch {
     /// New notes.
     #[serde(default)]
     pub notes: Option<String>,
-    /// New due date, or `Some(None)` to clear.
+    /// New due date, or `Some(None)` to clear. If this is the only date edited, a due date before
+    /// the existing start brings the start back to the new due date.
     #[serde(
         default,
         deserialize_with = "double_option",
@@ -210,7 +211,8 @@ pub struct TaskPatch {
     /// New open stage. Does not change completion.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<WorkflowStatus>,
-    /// New start date, or `Some(None)` to clear it.
+    /// New start date, or `Some(None)` to clear it. If this is the only date edited, a start date
+    /// after the existing due date brings due forward to the new start date.
     #[serde(
         default,
         deserialize_with = "double_option",
@@ -228,6 +230,33 @@ pub struct TaskPatch {
         skip_serializing_if = "Option::is_none"
     )]
     pub recurrence: Option<Option<Recurrence>>,
+}
+
+/// A change to individual list settings. An omitted setting keeps its current value.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ListFeaturesPatch {
+    /// Enable or disable workflow and the Board view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workflow: Option<bool>,
+    /// Enable or disable start dates and the Timeline view.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeline: Option<bool>,
+    /// Change the default presentation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_view: Option<ListView>,
+}
+
+impl ListFeaturesPatch {
+    /// Merge the patch, before checking whether its resulting view is enabled.
+    #[must_use]
+    pub fn merge(self, current: ListFeatures) -> ListFeatures {
+        ListFeatures {
+            workflow: self.workflow.unwrap_or(current.workflow),
+            timeline: self.timeline.unwrap_or(current.timeline),
+            default_view: self.default_view.unwrap_or(current.default_view),
+        }
+    }
 }
 
 /// A request to change the state.
@@ -293,9 +322,9 @@ pub enum Command {
             skip_serializing_if = "Option::is_none"
         )]
         color: Option<Option<String>>,
-        /// Replacement feature settings; omitted leaves them alone.
+        /// Partial feature settings; omitted fields are left alone.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        features: Option<ListFeatures>,
+        features: Option<ListFeaturesPatch>,
     },
     /// Move a list into another collection (or to the top level).
     MoveList {

@@ -6,7 +6,9 @@ mod common;
 use common::World;
 use proptest::prelude::*;
 use todo_core::access::AccessLevel;
-use todo_core::command::{BulkTaskAction, Command, NewTask, Placement, TaskPatch};
+use todo_core::command::{
+    BulkTaskAction, Command, ListFeaturesPatch, NewTask, Placement, TaskPatch,
+};
 use todo_core::error::{ApplyError, DomainError, UndoError};
 use todo_core::event::{Event, EventPayload, FieldChange, FieldKey};
 use todo_core::ids::{EntityId, EventId, TaskId};
@@ -20,14 +22,43 @@ use todo_core::recurrence::{MAX_INTERVAL, Recurrence, Rule};
 use todo_core::time::add_days;
 use todo_core::time::{Date, Weekday};
 use todo_core::undo::{UndoOptions, undo_batch, undo_with};
-use todo_core::{Actor, AgentId, State, apply};
+use todo_core::{Actor, AgentId, State};
+
+// Check the whole state at every step when replaying, including compensations and intermediate
+// events in a batch. Looking only at the final state could miss an invalid intermediate entity.
+fn apply(state: &mut State, event: &Event) -> Result<(), ApplyError> {
+    todo_core::apply(state, event)?;
+    for task in state.tasks.values() {
+        assert!(
+            task.start_date
+                .zip(task.due)
+                .is_none_or(|(start, due)| start <= due),
+            "inverted span on {:?} after {:?}",
+            task.id,
+            event.payload
+        );
+        assert_eq!(
+            QueryStatus::of(task) == QueryStatus::Done,
+            task.completed_at.is_some()
+        );
+    }
+    for list in state.lists.values() {
+        assert!(
+            list.features.allows(list.features.default_view),
+            "disabled view on {:?} after {:?}",
+            list.id,
+            event.payload
+        );
+    }
+    Ok(())
+}
 
 // ---- history generation -------------------------------------------------------------------------
 
 type Op = (u8, u16, u16, u8);
 
 /// Number of op kinds [`build`] understands.
-const OP_KINDS: u8 = 30;
+const OP_KINDS: u8 = 31;
 /// The op kind that imports an entity with historical times.
 const IMPORT_OP: u8 = 27;
 /// The op kind that tries to create a task with the ID of an earlier task (which must fail).
@@ -157,20 +188,34 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
             n.placement = placement(w, &task_scope(&w.state, list), b, c);
             Command::CreateTask(Box::new(n))
         }
-        5 => Command::UpdateTask {
-            id: pick(&live_tasks, a)?,
-            patch: TaskPatch {
-                title: (c % 2 == 0).then(|| format!("title {b}")),
-                notes: (c % 3 == 0).then(|| format!("notes {b}")),
-                due: (c % 5 == 0)
-                    .then(|| (b % 2 == 0).then(|| Date::constant(2026, 6, 1 + (b % 28) as i8))),
-                priority: (c % 4 == 0).then_some(Priority::Low),
-                recurrence: None,
-                status: Some(status(c)),
-                start_date: (c % 4 != 0)
-                    .then(|| (b % 2 == 0).then_some(Date::constant(2026, 1, 1))),
-            },
-        },
+        5 => {
+            let id = pick(&live_tasks, a)?;
+            let task = &s.tasks[&id];
+            let day = Date::constant(2026, 6, 1 + (b % 28) as i8);
+            let offset = 1 + i64::from(b % 28);
+            let earlier = add_days(task.start_date.unwrap_or(day), -offset);
+            let later = add_days(task.due.unwrap_or(day), offset);
+            let (start_date, due) = match c % 6 {
+                0 => (Some(later), None),
+                1 => (None, Some(earlier)),
+                2 => (Some(earlier), Some(later)),
+                3 => (Some(later), Some(earlier)), // Explicitly inverted: reject rather than adjust.
+                4 => (Some(None), None),
+                _ => (None, None),
+            };
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    title: (c % 2 == 0).then(|| format!("title {b}")),
+                    notes: (c % 3 == 0).then(|| format!("notes {b}")),
+                    due,
+                    priority: (c % 4 == 0).then_some(Priority::Low),
+                    recurrence: None,
+                    status: Some(status(c)),
+                    start_date,
+                },
+            }
+        }
         6 => {
             let list = pick(&live_lists, b)?;
             Command::MoveTask {
@@ -318,17 +363,44 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
             task: pick(&live_tasks, a)?,
             at: common::ts(10_000 + i64::from(b)),
         },
-        22 => Command::UpdateList {
-            id: pick(&live_lists, a)?,
-            name: Some(name),
-            color: Some(None),
-            features: Some(ListFeatures {
-                workflow: c % 2 == 0,
-                timeline: c % 3 == 0,
-                default_view: [ListView::List, ListView::Board, ListView::Timeline]
-                    [usize::from(b % 3)],
-            }),
-        },
+        22 => {
+            let id = pick(&live_lists, a)?;
+            let on = b % 2 == 0;
+            let features = match c % 6 {
+                0 => ListFeaturesPatch {
+                    workflow: Some(on),
+                    ..ListFeaturesPatch::default()
+                },
+                1 => ListFeaturesPatch {
+                    timeline: Some(on),
+                    ..ListFeaturesPatch::default()
+                },
+                2 => ListFeaturesPatch {
+                    workflow: Some(true),
+                    default_view: Some(ListView::Board),
+                    ..ListFeaturesPatch::default()
+                },
+                3 => ListFeaturesPatch {
+                    timeline: Some(true),
+                    default_view: Some(ListView::Timeline),
+                    ..ListFeaturesPatch::default()
+                },
+                4 => ListFeaturesPatch {
+                    default_view: Some(ListView::List),
+                    ..ListFeaturesPatch::default()
+                },
+                _ => ListFeaturesPatch {
+                    default_view: Some(ListView::Board),
+                    ..ListFeaturesPatch::default()
+                },
+            };
+            Command::UpdateList {
+                id,
+                name: Some(name),
+                color: Some(None),
+                features: Some(features),
+            }
+        }
         23 => {
             let id = pick(&live_lists, a)?;
             Command::MoveList {
@@ -439,21 +511,46 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
         28 => {
             let id = pick(&live_tasks, a)?;
             let list = s.tasks[&id].list;
+            let eligible: Vec<_> = live_tasks
+                .iter()
+                .copied()
+                .filter(|other| {
+                    let task = &s.tasks[other];
+                    *other != id && task.list == list && !task.is_done()
+                })
+                .collect();
+            let (status, placement) = match (c % 4, pick(&eligible, b)) {
+                (0, _) => (status(c), Placement::First),
+                (1, _) | (_, None) => (status(c), Placement::Last),
+                (2, Some(other)) => (s.tasks[&other].status, Placement::Before(other.into())),
+                (_, Some(other)) => (s.tasks[&other].status, Placement::After(other.into())),
+            };
             Command::MoveTaskStatus {
                 id,
                 list,
-                status: status(c),
-                placement: if b % 2 == 0 {
-                    Placement::First
-                } else {
-                    Placement::Last
-                },
+                status,
+                placement,
             }
         }
         29 => Command::BulkTasks {
             tasks: live_tasks,
             action: BulkTaskAction::Status { status: status(c) },
         },
+        30 => {
+            let start = s.tasks[&pick(&live_tasks, a)?]
+                .start_date
+                .unwrap_or(Date::constant(2026, 7, 1));
+            Command::BulkTasks {
+                tasks: live_tasks,
+                action: BulkTaskAction::Due {
+                    date: if c % 3 == 0 {
+                        None
+                    } else {
+                        add_days(start, -1 - i64::from(b % 28))
+                    },
+                },
+            }
+        }
         _ => Command::AddAttachment {
             id: w.ids.attachment(),
             task: pick(&live_tasks, a)?,
@@ -555,8 +652,13 @@ proptest! {
             let id = w.ids.task();
             let mut task = NewTask::new(id, if i % 2 == 0 { first } else { second }, format!("Task {i}"));
             task.my_day = in_day.then_some(today);
+            match i % 3 {
+                0 => task.start_date = add_days(today, 1),
+                1 => task.start_date = add_days(today, -1),
+                _ => {}
+            }
             if repeat {
-                task.due = Some(today);
+                task.due = Some(task.start_date.map_or(today, |start| start.max(today)));
                 task.recurrence = Some(Recurrence { rule: Rule::Daily { interval: 1 }, until: None });
             }
             if important { task.priority = Priority::High; }
@@ -580,6 +682,13 @@ proptest! {
             if choice == 6 {
                 let moved: Vec<_> = tasks.iter().copied().filter(|id| before.tasks[id].list != second).collect();
                 prop_assert!(moved.windows(2).all(|p| w.state.tasks[&p[0]].position < w.state.tasks[&p[1]].position));
+            }
+            if let BulkTaskAction::Due { date } = action {
+                for id in &tasks {
+                    let before_start = before.tasks[id].start_date;
+                    let start = before_start.map(|s| date.map_or(s, |d| s.min(d)));
+                    prop_assert_eq!((w.state.tasks[id].start_date, w.state.tasks[id].due), (start, date));
+                }
             }
             let mut replay = before.clone();
             for e in &events { apply(&mut replay, e).unwrap(); }
@@ -660,7 +769,10 @@ proptest! {
             prop_assert!(r.is_ok(), "undo of {:?} failed: {:?}", e.payload, r);
         }
         prop_assert!(w.state.data_eq(&initial), "state differs after undoing everything");
-        // And everything can be redone: undoing the compensations in reverse restores the full history.
+        for event in &w.log {
+            apply(&mut initial, event).unwrap();
+        }
+        prop_assert_eq!(initial, w.state);
     }
 
     /// (c) Undo followed by redo (undo of the compensating event) restores the event's effect.
@@ -1619,7 +1731,7 @@ fn histories_exercise_many_event_kinds() {
         .map(|_| {
             let v = next();
             // Every kind except the ID-reuse op.
-            let kind = (v % u64::from(OP_KINDS - 1)) as u8;
+            let kind = (v % u64::from(OP_KINDS)) as u8;
             (
                 if kind == REUSE_OP { IMPORT_OP } else { kind },
                 (v >> 8) as u16,

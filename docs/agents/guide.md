@@ -80,8 +80,9 @@ it; tell the owner what you wanted to do instead.
   `status: "in_progress"` when starting work on a workflow-enabled list and use `complete_task`
   when finished. Turning a feature off does not erase the fields.
 - `create_task` (capture) and `update_task` (plan) accept `status` (`backlog`, `todo`, or
-  `in_progress`) and `start_date` (`YYYY-MM-DD`). The start date cannot be after the due date.
-  Omitted patch fields are left alone; `start_date: null` clears the start date.
+  `in_progress`) and `start_date` (`YYYY-MM-DD`). If you supply both dates, start must be on or
+  before due. If you edit only one and the dates would cross, the other moves to match it. Other
+  omitted patch fields are left alone; `start_date: null` clears the start date.
 - `get_task` and `query_tasks` return the effective status: `done` exactly when `completed_at` is
   set. Use `complete_task` with `completed: false` to reopen and reveal the stored open stage again.
   REST task reads expose the stored open stage instead; missing `status`, `start_date` or list

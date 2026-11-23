@@ -7,7 +7,7 @@ use todo_client::{
     intent::{self, workflow},
     timeline,
 };
-use todo_core::{command::Placement, model, query::QueryStatus, time::Date};
+use todo_core::{command, command::Placement, model, query::QueryStatus, time::Date};
 
 use super::{TodoEngine, Undone, intent_room, invalid, list_id, organize::OrganizeChange, task_id};
 use crate::{
@@ -22,6 +22,16 @@ pub enum ListView {
     List,
     Board,
     Timeline,
+}
+
+impl From<ListView> for model::ListView {
+    fn from(view: ListView) -> Self {
+        match view {
+            ListView::List => Self::List,
+            ListView::Board => Self::Board,
+            ListView::Timeline => Self::Timeline,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Record)]
@@ -50,11 +60,24 @@ impl From<ListFeatures> for model::ListFeatures {
         Self {
             workflow: f.workflow,
             timeline: f.timeline,
-            default_view: match f.default_view {
-                ListView::List => model::ListView::List,
-                ListView::Board => model::ListView::Board,
-                ListView::Timeline => model::ListView::Timeline,
-            },
+            default_view: f.default_view.into(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, uniffi::Record)]
+pub struct ListFeaturesPatch {
+    pub workflow: Option<bool>,
+    pub timeline: Option<bool>,
+    pub default_view: Option<ListView>,
+}
+
+impl From<ListFeaturesPatch> for command::ListFeaturesPatch {
+    fn from(patch: ListFeaturesPatch) -> Self {
+        Self {
+            workflow: patch.workflow,
+            timeline: patch.timeline,
+            default_view: patch.default_view.map(Into::into),
         }
     }
 }
@@ -185,10 +208,11 @@ impl TodoEngine {
         Some(state.lists[&id].features.into())
     }
 
+    /// Change only the settings supplied by the caller.
     pub fn set_list_features(
         &self,
         id: String,
-        features: ListFeatures,
+        features: ListFeaturesPatch,
     ) -> Result<Option<Arc<OrganizeChange>>, FfiError> {
         let (id, state) = self.live_list(&id)?;
         self.track_change(
