@@ -283,6 +283,12 @@ impl Panel {
         cx.emit(PanelEvent::Close);
     }
 
+    pub(super) fn history_back(&self, window: &Window, cx: &mut Context<Self>) {
+        if !self.input.read(cx).focus_handle.is_focused(window) {
+            self.close(cx);
+        }
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         let Some((rt, t)) = self.net.clone() else {
             return;

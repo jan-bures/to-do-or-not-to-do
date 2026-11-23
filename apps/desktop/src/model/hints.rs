@@ -403,7 +403,7 @@ pub fn key_hints(s: HintState) -> Vec<Hint> {
 /// The hints that give way, in this order, when the status bar is too narrow for all of them: the keys
 /// that have another way in first (the detail pane's Tags, links and Priority rows, the row's context
 /// menu), then the letters. Space, Escape and Ctrl+Z always stay.
-const GIVE_WAY: [&str; 12] = [
+const GIVE_WAY: [&str; 15] = [
     "Shift R",
     "R",
     "T",
@@ -415,6 +415,9 @@ const GIVE_WAY: [&str; 12] = [
     "D",
     "P",
     "E",
+    "Alt ←/→",
+    "Alt ←",
+    "Alt →",
     "J K",
 ];
 

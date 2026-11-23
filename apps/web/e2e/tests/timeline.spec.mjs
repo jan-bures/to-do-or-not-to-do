@@ -138,7 +138,7 @@ test("keyboard selects lanes, reschedules by day and week, resizes, and opens bo
   await page.keyboard.press("K");
   await expect(row(page, TITLE)).toBeFocused();
   const span = bar(page, TITLE);
-  await page.keyboard.press("Alt+ArrowRight");
+  await page.keyboard.press("Control+Alt+ArrowRight");
   await expectDates(span, "2026-11-20", "2026-11-24");
   await page.keyboard.press("Shift+Alt+ArrowRight");
   await expectDates(span, "2026-11-27", "2026-12-01");

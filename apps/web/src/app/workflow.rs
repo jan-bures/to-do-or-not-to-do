@@ -116,6 +116,7 @@ impl Ctx {
         self.room_actions.close_menu(false);
         self.multi.update(todo_client::selection::Selection::clear);
         self.view_override.set(Some(view));
+        self.record_location();
         request_animation_frame(move || {
             if let Some(room) = document().query_selector(".room").ok().flatten() {
                 room.set_scroll_top(0);
@@ -144,6 +145,7 @@ impl Ctx {
         {
             self.view_override.set(None);
         }
+        self.reconcile_location();
     }
 
     pub(super) fn choose_status(self, id: TaskId, target: QueryStatus) {

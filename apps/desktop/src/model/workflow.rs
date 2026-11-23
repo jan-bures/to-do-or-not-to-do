@@ -134,8 +134,16 @@ pub enum Key {
 
 pub fn key(event: &KeyDownEvent, board: bool) -> Option<(Key, bool)> {
     let m = event.keystroke.modifiers;
-    if m.control || m.platform || m.function {
+    if m.platform || m.function {
         return None;
+    }
+    if m.control {
+        let key = match (board && m.alt && !m.shift, event.keystroke.key.as_str()) {
+            (true, "left") => Key::MoveColumn(-1),
+            (true, "right") => Key::MoveColumn(1),
+            _ => return None,
+        };
+        return Some((key, !event.is_held));
     }
     let key = match (event.keystroke.key.as_str(), m.alt, m.shift) {
         ("v", false, false) => Key::CycleView,
@@ -150,8 +158,6 @@ pub fn key(event: &KeyDownEvent, board: bool) -> Option<(Key, bool)> {
         ("l" | "right", false, false) if board => Key::Column(1),
         ("k" | "up", false, false) if board => Key::Row(-1),
         ("j" | "down", false, false) if board => Key::Row(1),
-        ("left", true, false) if board => Key::MoveColumn(-1),
-        ("right", true, false) if board => Key::MoveColumn(1),
         ("up", true, false) if board => Key::MoveRow(-1),
         ("down", true, false) if board => Key::MoveRow(1),
         ("n", false, false) if board => Key::Add,
@@ -195,10 +201,10 @@ mod tests {
             Some((Key::Column(1), true))
         );
         assert_eq!(key(&event("l", false, false, false), false), None);
-        assert_eq!(
-            key(&event("left", true, false, true), true),
-            Some((Key::MoveColumn(-1), false))
-        );
+        let mut move_left = event("left", true, false, true);
+        assert_eq!(key(&move_left, true), None);
+        move_left.keystroke.modifiers.control = true;
+        assert_eq!(key(&move_left, true), Some((Key::MoveColumn(-1), false)));
         assert_eq!(
             key(&event("d", false, true, false), false),
             Some((Key::Starts, true))

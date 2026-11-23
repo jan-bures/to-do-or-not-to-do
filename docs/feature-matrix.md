@@ -80,6 +80,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Room pills, drawer (phone) | n/a | n/a | wired `W/app.rs:953`, `:888` | wired `A/ui/Pills.kt:65`, `:81`, `A/ui/Header.kt:109` |
 | Filter by query or words (Ctrl+K, `/`) | `C/query` | wired `D/ui/shell.rs:271`, clear `:1150` | wired `W/app.rs:899`, `:907` | wired `A/ui/RoomPane.kt:136`, `:182` |
 | Keyboard: J/K, arrows, Space, E, Esc | n/a | wired `D/ui/shell.rs:66`–`78`, `:2089` | wired `W/app.rs:492` | n/a |
+| Back/Forward through rooms, views and task detail | bounded session history (`T/navigation.rs`) | wired: mouse side buttons, Browser keys and Alt+Left/Right in the focused window (`D/ui/shell/navigation.rs`); fixed-room pop-outs open detail in the main window | wired: native browser Back/Forward and deep links (`W/app/navigation.rs`) | system Back dismisses the current detail, sheet or selection as before; no desktop/web room history or Forward gesture |
 | Keyboard: D (due), P (priority), Shift+P (priority picker), Alt+Up/Down (reorder) | n/a | wired `D/ui/shell.rs:2251`–`2264` | wired `W/app.rs` (`on_key`) | n/a |
 | Keyboard: Delete (delete), M (move to another list), Shift+F10 (the task's menu) | n/a | wired `D/ui/shell.rs` (`list_key`, `MoveTaskTo`, `TaskMenu`) | wired on a task row or in its detail pane (`W/app/task_actions.rs`) | n/a |
 | Keyboard: R (repeat), T (tag picker), L (add a link) | n/a | wired `D/ui/shell.rs` (`PickTags`, `AddLinkKey`; `pick_tags` `:1023`, `D/ui/shell/detail.rs:254`) | wired `W/app.rs` (`on_key`) | n/a |

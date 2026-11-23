@@ -111,6 +111,21 @@ header: the server's other pages (CSRF form fields), the API's JSON (pairing and
 `private, no-store, no-transform`. Only the app's static files, which hold no secret, are compressed, by the
 build. They carry an `ETag` and `private, no-cache`, so a deploy is picked up on the next load.
 
+### Back and Forward
+
+The browser's Back and Forward controls (including mouse side buttons) restore the last room, its
+List/Board/Timeline view, and explicitly opened detail. Changing room or view, opening detail, and
+closing it push a location; a new visit after Back discards the forward branch. **J/K** and cursor
+arrows can preview detail without changing the recorded URL. Filter text, scrolling, selection,
+menus and dialogs do not add entries. Automatic fallback after deletion corrects the current URL
+with `replaceState`, not a new visit. Back and Forward skip deleted rooms or tasks (including those
+hidden by a deleted parent) and views that are no longer enabled.
+
+A URL such as `/app/list/<id>/view/board/task/<id>` opens that view and task directly. Bare room links
+choose the synced default view. The tab tracks up to 100 recent locations in memory; earlier browser
+entries and entries from before a reload are read as deep links. Browser history is still free to leave
+`/app`. All room and detail paths keep the existing passkey session gate.
+
 ### Headers
 
 The page gets its own CSP:
@@ -351,7 +366,7 @@ grip to drag. **+ Add to …** opens the shared composer staged to that column, 
 
 Drag a card to reorder it, move it to another stage, or complete/reopen it in Done. The lifted card tracks
 the pointer; a bar marks legal placement. Escape or releasing outside a legal target cancels. Use **H/L**
-or **Left/Right** to focus columns, **J/K** or **Up/Down** for cards, **Alt+Left/Right** to move between
+or **Left/Right** to focus columns, **J/K** or **Up/Down** for cards, **Ctrl+Alt+Left/Right** to move between
 stages and **Alt+Up/Down** to reorder. **Enter** opens detail, **E** edits its title, **Space** completes or
 reopens, and **N** opens the active column's composer. Modified clicks use the same selection as List;
 **Status** in the bulk strip changes the selected cards together. Board moves and status edits offer tracked
@@ -369,7 +384,7 @@ Drag a bar to move its dates or an edge to resize; a due-only milestone can grow
 start-only bar can grow a due date. The live readout previews the new dates. Drag an **Unscheduled**
 card onto a date, or choose **Schedule** to open the calendar without dragging. Escape or dropping
 outside the calendar cancels. A change saves one tracked edit with **Undo**. Use **J/K** or **Up/Down**
-to focus a lane, **Alt+Left/Right** to shift by a day (add **Shift** for a week), **[** / **]** to change
+to focus a lane, **Ctrl+Alt+Left/Right** to shift by a day (**Shift+Alt+Left/Right** for a week), **[** / **]** to change
 its duration, **D** / **Shift+D** for the due/start calendar, and **0** for Today. **Enter** opens detail;
 **Space** toggles completion. **Show completed on Timeline** reveals dated completed tasks.
 
@@ -598,7 +613,8 @@ The status bar shows shortcuts only when their actions are available.
   where the count says).
 - **Browser tests** (`e2e/tests`, Playwright, Chromium): the fixtures build served by `e2e/serve.mjs` the way
   the server serves it, with the server's exact CSP (read from `spa.rs`). They add and complete tasks, undo,
-  edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
+  edit titles, steps and toggles, traverse room, view and task history (including deleted entries and a filter
+  that adds none), use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation. Task action tests cover context and detail menus, keyboard and filter
   navigation, focus after deletion and moves, reduced motion and Undo. Workflow tests cover both settings menus,
   defaults, status/range edits and suffixes, pointer and keyboard Board moves, Done, narrow layout and Undo.

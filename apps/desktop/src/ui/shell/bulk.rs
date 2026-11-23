@@ -147,7 +147,7 @@ impl ShellView {
         let clear = self
             .bulk_button(6, Icon::X, "Clear selection", None, window, cx)
             .on_click(cx.listener(|this, _, window, cx| {
-                this.select_task(None, cx);
+                this.preview_task(None, cx);
                 window.focus(&this.list_focus, cx);
             }));
         let wrap = ids.len() >= 2
@@ -341,7 +341,7 @@ impl ShellView {
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                 if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
                     cx.stop_propagation();
-                    this.select_task(None, cx);
+                    this.preview_task(None, cx);
                     window.focus(&this.list_focus, cx);
                 }
             }))

@@ -9,6 +9,7 @@ mod detail_splitter;
 mod device_pairing;
 mod email_drop;
 mod links;
+mod navigation;
 mod pickers;
 mod quick_add;
 mod reminder;
@@ -120,6 +121,7 @@ pub struct Ctx {
     live: bool,
     room: RwSignal<RoomId>,
     selected: RwSignal<Option<TaskId>>,
+    history: StoredValue<navigation::BrowserHistory>,
     multi: RwSignal<todo_client::selection::Selection>,
     bulk_due: NodeRef<html::Dialog>,
     lingering: RwSignal<Vec<Linger>>,
@@ -393,14 +395,22 @@ impl Ctx {
     }
 
     fn go(self, room: RoomId) {
+        self.navigate(room, None);
+    }
+
+    fn navigate(self, room: RoomId, task: Option<TaskId>) {
         self.reset_room_controls();
-        self.selected.set(None);
-        self.editing.set(false);
-        platform::push_path(&room.path());
         self.room.set(room);
+        self.set_detail(task);
+        self.record_location();
     }
 
     fn select(self, id: Option<TaskId>) {
+        self.preview_task(id);
+        self.record_location();
+    }
+
+    fn preview_task(self, id: Option<TaskId>) {
         self.multi.update(todo_client::selection::Selection::clear);
         self.set_detail(id);
     }
@@ -408,12 +418,6 @@ impl Ctx {
     fn set_detail(self, id: Option<TaskId>) {
         self.editing.set(false);
         self.selected.set(id);
-        let room = self.room.get_untracked();
-        let path = match id {
-            Some(t) => format!("{}/task/{t}", room.path().trim_end_matches('/')),
-            None => room.path(),
-        };
-        platform::push_path(&path);
     }
 
     fn open_filter(self) {
@@ -569,7 +573,7 @@ impl Ctx {
                 .min(rows.len().saturating_sub(1)),
         };
         if let Some(row) = rows.get(next) {
-            self.select(Some(row.id));
+            self.preview_task(Some(row.id));
             if !self.detail_modal.get_untracked() {
                 platform::focus(&format!("row-{}", row.id));
             }
@@ -583,22 +587,16 @@ pub fn mount(now: Now, live: bool, notice: Option<String>) {
     leptos::mount::mount_to_body(move || view! { <App now=now live=live notice=notice.clone()/> });
 }
 
-fn current_route() -> (RoomId, Option<TaskId>) {
-    let path = platform::path();
-    let (room, task) = RoomId::from_path(&path);
-    if room.is_history() {
-        let canonical = room.path();
-        if canonical != path {
-            platform::replace_path(&canonical);
-        }
-    }
-    (room, task)
-}
-
 #[component]
 fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
-    let (room0, task0) = current_route();
     let state = RwSignal::new(backend::view());
+    let (history, location, view0) =
+        state.with_untracked(|s| navigation::BrowserHistory::start(s, &platform::path()));
+    let navigation::Location {
+        room: room0,
+        task: task0,
+        ..
+    } = location;
     let now = RwSignal::new(now);
     let room = RwSignal::new(room0);
     let lingering = RwSignal::new(Vec::<Linger>::new());
@@ -614,7 +612,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         })
     });
     let (_, view_room) = model::room_memos(state, now, room, holding, filter_text);
-    let view_override = RwSignal::new(None);
+    let view_override = RwSignal::new(view0);
     let room_features = Memo::new(move |_| room.with(|r| state.with(|s| workflow::features(s, r))));
     let room_view =
         Memo::new(move |_| workflow::effective(room_features.get(), view_override.get()));
@@ -701,6 +699,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         live,
         room,
         selected,
+        history: StoredValue::new(history),
         multi: RwSignal::new(todo_client::selection::Selection::default()),
         bulk_due: NodeRef::new(),
         lingering,
@@ -766,6 +765,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         c.multi.update(|s| s.retain_visible(&visible));
     });
     c.refresh();
+    c.reconcile_location();
     if let Some(n) = notice {
         c.show_toast(n, false);
     }
@@ -796,17 +796,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         document().set_title(&title);
     });
 
-    platform::on_pop_state(move || {
-        let (r, t) = current_route();
-        if r != c.room.get_untracked() {
-            c.reset_room_controls();
-        }
-        c.multi.update(todo_client::selection::Selection::clear);
-        c.close_bulk_due(false);
-        c.room.set(r);
-        c.selected.set(t);
-        c.editing.set(false);
-    });
+    platform::on_pop_state(move |marker| c.pop_location(marker.as_deref()));
 
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
     let _drag_blur = window_event_listener(leptos::ev::blur, move |_| {
@@ -827,6 +817,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             loop {
                 backend::next_change().await;
                 c.refresh();
+                c.reconcile_location();
             }
         });
         platform::on_wake(move || {
@@ -1077,7 +1068,17 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     if ev.ctrl_key() {
-        if key == "z"
+        if !drawer
+            && !modal
+            && !history
+            && ev.alt_key()
+            && !ev.shift_key()
+            && matches!(key.as_str(), "arrowleft" | "arrowright")
+            && ((timeline && timeline::key(c, ev, &key))
+                || (untrack(|| c.on_board()) && board::key(c, ev, &key)))
+        {
+            ev.prevent_default();
+        } else if key == "z"
             && !ev.shift_key()
             && !ev.alt_key()
             && !c.read_only()

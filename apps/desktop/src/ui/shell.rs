@@ -11,6 +11,7 @@ mod detail;
 mod device_pairing;
 mod email_drop;
 mod menu;
+mod navigation;
 mod panes;
 mod popout;
 mod quick_pickers;
@@ -288,6 +289,7 @@ pub struct ShellView {
     detail_bar: kit::Scrollbar,
     caption_preview: kit::CaptionPreview,
     compact: Option<popout::Compact>,
+    history: todo_client::navigation::History<navigation::Location>,
     menu: Option<Menu>,
     /// The menu the current mouse press closed, if it closed one: the click that press ends on that
     /// menu's own button leaves it closed (`toggle_menu`). Every press in the window is counted.
@@ -481,7 +483,9 @@ impl ShellView {
         let edit = Editors::new(&palette, window, cx);
         let painted_hue = shell.room.hue;
         let ai = assistant::Ai::new(&store, &palette, window, cx);
+        let history = navigation::initial(&ui, &shell);
         let mut this = Self {
+            history,
             store,
             ui,
             shell,
@@ -635,6 +639,15 @@ impl ShellView {
     }
 
     fn refresh_with_collapse_change(&mut self, collapsed_changed: bool, cx: &mut Context<Self>) {
+        self.refresh_location(collapsed_changed, None, cx);
+    }
+
+    fn refresh_location(
+        &mut self,
+        collapsed_changed: bool,
+        restore_view: Option<todo_core::model::ListView>,
+        cx: &mut Context<Self>,
+    ) {
         self.refresh_ai(cx);
         self.drain_reminder_actions();
         let state = self.undo_state();
@@ -667,6 +680,15 @@ impl ShellView {
             self.motion.settle_all();
             self.row_lifts.clear();
             self.row_bounds.borrow_mut().clear();
+        }
+        if let Some(view) = restore_view {
+            if !room_changed && old_view != view {
+                self.board.reset_view();
+                self.timeline.reset_view();
+                self.rows_bar
+                    .reset_to_top(&self.rows.0.borrow().base_handle);
+            }
+            self.board.view_override = Some(view);
         }
         let stale_menu = self.menu.as_ref().is_some_and(|m| match m.kind {
             MenuKind::Room { .. }
@@ -1048,6 +1070,12 @@ impl ShellView {
         self.refresh(cx);
         match moment {
             Moment::RoomSwitch { from, .. } => {
+                self.history = todo_client::navigation::History::new(navigation::Location {
+                    room: from,
+                    view: todo_core::model::ListView::List,
+                    task: None,
+                });
+                self.record_location();
                 let ui = UiState {
                     room: from,
                     task: None,
@@ -1906,8 +1934,12 @@ impl ShellView {
             return;
         }
         self.multi.clear();
+        let previous = self.ui.room;
         let revealed = self.ui.select_room(&self.store.view(), room);
         self.refresh_with_collapse_change(revealed, cx);
+        if self.ui.room != previous {
+            self.record_location();
+        }
     }
 
     fn toggle_collection(&mut self, id: CollectionId, cx: &mut Context<Self>) {
@@ -1919,12 +1951,19 @@ impl ShellView {
     }
 
     fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {
+        if self.preview_task(id, cx) && !self.ui.compact {
+            self.record_location();
+        }
+    }
+
+    /// Moves the cursor's detail preview without changing the explicit route.
+    fn preview_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) -> bool {
         if id.is_some_and(|id| !self.task_is_visible(id)) {
-            return;
+            return false;
         }
         if self.ui.task != id && !self.commit_edits(cx) {
             self.keep_unsaved(cx);
-            return;
+            return false;
         }
         self.multi.clear();
         self.ui.task = id;
@@ -1932,6 +1971,12 @@ impl ShellView {
             self.ai.detail_over_room = id.is_some();
         }
         self.refresh(cx);
+        self.reveal_detail_selection();
+        true
+    }
+
+    fn reveal_detail_selection(&mut self) {
+        let id = self.ui.task;
         if self.on_board() {
             if let Some(id) = id {
                 self.aim_board_cursor(id);
@@ -2217,7 +2262,7 @@ impl ShellView {
             None => n - 1,
             Some(i) => i.saturating_add_signed(by).min(n - 1),
         };
-        self.select_task(Some(tasks[next]), cx);
+        self.preview_task(Some(tasks[next]), cx);
     }
 
     pub fn preview_caption(&mut self, preview: kit::CaptionPreview) {
@@ -3645,7 +3690,7 @@ impl ShellView {
                             return;
                         }
                         if this.multi.cursor().is_some() {
-                            this.select_task(None, cx);
+                            this.preview_task(None, cx);
                         } else if this.ui.compact {
                             this.close_popout(window);
                         } else if this.in_activity() {
@@ -4235,7 +4280,7 @@ impl ShellView {
             if let Some(task) = self.board_task() {
                 let done = self.task_stage(task) == Some(todo_core::query::QueryStatus::Done);
                 keys.extend([
-                    ("Alt ←/→", "move status"),
+                    ("Ctrl Alt ←/→", "move status"),
                     ("S", "status"),
                     ("Space", if done { "reopen" } else { "done" }),
                 ]);
@@ -4245,7 +4290,7 @@ impl ShellView {
             }
         } else if self.list_focus.is_focused(window) && self.on_timeline() {
             keys = vec![
-                ("Alt ←/→", "shift ±1d"),
+                ("Ctrl Alt ←/→", "shift ±1d"),
                 ("[ ]", "resize"),
                 ("0", "today"),
                 ("V", "view"),
@@ -4288,6 +4333,9 @@ impl ShellView {
         }
         if self.width == Width::Wide && !self.ai.modal() {
             keys.insert(0, ("Ctrl J", "Ask AI"));
+        }
+        if let Some(hint) = self.history_hint(window, cx) {
+            keys.insert(0, hint);
         }
         let hint = |key: &'static str, what: &'static str| {
             div()
@@ -4668,6 +4716,7 @@ impl Render for ShellView {
             .when(self.pairing_panel.is_none() && !self.ai.modal(), |shell| {
                 shell.key_context("Shell")
             })
+            .capture_key_down(cx.listener(Self::history_key))
             .on_key_down(cx.listener(|this, e, window, cx| this.shell_ai_key(e, window, cx)))
             .on_key_down(cx.listener(|this, e, window, cx| this.tab_key(e, window, cx)))
             .on_action(
@@ -4787,6 +4836,7 @@ impl Render for ShellView {
                 shell.child(div().absolute().inset_0().occlude().cursor_col_resize())
             })
             .child(self.press_counter(cx))
+            .child(self.history_mouse(cx))
             .child(self.drag_events(cx))
             .child(self.board_capture(cx))
             .child(self.timeline_capture(cx))

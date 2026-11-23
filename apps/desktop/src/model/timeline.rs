@@ -36,22 +36,33 @@ pub enum Key {
 
 pub fn key(event: &KeyDownEvent) -> Option<(Key, bool)> {
     let m = event.keystroke.modifiers;
-    if m.control || m.platform || m.function {
+    if m.platform || m.function {
         return None;
     }
-    let step = if m.shift { 7 } else { 1 };
-    let key = match (event.keystroke.key.as_str(), m.alt, m.shift) {
-        ("up" | "k", false, false) => Key::Lane(-1),
-        ("down" | "j", false, false) => Key::Lane(1),
-        ("left", true, _) => Key::Shift(-step),
-        ("right", true, _) => Key::Shift(step),
-        ("[", false, false) => Key::Duration(-1),
-        ("]", false, false) => Key::Duration(1),
-        ("0", false, false) => Key::Today,
-        ("d", false, starts) => Key::Calendar(starts),
-        ("enter", false, false) => Key::Open,
-        ("space", false, false) => Key::Complete,
-        ("escape", false, false) => Key::Escape,
+    if m.control || m.alt {
+        // Alt+Left/Right belongs to location history; keep the existing week nudge.
+        let step = match (m.alt, m.control, m.shift) {
+            (true, true, false) => 1,
+            (true, false, true) => 7,
+            _ => return None,
+        };
+        let key = match event.keystroke.key.as_str() {
+            "left" => Key::Shift(-step),
+            "right" => Key::Shift(step),
+            _ => return None,
+        };
+        return Some((key, !event.is_held));
+    }
+    let key = match (event.keystroke.key.as_str(), m.shift) {
+        ("up" | "k", false) => Key::Lane(-1),
+        ("down" | "j", false) => Key::Lane(1),
+        ("[", false) => Key::Duration(-1),
+        ("]", false) => Key::Duration(1),
+        ("0", false) => Key::Today,
+        ("d", starts) => Key::Calendar(starts),
+        ("enter", false) => Key::Open,
+        ("space", false) => Key::Complete,
+        ("escape", false) => Key::Escape,
         _ => return None,
     };
     Some((key, !event.is_held || matches!(key, Key::Lane(_))))
@@ -138,7 +149,10 @@ mod tests {
             is_held: false,
             prefer_character_input: false,
         };
+        assert_eq!(key(&e), None);
+        e.keystroke.modifiers.control = true;
         assert_eq!(key(&e), Some((Key::Shift(-1), true)));
+        e.keystroke.modifiers.control = false;
         e.keystroke.modifiers.shift = true;
         assert_eq!(key(&e), Some((Key::Shift(-7), true)));
         e.is_held = true;

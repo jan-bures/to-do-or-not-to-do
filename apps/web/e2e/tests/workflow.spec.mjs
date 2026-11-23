@@ -172,7 +172,7 @@ test("Board keys navigate without opening detail, move, reorder, add and set bul
   await page.keyboard.press("Alt+ArrowDown");
   await expect(todo.locator(".board-title").first()).toHaveText(TODO_2);
   await expect(card(todo, TODO)).toBeFocused();
-  await page.keyboard.press("Alt+ArrowLeft");
+  await page.keyboard.press("Control+Alt+ArrowLeft");
   await expect(card(backlog, TODO)).toBeFocused();
   await page.keyboard.press("Control+z");
   await expect(card(todo, TODO)).toBeFocused();
@@ -215,7 +215,7 @@ test("Done rail remains a drop target beside detail; completion and reopening un
   await rail.click();
   await expect(done.getByRole("button", { name: "Collapse Done" })).toBeVisible();
   await card(done, RECENT).focus();
-  await page.keyboard.press("Alt+ArrowLeft");
+  await page.keyboard.press("Control+Alt+ArrowLeft");
   await expect(card(progress, RECENT)).toBeVisible();
   await undo(page).click();
   await expect(card(done, RECENT)).toBeVisible();

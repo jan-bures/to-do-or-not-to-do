@@ -312,8 +312,10 @@ pub(super) fn key(c: Ctx, ev: &leptos::ev::KeyboardEvent, key: &str) -> bool {
     let (at, card) = cursor(c);
     let current = workflow::STAGES[at.column];
     let (horizontal, by) = match (key, ev.alt_key()) {
-        ("h", false) | ("arrowleft", _) => (true, -1),
-        ("l", false) | ("arrowright", _) => (true, 1),
+        ("h" | "arrowleft", false) => (true, -1),
+        ("l" | "arrowright", false) => (true, 1),
+        ("arrowleft", true) if ev.ctrl_key() => (true, -1),
+        ("arrowright", true) if ev.ctrl_key() => (true, 1),
         ("k", false) | ("arrowup", _) => (false, -1),
         ("j", false) | ("arrowdown", _) => (false, 1),
         _ => (false, 0),
@@ -754,7 +756,7 @@ fn Well(stage: QueryStatus) -> impl IntoView {
                 })}
                 <Show when=move || done && (total_done() > 0)>
                     <button type="button" class="board-completed" on:click=move |_| {
-                        c.select(None);
+                        c.preview_task(None);
                         c.switch_view(todo_core::model::ListView::List);
                         c.completed_open.set(true);
                         request_animation_frame(|| { if let Some(el) = document().get_element_by_id("completed-rows") { el.scroll_into_view(); } });

@@ -541,8 +541,8 @@ pub(super) fn key(c: Ctx, ev: &KeyboardEvent, key: &str) -> bool {
         .or(c.selected.get_untracked())
         .filter(|id| ids.contains(id));
     let task = selected.or_else(|| ids.first().copied());
-    match (key, ev.alt_key(), ev.shift_key()) {
-        ("arrowup" | "k" | "arrowdown" | "j", false, false) => {
+    match (key, ev.ctrl_key(), ev.alt_key(), ev.shift_key()) {
+        ("arrowup" | "k" | "arrowdown" | "j", false, false, false) => {
             let next = selected.map_or(task, |id| {
                 let by = if matches!(key, "arrowup" | "k") {
                     -1
@@ -556,12 +556,14 @@ pub(super) fn key(c: Ctx, ev: &KeyboardEvent, key: &str) -> bool {
             });
             if let Some(id) = next {
                 if c.selected.get_untracked().is_some() {
-                    c.select(Some(id));
+                    c.preview_task(Some(id));
                 }
                 refocus(c, id);
             }
         }
-        ("arrowleft" | "arrowright", true, _) | ("[" | "]", false, false) => {
+        ("arrowleft" | "arrowright", true, true, false)
+        | ("arrowleft" | "arrowright", false, true, true)
+        | ("[" | "]", false, false, false) => {
             if !ev.repeat()
                 && let Some(id) = task
                 && let Some(before) = dates(c, id)
@@ -579,21 +581,21 @@ pub(super) fn key(c: Ctx, ev: &KeyboardEvent, key: &str) -> bool {
                 apply(c, id, before, edit);
             }
         }
-        ("0", false, false) => {
+        ("0", false, false, false) => {
             ui.today(c.now.get_untracked().today(), true);
         }
-        ("d", false, starts) => {
+        ("d", false, false, starts) => {
             if let Some(id) = task {
                 reveal(c, id, true);
                 open_calendar(c, id, starts, row_id(id));
             }
         }
-        ("enter", false, false) => {
+        ("enter", false, false, false) => {
             if let Some(id) = task {
                 open_task(c, id);
             }
         }
-        (" ", false, false) => {
+        (" ", false, false, false) => {
             if !c.read_only()
                 && let Some(id) = task
                 && untrack(|| completion_phase(c, id).is_none())

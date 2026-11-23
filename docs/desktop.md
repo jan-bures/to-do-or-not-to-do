@@ -160,6 +160,8 @@ Once staged, an update belongs to the installation, not to a particular pairing.
 
 - **WARP fallback.** If no hardware adapter can create a Direct3D 11 device (CI runners, VMs, remote
   desktop), the renderer uses the WARP software adapter instead of failing. `TODO_FORCE_WARP=1` forces it.
+- **Browser navigation input.** The client area already receives GPUI navigation buttons. The patch
+  also forwards non-client side-button releases and Windows `WM_APPCOMMAND` Back/Forward to GPUI.
 - **Frame capture.** A window can request a readback of its next frame, which is taken from its own
   render target before it's presented. The screenshot mode uses it.
 - **Fixed popups.** Quick add's frameless HWND is created at its requested bounds and tracks the monitor's
@@ -314,6 +316,22 @@ corrected. Adding a link can be undone like removing one. A link's remove button
 | Narrow window | Below `desktop::THREE_PANE_MIN` (1200 px; `model::layout`), the list keeps its full width and the detail pane opens over its right part only while a task is open, with a scrim over the rest. Clicking the scrim or pressing **Esc** closes it and leaves the keyboard on the list. The pane slides in 24 px and fades in over `OVERLAY_IN`, and fades and slides out over `OVERLAY_OUT`; with reduced motion (Windows' *Animation effects* off, read with `SPI_GETCLIENTAREAANIMATION` whenever the overlay appears or closes) it only fades, in `REDUCED_FADE`. A window narrowed past the breakpoint with a task already open shows the overlay at rest, without the slide. A pane fading out is inert: nothing in it takes a click, and the scrim still keeps clicks off the rows. The screenshot fixtures draw it at rest. |
 | Status bar | Open and *done today* counts (*done today* is what was completed since local midnight; **Completed n** holds every finished task), the keys that work where the keyboard is now (the list's letters only while the list has focus and a task is selected, Space saying *reopen* for a completed one; Enter and Esc while typing), and notices. In a narrow window the hints give way (`hints::fit`): Shift R, R, T, L, Shift P, Del and M first, which have another way in, then the other letters; Space, Esc and Ctrl Z stay. |
 
+### Back and Forward
+
+Use the mouse's Back/Forward side buttons, a keyboard's Browser Back/Forward keys, or **Alt+Left** /
+**Alt+Right**. The status bar shows the shortcut when a destination is available. Side buttons act on
+release. Navigation stays in the focused window, and does not run while editing a text field. Back
+cancels a confirmation or closes Devices when Escape would close it; otherwise an open menu or
+settings dialog keeps the current location. There are no new title-bar buttons.
+
+A room visit, a List/Board/Timeline switch, or explicitly opening or closing task detail is a history
+entry. A keyboard cursor move (**J/K**, arrows) may preview another task, but does not change the
+recorded location. Selection, filters, scroll, menus and dialogs are not restored. A new location
+replaces the forward branch; consecutive duplicates do not add an entry. Back and Forward skip
+rooms or tasks no longer available, or views that have been disabled. Each window keeps at most
+100 entries in memory for the current session. A pop-out stays in its fixed List room, so its
+selection does not add entries; **Open in main window** navigates in the main window's history.
+
 ### Ask AI
 
 **Ask AI** (**Ctrl+J**) opens a right-hand panel. In wide windows, drag its left divider, or use
@@ -383,7 +401,7 @@ reverses both the stage and the placement. Completing a repeat still creates the
 To do.
 
 Use **H/L** or **←/→** to move between columns, and **J/K** or **↓/↑** to move between cards.
-**Alt+←/→** moves a card to the neighbouring stage; **Alt+↑/↓** reorders it within the current stage.
+**Ctrl+Alt+←/→** moves a card to the neighbouring stage; **Alt+↑/↓** reorders it within the current stage.
 **Enter** opens the focused card (or expands the focused Done rail), **E** edits its title, **Space**
 completes or reopens, and **N** opens the active column's composer. **Ctrl+click** and **Shift+click**
 select several cards, with a **Status** action in the selection strip. Choosing an open status there
@@ -402,7 +420,7 @@ task on a day to set Due, or use its **Schedule** calendar. The tray, rail and z
 this desktop, not synced. The date readout follows a drag; the final change has a single Undo in the
 reserved strip (**Ctrl+Z**). A drag won't overwrite dates that changed on another device mid-gesture.
 
-Use **↑/↓** or **K/J** to select lanes and reveal their dates. **Alt+←/→** shifts both dates one day
+Use **↑/↓** or **K/J** to select lanes and reveal their dates. **Ctrl+Alt+←/→** shifts both dates one day
 (**Shift+Alt+←/→** one week). **[** and **]** shrink or extend the end of the span. **D** and **Shift+D**
 open Due and Starts; **Enter** opens Detail. In the tray, use the same selection keys and **D** to
 schedule a task without dragging. **Ctrl+N** switches to List and focuses its composer.

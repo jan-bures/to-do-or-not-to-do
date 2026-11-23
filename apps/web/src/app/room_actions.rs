@@ -840,7 +840,7 @@ fn EditDialog() -> impl IntoView {
                             let active = c.room.with_untracked(Subject::of);
                             if let Some(active) = active.filter(|active| c.state.with_untracked(|s| !s.is_live(active.id()))) {
                                 let fallback = c.state.with_untracked(|s| active.fallback(s));
-                                c.go(fallback);
+                                c.replace_deleted_room(fallback);
                             }
                             c.drawer.set(false);
                             saving_focus.set(true);

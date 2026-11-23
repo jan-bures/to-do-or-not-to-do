@@ -440,6 +440,7 @@ impl ShellView {
                     .size_full()
                     .flex()
                     .flex_col()
+                    .capture_key_down(cx.listener(Self::history_key))
                     .on_key_down(cx.listener(Self::compact_keys))
                     .on_action(cx.listener(move |this, _: &FocusQuickAdd, window, cx| {
                         if !unavailable {
@@ -467,6 +468,7 @@ impl ShellView {
                     .child(bar)
                     .child(contents)
                     .child(self.press_counter(cx))
+                    .child(self.history_mouse(cx))
                     .child(self.drag_events(cx))
                     .children(self.drag_preview(window))
                     .children(self.confirmation_scrim())

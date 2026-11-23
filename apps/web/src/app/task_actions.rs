@@ -428,7 +428,7 @@ fn apply_change(c: Ctx, origin: Origin, cmd: Command, label: String) {
     }
     if c.selected.get_untracked() == Some(task) {
         // Docked detail can follow the selection. Close a modal detail so the next row is reachable.
-        c.select(
+        c.preview_task(
             if c.detail_modal.get_untracked() || c.narrow.get_untracked() {
                 None
             } else {
@@ -436,6 +436,7 @@ fn apply_change(c: Ctx, origin: Origin, cmd: Command, label: String) {
             },
         );
     }
+    c.reconcile_location();
     focus_after(c, room, next);
 }
 

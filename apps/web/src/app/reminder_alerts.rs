@@ -180,8 +180,7 @@ fn open_task(c: Ctx, task: TaskId) {
             .flatten()
     });
     if let Some(list) = list {
-        c.go(RoomId::List(list));
-        c.select(Some(task));
+        c.navigate(RoomId::List(list), Some(task));
         request_animation_frame(|| {
             platform::focus("task-detail");
         });

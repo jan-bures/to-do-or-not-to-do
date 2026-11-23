@@ -50,6 +50,7 @@ pub mod device_pairing;
 pub mod failure;
 pub mod intent;
 pub mod mirror;
+pub mod navigation;
 pub mod notify;
 pub mod outbox;
 pub mod pairing;

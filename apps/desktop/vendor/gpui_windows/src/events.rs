@@ -31,6 +31,15 @@ pub(crate) const WM_GPUI_DISPLAYS_CHANGED: u32 = WM_USER + 10;
 
 const SIZE_MOVE_LOOP_TIMER_ID: usize = 1;
 
+// TO-DO PATCH: decode the same side-button IDs in both client and caption messages.
+fn xbutton_direction(wparam: WPARAM) -> Option<NavigationDirection> {
+    match wparam.hiword() {
+        XBUTTON1 => Some(NavigationDirection::Back),
+        XBUTTON2 => Some(NavigationDirection::Forward),
+        _ => None,
+    }
+}
+
 /// Coordinates window draws on the UI thread. Owned by the platform and
 /// shared with every window (like `WindowsPlatformState::cursor_visible`),
 /// because the coordination is inherently cross-window: while window A is
@@ -135,7 +144,8 @@ impl WindowsWindowInner {
             WM_LBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Left, lparam),
             WM_RBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Right, lparam),
             WM_MBUTTONDOWN => self.handle_mouse_down_msg(handle, MouseButton::Middle, lparam),
-            WM_XBUTTONDOWN => {
+            // TO-DO PATCH: a rapid second side-button press also stays on the GPUI path.
+            WM_XBUTTONDOWN | WM_XBUTTONDBLCLK => {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_down_msg)
             }
             WM_LBUTTONUP => self.handle_mouse_up_msg(handle, MouseButton::Left, lparam),
@@ -144,6 +154,23 @@ impl WindowsWindowInner {
             WM_XBUTTONUP => {
                 self.handle_xbutton_msg(handle, wparam, lparam, Self::handle_mouse_up_msg)
             }
+            // TO-DO PATCH: the title bar is non-client. Suppress its default (which may
+            // synthesize an app command on press) and dispatch navigation on release.
+            WM_NCXBUTTONDOWN | WM_NCXBUTTONDBLCLK => Some(1),
+            WM_NCXBUTTONUP => {
+                if let Some(direction) = xbutton_direction(wparam) {
+                    let mut pos = POINT {
+                        x: lparam.signed_loword().into(),
+                        y: lparam.signed_hiword().into(),
+                    };
+                    unsafe { ScreenToClient(handle, &mut pos).ok().log_err() };
+                    let pos = logical_point(pos.x as f32, pos.y as f32, self.state.scale_factor.get());
+                    self.navigation_release(direction, pos);
+                }
+                Some(1)
+            }
+            // TO-DO PATCH: browser/media keys can arrive as app commands rather than VKs.
+            WM_APPCOMMAND => self.handle_navigation_command(lparam),
             WM_MOUSEWHEEL => self.handle_mouse_wheel_msg(handle, wparam, lparam),
             WM_MOUSEHWHEEL => self.handle_mouse_horizontal_wheel_msg(handle, wparam, lparam),
             WM_SYSKEYUP => self.handle_syskeyup_msg(wparam, lparam),
@@ -550,12 +577,35 @@ impl WindowsWindowInner {
         lparam: LPARAM,
         handler: impl Fn(&Self, HWND, MouseButton, LPARAM) -> Option<isize>,
     ) -> Option<isize> {
-        let nav_dir = match wparam.hiword() {
-            XBUTTON1 => NavigationDirection::Back,
-            XBUTTON2 => NavigationDirection::Forward,
-            _ => return Some(1),
+        if let Some(nav_dir) = xbutton_direction(wparam) {
+            handler(self, handle, MouseButton::Navigate(nav_dir), lparam);
+        }
+        // TO-DO PATCH: Win32 expects TRUE for a handled X button, not zero.
+        Some(1)
+    }
+
+    // TO-DO PATCH: route browser commands to the same GPUI release event as XBUTTONUP,
+    // without faking a press or releasing real mouse capture.
+    fn handle_navigation_command(&self, lparam: LPARAM) -> Option<isize> {
+        let command = u32::from(lparam.hiword()) & !FAPPCOMMAND_MASK;
+        let direction = match APPCOMMAND_ID(command) {
+            APPCOMMAND_BROWSER_BACKWARD => NavigationDirection::Back,
+            APPCOMMAND_BROWSER_FORWARD => NavigationDirection::Forward,
+            _ => return None,
         };
-        handler(self, handle, MouseButton::Navigate(nav_dir), lparam)
+        self.navigation_release(direction, self.state.mouse_position.get())
+    }
+
+    fn navigation_release(&self, direction: NavigationDirection, position: Point<Pixels>) -> Option<isize> {
+        let mut input = self.state.callbacks.input.take()?;
+        let result = input(PlatformInput::MouseUp(MouseUpEvent {
+            button: MouseButton::Navigate(direction),
+            position,
+            modifiers: current_modifiers(),
+            click_count: 1,
+        }));
+        self.state.callbacks.input.set(Some(input));
+        (!result.propagate).then_some(1)
     }
 
     fn handle_mouse_wheel_msg(

@@ -962,7 +962,7 @@ impl ShellView {
         if !self.commit_edits(cx) {
             return self.keep_unsaved(cx);
         }
-        self.select_task(None, cx);
+        self.preview_task(None, cx);
         self.switch_view(ListView::List, window, cx);
         self.ui.show_completed = true;
         self.refresh(cx);
@@ -1557,7 +1557,7 @@ mod tests {
     fn board_keys_move_reorder_undo_and_stage_a_column_draft(cx: &mut gpui::TestAppContext) {
         let (shell, cx) = fixture_board(cx);
         let card = cx.update(|_, cx| shell.read(cx).board_task().expect("first To do card"));
-        cx.simulate_keystrokes("alt-left");
+        cx.simulate_keystrokes("ctrl-alt-left");
         cx.update(|_, cx| {
             let v = shell.read(cx);
             assert_eq!(v.task_stage(card), Some(QueryStatus::Backlog));
@@ -1683,7 +1683,7 @@ mod tests {
             assert_eq!(view.task_stage(card), Some(QueryStatus::Done));
             card
         });
-        cx.simulate_keystrokes("alt-left");
+        cx.simulate_keystrokes("ctrl-alt-left");
         cx.update(|_, cx| {
             assert_eq!(
                 shell.read(cx).task_stage(card),

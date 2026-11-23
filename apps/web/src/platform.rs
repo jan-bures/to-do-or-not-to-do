@@ -455,33 +455,44 @@ pub fn query() -> String {
         .unwrap_or_default()
 }
 
-/// Puts `path` in the address bar (keeping the query), without reloading.
-pub fn push_path(path: &str) {
-    if self::path() == path {
-        return;
-    }
-    if let Some(w) = window() {
+/// Writes a same-document location, keeping the query (including fixture selection).
+pub fn write_history(path: &str, marker: &str, push: bool) -> bool {
+    window().is_some_and(|w| {
         let url = format!("{path}{}", query());
-        let _ = w
-            .history()
-            .and_then(|h| h.push_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url)));
-    }
+        let state = wasm_bindgen::JsValue::from_str(marker);
+        w.history()
+            .and_then(|h| {
+                if push {
+                    h.push_state_with_url(&state, "", Some(&url))
+                } else {
+                    h.replace_state_with_url(&state, "", Some(&url))
+                }
+            })
+            .is_ok()
+    })
 }
 
-/// Replaces the current path (keeping the query), without adding a history entry.
-pub fn replace_path(path: &str) {
-    if let Some(w) = window() {
-        let url = format!("{path}{}", query());
-        let _ = w
-            .history()
-            .and_then(|h| h.replace_state_with_url(&wasm_bindgen::JsValue::NULL, "", Some(&url)));
-    }
+/// Move between two same-document history entries without creating another one.
+pub fn traverse_history(from: usize, to: usize) -> bool {
+    let Ok(distance) = i32::try_from(from.abs_diff(to)) else {
+        return false;
+    };
+    distance != 0
+        && window().is_some_and(|w| {
+            let delta = if to < from { -distance } else { distance };
+            w.history().and_then(|h| h.go_with_delta(delta)).is_ok()
+        })
 }
 
-/// Calls `f` when the user goes back or forward.
-pub fn on_pop_state(f: impl Fn() + 'static) {
+/// Calls `f` with the destination entry's marker when the user goes back or forward.
+pub fn on_pop_state(f: impl Fn(Option<String>) + 'static) {
     if let Some(w) = window() {
-        let cb = Closure::<dyn Fn()>::new(f);
+        let cb = Closure::<dyn Fn()>::new(move || {
+            let marker = window()
+                .and_then(|w| w.history().and_then(|h| h.state()).ok())
+                .and_then(|s| s.as_string());
+            f(marker);
+        });
         let _ = w.add_event_listener_with_callback("popstate", cb.as_ref().unchecked_ref());
         cb.forget();
     }

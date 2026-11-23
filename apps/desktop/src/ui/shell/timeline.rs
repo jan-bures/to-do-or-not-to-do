@@ -407,7 +407,7 @@ impl ShellView {
                 };
                 if let Some(id) = next {
                     if self.ui.task.is_some() {
-                        self.select_task(Some(id), cx);
+                        self.preview_task(Some(id), cx);
                     }
                     self.timeline.cursor = Some(id);
                     self.reveal_timeline(id, window);

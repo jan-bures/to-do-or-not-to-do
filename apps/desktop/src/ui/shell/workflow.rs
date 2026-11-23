@@ -162,6 +162,7 @@ impl ShellView {
             self.aim_board_cursor(id);
         }
         self.refresh(cx);
+        self.record_location();
         window.focus(&self.list_focus, cx);
     }
 
