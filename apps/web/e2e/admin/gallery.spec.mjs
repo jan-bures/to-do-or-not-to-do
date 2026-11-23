@@ -147,9 +147,9 @@ test("server admin gallery: every page in both schemes at desktop and phone widt
   await page.goto("/admin");
   await cdp.send("WebAuthn.removeVirtualAuthenticator", { authenticatorId });
   await cdp.send("WebAuthn.addVirtualAuthenticator", { options });
-  await page.locator("#passkey-name").fill("Fixture security key");
+  await page.locator("#passkey-name").fill("YubiKey 5C");
   await page.getByRole("button", { name: "Add a passkey" }).click();
-  await expect(page.getByRole("heading", { name: "Fixture security key" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "YubiKey 5C" })).toBeVisible();
 
   const command = await send(page, "/api/v1/commands", {
     command_id: "0193b2c0-0000-7000-8000-0000000000aa",

@@ -209,11 +209,11 @@ impl IntoResponse for PageError {
 
 /// A readable date, with exact UTC timestamp and machine-readable datetime.
 pub(super) fn date(ms: i64) -> String {
-    time_element(ms, |t| t.strftime("%d %b %Y").to_string())
+    time_element(ms, |t| t.strftime("%d.%m.%Y").to_string())
 }
 
 pub(super) fn date_time(ms: i64) -> String {
-    time_element(ms, |t| t.strftime("%d %b %Y, %H:%M UTC").to_string())
+    time_element(ms, |t| t.strftime("%d.%m.%Y, %H:%M UTC").to_string())
 }
 
 pub(super) fn clock_time(ms: i64) -> String {
@@ -246,7 +246,7 @@ pub(super) fn relative_time(at: i64, now: i64) -> String {
             let days = elapsed / 86_400;
             format!("{days} day{} ago", if days == 1 { "" } else { "s" })
         }
-        _ => t.strftime("%d %b %Y").to_string(),
+        _ => t.strftime("%d.%m.%Y").to_string(),
     })
 }
 
@@ -333,7 +333,7 @@ mod tests {
             actual,
             r#"Last active <time datetime="1970-01-01T00:00:00Z" title="1970-01-01 00:00:00 UTC">2 min ago</time>"#
         );
-        assert!(date(0).contains(">01 Jan 1970</time>"));
+        assert!(date(0).contains(">01.01.1970</time>"));
         assert_eq!(last_active(None, 120_000), "Never active");
     }
 }

@@ -1156,8 +1156,8 @@ fn audit_day_label(day: Option<jiff::civil::Date>, today: Option<jiff::civil::Da
     match today {
         Some(today) if today == day => "Today".into(),
         Some(today) if today.yesterday().ok() == Some(day) => "Yesterday".into(),
-        Some(today) if today.year() == day.year() => day.strftime("%a, %b %-d").to_string(),
-        _ => day.strftime("%a, %b %-d, %Y").to_string(),
+        Some(today) if today.year() == day.year() => day.strftime("%a %d.%m.").to_string(),
+        _ => day.strftime("%a %d.%m.%Y").to_string(),
     }
 }
 

@@ -525,7 +525,7 @@ async fn the_audit_log_groups_events_by_utc_day_with_short_times_and_exact_title
     )));
     assert!(yesterday.contains("192.0.2.4"));
     assert!(older_group.contains("Fixture old"));
-    assert!(older_group.contains(&older.strftime("%a, %b %-d").to_string()));
+    assert!(older_group.contains(&older.strftime("%a %d.%m.").to_string()));
     assert!(today.contains(r#"<span class="audit-toggle">Details</span>"#));
 }
 
