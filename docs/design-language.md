@@ -79,7 +79,7 @@ lightness and hue and loses chroma. Three kinds of token take their hue from som
 | Kind | Hue | Dark mode | Used for |
 |---|---|---|---|
 | **Room** (`Palette`) | the room's hue | hue − 10 | canvas, pane, lines, ink, accent, toast, sky, hills, arc |
-| **List** (`ListColors`) | the list's hue | hue − 6 | chip tint and ink, dot, sidebar glyph, active room pill |
+| **List** (`ListColors`) | the list's hue | hue − 6 | list pill tint and ink, tag ink, glyphs, swatches, active room pill |
 | **Agent** (`AgentColors`) | the agent's hue | unchanged | letter mark background, letter, ring |
 | **Fixed** | its own | — | danger, success, the sun, the dusk sky |
 
@@ -88,9 +88,9 @@ cool. The neutrals (canvas, pane, ink) carry a trace of the room's hue, which ke
 
 Smart lists have fixed hues. Collections and lists pick from twelve **swatches** that are spread around the wheel:
 rose, coral, clay, olive, fern, jade, teal, lagoon, azure, cornflower, orchid and pink. The swatch names are stable
-keys, used in settings, CSS and JSON. Tags take the same swatches, shown as a small dot (the list's `dot` colour) before
-the tag's name. Choosing a colour offers exactly these twelve, as discs in two rows of six with the current one ticked;
-there is no free-form colour.
+keys, used in settings, CSS and JSON. Tags take the same swatches, shown as tinted `#tag` text in Geist Mono
+(`ListColors::ink`, without a dot or pill). Choosing a color offers exactly these twelve, as discs in two rows
+of six with the current one ticked; there is no free-form color.
 
 ### Palette rules
 
@@ -153,8 +153,8 @@ animation, and without relying on hue alone.
   proposal cards. Leave the surrounding border and focus outline uninterrupted. Assistant settings
   provider cards use only a full accent border; do not add a rail or a light to the network label.
 - **Live status lights** are for connection or sync health only. Show green when connected, accent
-  while testing, and red with explicit **Unreachable** wording when the assistant cannot connect.
-  When a status label wraps, center its light on the first line, not the entire text block.
+  while testing or syncing, muted ink while offline, and danger for failed sync or an explicit **Unreachable**
+  connection. When a status label wraps, center its light on the first line, not the entire text block.
   Use no light for untested or static labels. Never add dots to list pills, tags, or counts.
 - **Contrast and focus:** Both the off outline and the on glyph must reach 3:1 on the surfaces they sit on,
   in light and dark, including a selected row. Keep labels at 4.5:1. A tinted background alone may be subtle;
@@ -299,7 +299,7 @@ metadata line under it), agent mark, priority, due date and the Important toggle
   indicators are never the ones pushed out. A list chip is at most **180** wide (`desktop::CHIP_MAX`) and ends in an ellipsis inside the
   pill. Tags that don't fit whole collapse into a mono `+N`; nothing is ever cut mid-glyph. In a narrow column the
   items give way in order (tags, then the mail mark, then the step meter, then the step count) and the chip narrows
-  last, down to its dot and an ellipsis.
+  last, down to an ellipsis with equal padding on both sides.
 
 **Phone rows** are 64 dp tall: `22 | 1fr | 20 | 24`, followed by the Important touch target. The metadata can
 use the space below the agent and priority columns. As on the desktop, those columns keep their
@@ -357,9 +357,10 @@ wrap. Android replaces the bottom dock with a two-row bottom bulk dock: a `44 dp
 detail column shows a selection summary in its lower third instead of a task editor. A bulk completion
 or move changes the rows together, without staggering; one count-based toast offers one Undo.
 
-**Pills are rationed.** Only three things are pill-shaped: list chips (a 6 px dot, a 6 px gap and 8 px padding),
-the overdue badge and phone room pills. Tags are plain mono `#tag` text. Suggestions get a compact chip with a
-6 px radius, not a banner.
+**Pills are rationed.** List chips keep their tint, matching ink, and 8 px padding on each side. Overdue
+pills keep the danger tint and text, with no diamond. Workflow status pills keep their stage icon and use the
+same corner radius. Phone room pills use list glyphs or Lucide icons. Tags are tinted mono `#tag` text in
+rows, cards, detail, and pickers. Suggestions get a compact chip with a 6 px radius, not a banner.
 
 ### Quick-add date and priority
 
@@ -398,7 +399,7 @@ and **None** explicitly clear the field even in a room with a default for it. On
 | Element | Radius |
 |---|---|
 | checkbox, agent mark | circle |
-| list chip, overdue badge | 10 (pill) |
+| list chip, overdue pill, workflow status pill | 10 (pill) |
 | phone room pill | 16 (pill) |
 | quick-add, toast, popover, card | 10 |
 | button, suggestion chip, icon button, sidebar item | 6 |
@@ -968,8 +969,8 @@ Implementation order across clients follows the comprehension gaps identified in
   a matching set of custom minimize, maximize, restore and close marks.
 - **The hand-drawn list glyphs** are the app's own: sun, briefcase, layers, house, flag, coin, paperclip,
   calendar-star, code, wrench, book, basket, heart, paper-plane and document. They are slightly irregular single
-  strokes, drawn at 16 px in the list's `glyph` colour. They give the sidebar and the phone room pills character
-  without colour blocks.
+  strokes in the list's `glyph` color, drawn at 16 px in the sidebar, pop-out title bar, and phone room pills,
+  and at 14 px in the cross-list Timeline task rail.
 - **Every icon and glyph is a single-colour SVG** (`currentColor`, with no fills), so each platform tints it like
   text. GPUI can't render multicolour SVG in core UI, and the design doesn't need it.
 
@@ -992,6 +993,7 @@ These are the generic "AI-default" looks, and they don't ship:
 - purple-to-blue gradients, and gradients in general (only the Daybreak sky on Android and finished dusk use them);
 - glassmorphism, background blur and frosted panels;
 - emoji used as icons;
+- colored dots for identity or static labels, and decorative diamonds next to counts or dates;
 - floating cards with heavy drop shadows;
 - Inter (or any system sans) on white with no typographic identity;
 - generic SaaS dashboard chrome: stat tiles, KPI rows, sparkline decoration;

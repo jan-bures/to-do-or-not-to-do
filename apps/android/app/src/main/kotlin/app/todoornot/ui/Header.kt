@@ -1,6 +1,5 @@
 package app.todoornot.ui
 
-import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
@@ -15,7 +14,6 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
@@ -28,7 +26,6 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.Layout
@@ -248,14 +245,10 @@ private fun CompactHeader(
     ) {
         HeaderTitle(room.title, T.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f))
         if (room.overdueCount > 0u) {
-            Label("◆ ${room.overdueCount}", T.SUMMARY_FIGURES, r.dangerInk, weight = T.ROOM_TITLE_PHONE.weight)
+            Label("${room.overdueCount} overdue", T.SUMMARY_FIGURES, r.dangerInk, weight = T.ROOM_TITLE_PHONE.weight)
+            if (room.total > 0u) Label("·", T.SUMMARY_FIGURES, r.ink4)
         }
         if (room.total > 0u) {
-            Canvas(Modifier.size(S.S2.dp)) {
-                val stroke = Tokens.Landscape.TRAVELLED_STROKE.dp.toPx()
-                if (room.done == 0u) drawCircle(r.sunInk, (size.minDimension - stroke) / 2f, style = Stroke(stroke))
-                else drawCircle(if (design.dark) r.sun else r.sunInk)
-            }
             Label("${room.done}/${room.total}", T.SUMMARY_FIGURES, r.ink2)
         }
         quiet?.let { Label(it, T.SUMMARY_FIGURES, r.ink2) }
@@ -310,7 +303,7 @@ private fun Summary(room: RoomView, modifier: Modifier) {
             Label("of", words, r.ink2)
             Label("$total", figures, r.ink, weight = bold)
             Label("done", words, r.ink2)
-            Box(Modifier.padding(horizontal = S.S1.dp).size(Micro.separator).background(r.ink4, CircleShape))
+            Label("·", figures, r.ink4, Modifier.padding(horizontal = S.S1.dp))
         }
         when (val s = room.summary) {
             RoomSummary.None -> Unit

@@ -1282,7 +1282,7 @@ impl ShellView {
         window: &Window,
     ) -> Option<Div> {
         use crate::model::fit;
-        let gap = component::CHIP_GAP;
+        let gap = component::META_GAP;
         let indent = component::CHECKBOX + space::S2;
         let steps = row
             .steps
@@ -1300,11 +1300,7 @@ impl ShellView {
         };
         let date_width = date.map_or(0., |date| {
             if matches!(row.due, Due::Overdue(_)) {
-                size(ty::OVERDUE_BADGE, date)
-                    + component::CHIP_DOT
-                    + elevation::HAIRLINE
-                    + component::CHIP_GAP
-                    + 2. * component::CHIP_PAD_X
+                size(ty::OVERDUE_BADGE, date) + 2. * component::CHIP_PAD_X
             } else {
                 size(ty::DUE.with_weight(600), date)
             }
@@ -1329,7 +1325,7 @@ impl ShellView {
                 .enumerate()
                 .map(|(i, tag)| {
                     if i < 2 {
-                        size(ty::TAG, tag)
+                        size(ty::TAG, &tag.label)
                     } else {
                         f32::INFINITY
                     }
@@ -1338,11 +1334,11 @@ impl ShellView {
         };
         let available = card_room - date.map_or(0., |_| date_width + gap) - priority_width;
         let fit = fit::fit_meta(available, &items, |n| size(ty::TAG, &fit::more_label(n)));
-        let tag = |label| {
+        let tag = |label, ink| {
             div()
                 .flex_none()
                 .style(ty::TAG)
-                .text_color(p.ink_3)
+                .text_color(ink)
                 .child(label)
         };
         let has_fields = date.is_some()
@@ -1398,9 +1394,14 @@ impl ShellView {
                             el.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3))
                         })
                         .when(priority > 0, |el| el.child(kit::priority(p, priority)))
-                        .children(row.tags[..fit.tags.shown].iter().cloned().map(tag))
+                        .children(row.tags[..fit.tags.shown].iter().map(|item| {
+                            tag(
+                                item.label.clone(),
+                                crate::theme::list_colors(p.theme, item.hue).ink,
+                            )
+                        }))
                         .when(fit.tags.more > 0, |el| {
-                            el.child(tag(fit::more_label(fit.tags.more).into()))
+                            el.child(tag(fit::more_label(fit.tags.more).into(), p.ink_3))
                         }),
                 )
                 .children(

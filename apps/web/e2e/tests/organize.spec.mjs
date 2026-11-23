@@ -98,7 +98,7 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   await filter.fill("DOCS");
   await expect(picker.getByRole("button", { name: /Create tag/ })).toHaveCount(0);
   await filter.press("ArrowDown");
-  const docs = picker.getByRole("button", { name: "docs", exact: true });
+  const docs = picker.getByRole("button", { name: "#docs", exact: true });
   await expect(docs).toBeFocused();
   await docs.press("Enter");
   await expect(docs).toBeFocused();
@@ -108,7 +108,7 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   await docs.press("Control+z");
   const tags = detail(page).getByRole("button", { name: "Tags", exact: true });
   await expect(tags).toContainText("docs");
-  await expect(tags).toHaveAccessibleDescription("docs, ops");
+  await expect(tags).toHaveAccessibleDescription("#docs, #ops");
 
   await tags.click();
   await filter.fill("x".repeat(1001));
@@ -134,7 +134,7 @@ test("pick tags by name, manage them, and undo through the shared change path", 
 
   const edit = async () => {
     await tags.click();
-    const choice = picker.getByRole("button", { name: "Organized", exact: true });
+    const choice = picker.getByRole("button", { name: "#Organized", exact: true });
     await choice.press("ArrowRight");
   };
   await edit();
@@ -148,7 +148,7 @@ test("pick tags by name, manage them, and undo through the shared change path", 
   await page.keyboard.press("ArrowDown");
   await expect(swatches.getByRole("option", { name: "Teal" })).toBeFocused();
   await fern.click();
-  await expect(tags.locator(".detail-tag").filter({ hasText: "Organized" })).toHaveAttribute("data-list-hue", "fern");
+  await expect(tags.locator(".tag-label").filter({ hasText: "#Organized" })).toHaveAttribute("data-list-hue", "fern");
   await edit();
   await page.getByRole("button", { name: "Delete tag…" }).click();
   const confirm = dialog(page, "Delete tag");

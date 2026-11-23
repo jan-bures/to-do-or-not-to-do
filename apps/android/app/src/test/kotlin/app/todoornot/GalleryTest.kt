@@ -594,6 +594,14 @@ class GalleryTest {
         val state = state(fixtureEngine())
         val offline = state.copy(status = state.status.copy(state = SyncState.OFFLINE, pending = 3u))
         main("cover_switcher_footer_offline", FOLD7_COVER, offline, dark = false, drawer = true)
+        main("cover_switcher_footer_offline_dark", FOLD7_COVER, offline, dark = true, drawer = true)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val syncing = state.copy(status = state.status.copy(state = SyncState.SYNCING))
+            val failed = state.copy(status = state.status.copy(state = SyncState.ONLINE, failed = 3u))
+            main("cover_switcher_footer_syncing_$theme", FOLD7_COVER, syncing, dark, drawer = true)
+            main("cover_switcher_footer_failed_$theme", FOLD7_COVER, failed, dark, drawer = true)
+        }
     }
 
     @Test
@@ -1147,7 +1155,7 @@ class GalleryTest {
                     ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", "1 min ago", "Undoing…", null)), isToday = true),
                 ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo")), isToday = false),
             )
-            val feed = ActivityView(null, days, 0u, "Refresh activity •", false, ActivityFooter.None)
+            val feed = ActivityView(null, days, 0u, "Refresh activity", true, false, ActivityFooter.None)
             main("activity_$suffix", FOLD7_COVER, s.copy(activity = "", feed = feed), dark)
             val agent = s.home.agents.first()
             main("activity_inner_$suffix", FOLD7_INNER, s.copy(activity = agent.id, feed = feed.copy(agent = agent.mark.name)), dark)
@@ -1156,7 +1164,7 @@ class GalleryTest {
 
     @Test
     fun empty_activity() {
-        val feed = ActivityView(null, emptyList(), 0u, "Refresh activity", false, ActivityFooter.Empty("No activity yet."))
+        val feed = ActivityView(null, emptyList(), 0u, "Refresh activity", false, false, ActivityFooter.Empty("No activity yet."))
         val s = state(fixtureEngine()).copy(feed = feed)
         for (dark in listOf(false, true)) {
             val suffix = if (dark) "dark" else "light"

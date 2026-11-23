@@ -130,13 +130,7 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
         id: task.id,
         title: labels::one_line(&task.title).into(),
         list: ix.list(task.list),
-        tags: task
-            .tags
-            .iter()
-            .filter_map(|t| state.tags.get(t))
-            .filter(|t| t.deleted.is_none())
-            .map(|t| SharedString::from(format!("#{}", labels::one_line(&t.name))))
-            .collect(),
+        tags: task_tags(state, task),
         steps: ix.steps.get(&task.id).copied(),
         agent: agent_of(task),
         priority: priority_marks(task.priority),
@@ -146,6 +140,17 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now) -> TaskRow {
         status: features.workflow.then(|| QueryStatus::of(task)),
         completed_when: task.completed_at.map(|at| labels::when(at, now).into()),
     }
+}
+
+fn task_tags(state: &State, task: &Task) -> Vec<TagChip> {
+    todo_client::task_labels::tags(state, task)
+        .into_iter()
+        .map(|tag| TagChip {
+            id: tag.id,
+            label: todo_client::task_labels::tag(&tag.name).into(),
+            hue: super::menus::tag_hue(tag),
+        })
+        .collect()
 }
 
 /// The shared room key for a room.
@@ -540,12 +545,7 @@ fn sync_line(sync: &SyncInfo, now: &Now) -> (todo_client::sync_label::SyncText, 
     } else {
         SyncLabel::Unpaired
     };
-    let tone = match label {
-        SyncLabel::Synced(_) => Tone::Ok,
-        SyncLabel::Syncing => Tone::Busy,
-        _ => Tone::Problem,
-    };
-    (label.text(), tone)
+    (label.text(), label.tone())
 }
 
 fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
@@ -671,17 +671,8 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         },
         edit: Some(FieldEdit::Repeat),
     });
-    let mut tags: Vec<&todo_core::model::Tag> = task
-        .tags
-        .iter()
-        .filter_map(|t| state.tags.get(t))
-        .filter(|t| t.deleted.is_none())
-        .collect();
-    tags.sort_by_cached_key(|t| (todo_core::query::fold(&t.name), t.id));
-    let names: Vec<String> = tags
-        .iter()
-        .map(|t| format!("#{}", labels::one_line(&t.name)))
-        .collect();
+    let tags = task_tags(state, task);
+    let names: Vec<&str> = tags.iter().map(|t| t.label.as_ref()).collect();
     // Always there, like Due and Priority: the tag picker opens from it (or T).
     fields.push(Field {
         icon: Icon::Hash,
@@ -698,14 +689,6 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         },
         edit: Some(FieldEdit::Tags),
     });
-    let tags = tags
-        .iter()
-        .map(|t| TagChip {
-            id: t.id,
-            name: labels::one_line(&t.name).into(),
-            hue: super::menus::tag_hue(t),
-        })
-        .collect();
 
     let mut links: Vec<&todo_core::model::Link> = state
         .links

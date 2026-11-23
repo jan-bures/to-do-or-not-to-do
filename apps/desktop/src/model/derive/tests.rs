@@ -484,7 +484,7 @@ fn the_sync_line_says_what_is_going_on() {
     check(&s, "10:34", "Synced 10:34", Tone::Ok);
     s.connection = Connection::Offline;
     s.pending = 2;
-    check(&s, "Offline · 2", "Offline, 2 waiting", Tone::Problem);
+    check(&s, "Offline · 2", "Offline, 2 waiting", Tone::Idle);
     s.failed = 1;
     check(&s, "1 not synced", "1 couldn't sync", Tone::Problem);
     s.unauthorized = true;
@@ -629,7 +629,11 @@ fn names_with_line_breaks_are_drawn_on_one_line() {
         assert!(one_line(&row.title), "{:?}", row.title);
         assert!(one_line(&row.list.name), "{:?}", row.list.name);
         assert!(row.list.collection.as_deref().is_none_or(one_line));
-        assert!(row.tags.iter().all(|t| one_line(t)), "{:?}", row.tags);
+        assert!(
+            row.tags.iter().all(|t| one_line(&t.label)),
+            "{:?}",
+            row.tags
+        );
     }
     let q4_row = shell.rows().find(|r| r.id == q4).expect("row");
     assert_eq!(q4_row.title.as_ref(), "Prepare Q4");
@@ -819,8 +823,8 @@ fn the_detail_offers_every_field_to_edit() {
         ("No reminder", FieldKind::Empty)
     );
     // The tags, by name, each with its colour.
-    let names: Vec<&str> = detail.tags.iter().map(|t| t.name.as_ref()).collect();
-    assert_eq!(names, ["planning", "q4"]);
+    let names: Vec<&str> = detail.tags.iter().map(|t| t.label.as_ref()).collect();
+    assert_eq!(names, ["#planning", "#q4"]);
     // A task without tags still has the row, with a quiet dash.
     let mut bare = fixtures::my_day();
     let id = bare.ui.task.expect("selected");

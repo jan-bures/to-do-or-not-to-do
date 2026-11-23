@@ -183,7 +183,7 @@ pub struct MenuItem {
     pub icon: Icon,
     /// A list's own glyph and hue, drawn instead of the icon (the list picker).
     pub glyph: Option<(Glyph, Hue)>,
-    /// A colour disc, drawn instead of the icon: a tag's colour, a swatch, or the colour Colour… changes.
+    /// Identity color for a menu label or color swatch.
     pub dot: Option<Hue>,
     pub label: SharedString,
     /// Destructive: drawn in the danger colour.
@@ -613,7 +613,7 @@ fn delete_collection_confirm(
     ))
 }
 
-/// The "Colour…" item: the colour disc it changes, beside the label.
+/// The "Color…" item, tinted with the color it changes.
 fn colour_item(key: &'static str, id: EntityId, hue: Hue) -> MenuEntry {
     with(
         item(key, Icon::Pencil, "Color…", MenuAction::AskColour(id)),
@@ -1593,7 +1593,7 @@ pub fn tag_menu(state: &State, task: TaskId, filter: &str) -> Vec<MenuEntry> {
                 icon: Icon::Hash,
                 glyph: None,
                 dot: Some(tag_hue(tag)),
-                label: labels::one_line(&tag.name).into(),
+                label: todo_client::task_labels::tag(&tag.name).into(),
                 danger: false,
                 checked: t.tags.contains(&tag.id),
                 hint: None,
@@ -1625,7 +1625,7 @@ pub fn tag_edit_menu(state: &State, task: TaskId, tag: TagId) -> Vec<MenuEntry> 
     };
     let on = t.tags.contains(&tag);
     vec![
-        MenuEntry::Heading(format!("#{}", labels::one_line(&g.name)).into()),
+        MenuEntry::Heading(todo_client::task_labels::tag(&g.name).into()),
         item(
             "tag-toggle",
             if on { Icon::X } else { Icon::Hash },
@@ -2342,7 +2342,7 @@ second line"
         assert_eq!(items(&menu).count(), all.len(), "every tag, once");
         // By name, each with its colour, toggling it on the task and opening its own page on the side.
         for (item, tag) in items(&menu).zip(&all) {
-            assert_eq!(item.label, labels::one_line(&tag.name));
+            assert_eq!(item.label, todo_client::task_labels::tag(&tag.name));
             assert_eq!(item.action, MenuAction::ToggleTag(task, tag.id));
             assert_eq!(item.more, Some(MenuAction::EditTag(task, tag.id)));
             assert_eq!(item.dot, Some(tag_hue(tag)));
@@ -2351,15 +2351,15 @@ second line"
             .filter(|i| i.checked)
             .map(|i| i.label.as_ref())
             .collect();
-        assert_eq!(ticked, ["planning", "q4"]);
+        assert_eq!(ticked, ["#planning", "#q4"]);
         // Typing narrows them, ignoring case and accents; a tag's own name (in any case) offers no
         // Create, while the same letters without the accent are another name, which can be created.
         let narrowed = tag_menu(&f.state, task, "DOMÁCNOST");
         let labels: Vec<&str> = items(&narrowed).map(|i| i.label.as_ref()).collect();
-        assert_eq!(labels, ["domácnost"]);
+        assert_eq!(labels, ["#domácnost"]);
         let plain = tag_menu(&f.state, task, "domacnost");
         let labels: Vec<&str> = items(&plain).map(|i| i.label.as_ref()).collect();
-        assert_eq!(labels, ["Create tag “domacnost”", "domácnost"]);
+        assert_eq!(labels, ["Create tag “domacnost”", "#domácnost"]);
         let exact = tag_menu(&f.state, task, "docs");
         assert!(!actions(&exact).contains(&MenuAction::CreateTag(task)));
         // A new name: Create first, so Enter makes it at once.

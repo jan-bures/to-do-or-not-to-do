@@ -4,6 +4,10 @@ This specification designs the built-in **AI Assistant** ("Ask AI") across all t
 
 Every layout number, colour, radius, type style, icon, and motion duration comes from `todo-design` (`crates/todo-design`). Auth plumbing (ChatGPT sign-in flow, token storage mechanics, server proxy details) is researched separately; this document specifies the **UI, interaction model, states, privacy cues, provider settings, tokens, motion, accessibility, and phased implementation checklists**.
 
+> The [current design language](design-language.md#persistent-states-fill-not-an-outline-shift)
+> supersedes the original mockups: only live connection health gets a light. Use pending counts,
+> dot-free list pills and task links, and plain text for network classification.
+>
 > The first Windows release implements **Your own server** only. It has no cloud fallback,
 > destructive tools or persistent history. Device-local list access defaults to **Hidden**.
 > Suggestion chips prepare a draft, and the owner sends it. For supported URLs and transport
@@ -38,7 +42,7 @@ The app already treats AI agents (`Claude`, `Codex`, `Pi`) as first-class collab
   - Geometry: `26 px` tall (fits `36 px` titlebar with `5 px` top/bottom breathing room), `radius::MD` (`6 px`), `1 px` `line-strong` border on `pane` at rest.
   - Content: `sparkles` (`14 px` `ICON_SMALL` in `accent-strong`) + `"Ask AI"` (`BUTTON_SMALL`) + keycap `Ctrl J` (hidden below `1200 px` to keep the titlebar uncluttered).
   - Persistent open state (following *Persistent states: fill, not an outline shift*): `wash` fill, `accent` border, `accent-strong` label, `aria-pressed="true"`.
-  - **Pending proposal badge when closed:** If the active conversation has unreviewed proposals while the panel is closed, a `6 px` `accent` dot (`component::PRIVACY_DOT`) appears on the trigger so pending reviews are never forgotten.
+  - **Pending proposal count when closed:** If the active conversation has a proposal awaiting review, the trigger shows `Ask AI 1`, with the count in `accent-strong` mono.
 - **Keyboard shortcut:** **`Ctrl+J`** (macOS/web: **`Cmd+J`**, with `Ctrl+J` also accepted on non-macOS).
   - Toggles the Assistant panel open/closed from anywhere in the shell.
   - Opening focuses the AI composer textarea immediately.
@@ -93,7 +97,7 @@ Keep conversation management lightweight — no nested sidebar inside the Assist
   - `▸ Checked 4 lists · Read 2 tasks · 1 private skipped`
   - Clicking expands inline to reveal every tool call, scope, duration, and any excluded lists skipped for privacy.
 - **Prose replies:** Rendered directly on the `pane` background in `NOTES` (`14/24`, Geist 400, `ink`) — no heavy speech bubble around assistant text. User prompts sit right-aligned (max `88%` width) in a subtle `wash` inset (`radius::LG` `10 px`, `1 px` `line` border, `9 px 12 px` padding) so turns scan effortlessly.
-- **Clickable task links:** Any task referenced in prose renders as an inline or stacked interactive reference card (`raised`, `radius::MD` `6 px`, `1 px` `line` border): `6 px` list-colour dot (`--list-dot`) + task title (`weight 500`, 1-line ellipsis) + optional mono due/overdue label + trailing `12 px` `arrow-up-right`. Clicking opens the task per §2.1.
+- **Clickable task links:** Any task referenced in prose renders as an inline or stacked interactive reference card (`raised`, `radius::MD` `6 px`, `1 px` `line` border): task title (`weight 500`, 1-line ellipsis) + optional mono due/overdue label + trailing `12 px` `arrow-up-right`. Clicking opens the task per §2.1.
 
 ### 2.7 Proposal cards (single & batched)
 
@@ -272,7 +276,7 @@ All 13 additive tokens below are added in `crates/todo-design/src/hues.rs` and `
 | `layout::phone` | `AI_SHEET_DEFAULT_FRACTION` | `--phone-ai-sheet-default-fraction` | `0.84` | Default open height of the Android cover AI Assistant bottom sheet. |
 | `layout::phone` | `AI_COMPOSER_MAX` | `--phone-ai-composer-max` | `128.0` (px/dp) | Maximum auto-grow height of the phone AI chat composer (~4 lines). |
 | `layout::component` | `PROPOSAL_BAR` | `--component-proposal-bar` | `3.0` (px/dp) | Width of the leading semantic stripe on proposal cards (`accent`, `sun-ink`, `danger`). |
-| `layout::component` | `PRIVACY_DOT` | `--component-privacy-dot` | `6.0` (px/dp) | Status dot diameter in the Model & Privacy indicator (`CHIP_DOT`). |
+| `layout::component` | `STATUS_LIGHT` | `--component-status-light` | `6.0` (px/dp) | Live connection health light diameter. |
 
 ### 6.3 Motion & reduced-motion rules
 

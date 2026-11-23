@@ -484,13 +484,7 @@ impl ShellView {
             .justify_center()
             .gap(px(space::S1))
             .style(ty::COUNT)
-            .child(
-                div()
-                    .flex_none()
-                    .size(px(component::CHIP_DOT))
-                    .rounded_full()
-                    .bg(dot),
-            )
+            .child(kit::status_light(dot, ty::COUNT))
             .child(div().min_w_0().truncate().child(sb.sync_short.clone()));
         let wrap = div().flex_1().min_w_0();
         if self.store.sync().failed == 0 {
@@ -586,17 +580,8 @@ impl ShellView {
                     .children(item.count.map(count))
                     .children(item.pip.clone().map(|pip| {
                         div()
-                            .flex()
-                            .items_center()
-                            .gap(px(component::CHIP_GAP))
                             .style(ty::COUNT)
                             .text_color(p.accent_strong)
-                            .child(
-                                div()
-                                    .size(px(component::CHIP_DOT))
-                                    .rounded_full()
-                                    .bg(p.accent),
-                            )
                             .child(pip)
                     }));
                 self.clickable(
@@ -846,6 +831,7 @@ impl ShellView {
         let dot = match sb.tone {
             Tone::Ok => p.success,
             Tone::Busy => p.accent,
+            Tone::Idle => p.ink_4,
             Tone::Problem => p.danger,
         };
         // The account menu opens upwards from the gear. Tab reaches the gear (`hints::tab_stop`).

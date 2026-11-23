@@ -38,7 +38,7 @@ class Design(val dark: Boolean, val roomHue: String) {
             (if (dark) Tokens.darkAgents else Tokens.lightAgents)[hue]?.let { return it }
         }
         val l = list(hue)
-        return AgentColors(bg = l.tint, ink = l.ink, ring = l.dot)
+        return AgentColors(bg = l.tint, ink = l.ink, ring = l.swatch)
     }
 
     fun dusk(): DuskColors = Tokens.dusk[roomHue] ?: Tokens.dusk.getValue("my-day")

@@ -150,6 +150,30 @@ fn workflow_marks_and_labels_hold_across_the_hue_wheel() {
     }
 }
 
+#[test]
+fn tinted_tags_and_list_glyphs_hold_across_the_hue_wheel() {
+    for theme in Theme::ALL {
+        for hue in (0..360).map(f64::from) {
+            let room = palette(theme, hue);
+            for swatch in hues::SWATCHES {
+                let list = list_colors(theme, swatch.degrees);
+                for bg in [
+                    room.pane,
+                    room.canvas,
+                    room.wash,
+                    room.selection_wash,
+                    room.raised,
+                    room.hover,
+                ] {
+                    let context = (theme, hue, swatch.key, bg);
+                    assert!(list.ink.contrast(bg) >= 4.5, "tag ink: {context:?}");
+                    assert!(list.glyph.contrast(bg) >= 3.0, "list glyph: {context:?}");
+                }
+            }
+        }
+    }
+}
+
 const PLANNED: f64 = 150.0;
 const HEALTH: f64 = 352.0;
 const CLAUDE: f64 = 38.0;

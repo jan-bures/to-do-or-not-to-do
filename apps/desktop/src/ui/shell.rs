@@ -1483,8 +1483,11 @@ impl ShellView {
             }
             "tag-rename" => {
                 if let Some(chip) = self.shell.detail.as_ref().and_then(|d| d.tags.first()) {
-                    let (id, name) = (chip.id, chip.name.clone());
-                    self.start_inline(InlineTarget::Tag(id), name, window, cx);
+                    let id = chip.id;
+                    if let Some(tag) = self.store.view().tags.get(&id) {
+                        let name = model::labels::one_line(&tag.name).into();
+                        self.start_inline(InlineTarget::Tag(id), name, window, cx);
+                    }
                 }
                 return;
             }
@@ -2970,7 +2973,7 @@ impl ShellView {
             steps: steps.as_ref().map(|(_, n, label)| {
                 (
                     kit::meter_width(*n),
-                    component::CHIP_GAP,
+                    component::META_GAP,
                     kit::text_width(window, count_style, label),
                 )
             }),
@@ -2978,7 +2981,7 @@ impl ShellView {
             tags: task
                 .tags
                 .iter()
-                .map(|tag| kit::text_width(window, ty::TAG, tag))
+                .map(|tag| kit::text_width(window, ty::TAG, &tag.label))
                 .collect(),
         };
         let more_width = |n: usize| kit::text_width(window, ty::TAG, &fit::more_label(n));
@@ -2989,12 +2992,12 @@ impl ShellView {
             &items,
             more_width,
         );
-        let tag = |s: SharedString| {
+        let tag = |s: SharedString, ink| {
             div()
                 .flex_none()
                 .whitespace_nowrap()
                 .style(ty::TAG)
-                .text_color(p.ink_3)
+                .text_color(ink)
                 .child(s)
         };
         div()
@@ -3015,7 +3018,7 @@ impl ShellView {
                             .flex()
                             .flex_none()
                             .items_center()
-                            .gap(px(component::CHIP_GAP))
+                            .gap(px(component::META_GAP))
                             .text_color(p.ink_3)
                             .style(count_style)
                             .when(fit.meter, |s| s.child(kit::meter(p, d, n)))
@@ -3026,9 +3029,13 @@ impl ShellView {
             .when(fit.mail, |m| {
                 m.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3))
             })
-            .children(task.tags[..fit.tags.shown].iter().cloned().map(tag))
+            .children(
+                task.tags[..fit.tags.shown]
+                    .iter()
+                    .map(|item| tag(item.label.clone(), theme::list_colors(t, item.hue).ink)),
+            )
             .when(fit.tags.more > 0, |m| {
-                m.child(tag(fit::more_label(fit.tags.more).into()))
+                m.child(tag(fit::more_label(fit.tags.more).into(), p.ink_3))
             })
     }
 
@@ -4370,7 +4377,7 @@ impl ShellView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(component::CHIP_GAP))
+                .gap(px(component::META_GAP))
                 .child(kit::kbd(p, key))
                 .child(what)
         };
@@ -4397,7 +4404,7 @@ impl ShellView {
             .map(|(count, label)| {
                 kit::text_width(window, figures, &count.to_string())
                     + kit::text_width(window, ty::COUNT, label)
-                    + component::CHIP_GAP
+                    + component::META_GAP
                     + space::S4
             })
             .sum::<f32>();
@@ -4414,7 +4421,7 @@ impl ShellView {
             - 2. * space::S6;
         let keys = hints::fit(keys, room, space::S4 + 2., |(key, what)| {
             kit::kbd_width(window, key)
-                + component::CHIP_GAP
+                + component::META_GAP
                 + kit::text_width(window, ty::META, what)
         });
         div()
@@ -4436,7 +4443,7 @@ impl ShellView {
                     .children(counts.into_iter().map(|(count, label)| {
                         div()
                             .flex()
-                            .gap(px(component::CHIP_GAP))
+                            .gap(px(component::META_GAP))
                             .child(strong(count.to_string()))
                             .child(label)
                     })),

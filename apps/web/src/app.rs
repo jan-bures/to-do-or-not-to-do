@@ -1285,7 +1285,7 @@ fn chip(label: String, hue: &'static str) -> impl IntoView {
     let full_label = label.clone();
     view! {
         <span class="chip" data-list-hue=hue title=full_label>
-            <i class="dot"></i><span class="chip-label">{label}</span>
+            <span class="chip-label">{label}</span>
         </span>
     }
 }
@@ -1323,7 +1323,7 @@ fn sync_presentation(
     s: &Sync,
     at: Option<Now>,
 ) -> (todo_client::sync_label::SyncText, &'static str) {
-    use todo_client::sync_label::SyncLabel;
+    use todo_client::sync_label::{SyncLabel, SyncTone};
 
     let time = at.map(|n| {
         let l = n.local();
@@ -1336,11 +1336,11 @@ fn sync_presentation(
         s.signed_out,
         time.as_deref(),
     );
-    let dot = match label {
-        SyncLabel::Synced(_) => "online",
-        SyncLabel::Syncing => "syncing",
-        SyncLabel::Offline(_) | SyncLabel::Paused(_) => "offline",
-        SyncLabel::Unpaired | SyncLabel::SignedOut | SyncLabel::Failed(_) => "error",
+    let dot = match label.tone() {
+        SyncTone::Ok => "online",
+        SyncTone::Busy => "syncing",
+        SyncTone::Idle => "offline",
+        SyncTone::Problem => "error",
     };
     (label.text(), dot)
 }
@@ -1453,7 +1453,7 @@ fn SidebarPane() -> impl IntoView {
                 <span class="nav-name">{n.name.clone()}</span>
                 {count.map(|n| view! { <span class="count">{n.to_string()}</span> })}
                 {(pip > 0).then(|| view! {
-                    <span class="count nav-pip"><i aria-hidden="true"></i>{format!("{pip} new")}</span>
+                    <span class="count nav-pip">{format!("{pip} new")}</span>
                 })}
             </a>
         };
@@ -2437,19 +2437,20 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
             };
             view! {
                 <span class=cls data-tone=tone>
-                    {(d.tone == DueTone::Overdue).then(|| view! { <i class="diamond" aria-hidden="true"></i> })}
                     {d.text}
                 </span>
             }
         })
     };
-    let tags = row
+    let full_tags = row
         .tags
         .iter()
-        .map(|t| format!("#{t}"))
+        .map(|t| t.label.as_str())
         .collect::<Vec<_>>()
         .join("  ");
-    let full_tags = tags.clone();
+    let tags = row.tags.clone().into_iter().enumerate().map(|(i, t)| view! {
+        {(i > 0).then_some("  ")}<span class="tag-label" data-list-hue=t.hue>{t.label}</span>
+    }).collect_view();
     let label = format!(
         "{} “{}”",
         if row.done { "Reopen" } else { "Complete" },
@@ -2498,7 +2499,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                     {phase.is_none().then(|| view! { <workflow::RowStatus id=id/> })}
                     {row.steps.map(|(d, t)| view! { <span class="steps">{bars(d, t)}{format!("{d}/{t}")}</span> })}
                     {row.email.then(|| view! { <span class="meta-icon" title="From an email" aria-label="From an email" role="img">{icon(Icon::Mail)}</span> })}
-                    {(!tags.is_empty()).then(|| view! { <span class="tag" title=full_tags>{tags}</span> })}
+                    {(!full_tags.is_empty()).then(|| view! { <span class="tag" title=full_tags>{tags}</span> })}
                 </span>
             </div>
             <span class="col-agent">{row.agent.as_ref().map(mark)}</span>

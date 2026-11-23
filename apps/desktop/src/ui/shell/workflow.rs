@@ -68,10 +68,10 @@ pub(super) fn status_mark(p: &Palette, stage: QueryStatus, selected: bool) -> Di
             status_ink(p, stage, selected)
         })
         .when(stage == QueryStatus::InProgress, |d| {
-            d.rounded(px(radius::SM))
+            d.rounded(px(radius::CHIP))
                 .bg(if selected { p.raised } else { p.wash })
                 .h(px(component::CHIP))
-                .px(px(component::CHIP_GAP))
+                .px(px(component::META_GAP))
         })
         .child(kit::icon(
             icon,
@@ -87,7 +87,7 @@ pub(super) fn mark_width(window: &Window, stage: QueryStatus) -> f32 {
         + space::S1
         + kit::text_width(window, ty::META.with_weight(500), label)
         + if stage == QueryStatus::InProgress {
-            2. * component::CHIP_GAP
+            2. * component::META_GAP
         } else {
             0.
         }

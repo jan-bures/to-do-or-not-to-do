@@ -21,14 +21,41 @@ for (const scheme of ["light", "dark"]) {
       await open(page);
       await page.getByText("Prepare the November board update").first().click();
       await page.locator(".detail .d-title").waitFor();
-      await shot(page, `desktop-${scheme}`);
+      const chip = page.locator(".row .chip").first();
+      await expect(chip.locator(":scope > *")).toHaveCount(1);
+      await expect(chip).toHaveCSS("padding-inline-start", "8px");
+      await expect(chip).toHaveCSS("padding-inline-end", "8px");
+      await expect(page.locator(".crumb .chip > *")).toHaveClass("chip-label");
+      await expect(page.locator(".tag-trigger .tag-label").first()).toHaveText(/^#/);
+      const overdue = page.locator('.col-due [data-tone="overdue"]').first();
+      await expect(overdue).toBeVisible();
+      await expect(overdue.locator(":scope > *")).toHaveCount(0);
       const sidebar = page.locator(".sidebar");
+      await expect(sidebar.locator(".nav-pip")).toHaveText(/^\d+ new$/);
+      await expect(sidebar.locator(".nav-pip > *")).toHaveCount(0);
+      await shot(page, `desktop-${scheme}`);
       await sidebar.screenshot({ path: `gallery/sidebar-${scheme}.png`, animations: "disabled" });
       await sidebar.getByRole("button", { name: "New", exact: true }).press("Enter");
       await expect(sidebar.getByRole("menuitem", { name: "List", exact: true })).toBeFocused();
       await sidebar.screenshot({ path: `gallery/sidebar-new-menu-${scheme}.png`, animations: "disabled" });
       await w.check();
     });
+
+    for (const [fixture, connection, label] of [
+      ["", "online", /^\d{2}:\d{2}$/],
+      ["syncing", "syncing", "Syncing…"],
+      ["offline", "offline", "Offline"],
+      ["not-synced", "error", "2 not synced"],
+    ]) {
+      test(`sync footer ${connection} (${scheme})`, async ({ page }) => {
+        await page.setViewportSize(DESKTOP);
+        await open(page, fixture ? `/app?fixture=${fixture}` : "/app");
+        const footer = page.locator(".sidebar .side-foot");
+        await expect(footer.locator(".conn")).toHaveAttribute("data-conn", connection);
+        await expect(footer.locator(".sync-text")).toHaveText(label);
+        await footer.screenshot({ path: `gallery/footer-${connection}-${scheme}.png`, animations: "disabled" });
+      });
+    }
 
     for (const [permission, name, status] of [
       ["default", "not-enabled", "Not enabled"],

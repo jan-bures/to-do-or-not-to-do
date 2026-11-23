@@ -29,14 +29,13 @@ use crate::ui::kit;
 /// The replica's position when a page was asked for.
 type Revision = Option<(Option<Epoch>, u64)>;
 
-/// A toolbar button: its Tab stop, icon and label; busy (a refresh being read) and the dot that
-/// says there is news.
+/// A toolbar button, its Tab stop, and whether a refresh is pending or has newer changes.
 struct Tool {
     stop: Stop,
     icon: Icon,
     label: &'static str,
     busy: bool,
-    dot: bool,
+    has_updates: bool,
 }
 
 impl ShellView {
@@ -345,7 +344,7 @@ impl ShellView {
             icon,
             label,
             busy,
-            dot,
+            has_updates,
         } = tool;
         let p = self.palette;
         let focused = self.stop_handle(stop).is_focused(window);
@@ -365,18 +364,18 @@ impl ShellView {
             .style(ty::BUTTON_SMALL)
             .track_focus(self.stop_handle(stop))
             .when(!busy, |b| b.cursor_pointer().hover(|s| s.bg(p.hover)))
-            .child(kit::icon(icon, component::ICON_SMALL, ink))
+            .child(kit::icon(
+                icon,
+                component::ICON_SMALL,
+                if has_updates && !busy {
+                    p.accent_strong
+                } else {
+                    ink
+                },
+            ))
             .child(label)
             // Where it is, so Tab landing on it below the feed's fold scrolls it into view.
             .children(hints::reveal(stop).map(|(_, key)| self.probe(key)))
-            .when(dot, |b| {
-                b.child(
-                    div()
-                        .size(px(component::CHIP_DOT))
-                        .rounded_full()
-                        .bg(p.accent),
-                )
-            })
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                 cx.stop_propagation();
                 press(this, cx);
@@ -399,8 +398,7 @@ impl ShellView {
     }
 
     /// The toolbar, in the quick-add's place: the order on the left; Clear filter (while filtered)
-    /// and Refresh activity on the right. The refresh's dot says there are newer changes than the
-    /// feed shows. It fades with the feed as the room changes.
+    /// and Refresh activity on the right. The refresh icon takes the accent when updates are ready.
     pub(super) fn activity_toolbar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = self.palette;
         let swap = self.motion.navigation.list(self.frame);
@@ -438,7 +436,7 @@ impl ShellView {
                                 icon: Icon::X,
                                 label: feed::CLEAR_FILTER,
                                 busy: false,
-                                dot: false,
+                                has_updates: false,
                             },
                             window,
                             cx,
@@ -451,7 +449,7 @@ impl ShellView {
                             icon: Icon::RefreshCw,
                             label: feed::REFRESH,
                             busy: refreshing,
-                            dot: news,
+                            has_updates: news,
                         },
                         window,
                         cx,
@@ -594,12 +592,7 @@ impl ShellView {
             }
         };
         let undone = row.action == UndoAction::Undone;
-        let dot = || {
-            div()
-                .size(px(elevation::SELECTION_BAR))
-                .rounded_full()
-                .bg(p.ink_4)
-        };
+        let separator = || div().text_color(p.ink_4).child("·");
         let meta = div()
             .flex()
             .items_center()
@@ -607,16 +600,16 @@ impl ShellView {
             .style(ty::META)
             .text_color(p.ink_3)
             .child(div().text_color(p.ink_2).child(row.who.clone()))
-            .child(dot())
+            .child(separator())
             .child(row.when.clone())
-            .child(dot())
+            .child(separator())
             .child(div().style(ty::COUNT).child(row.clock.clone()));
         let refusal = row.refusal.map(|why| {
             div()
                 .pt(px(desktop::ROW_LINE_GAP))
                 .flex()
                 .items_center()
-                .gap(px(component::CHIP_GAP))
+                .gap(px(component::META_GAP))
                 .opacity(look.note)
                 .style(ty::META)
                 .text_color(p.danger_ink)
@@ -729,7 +722,7 @@ impl ShellView {
             .flex()
             .flex_none()
             .items_center()
-            .gap(px(component::CHIP_GAP))
+            .gap(px(component::META_GAP))
             .rounded(px(radius::BUTTON))
             .border(px(elevation::HAIRLINE))
             .border_color(if ready { p.line_strong } else { p.line })
@@ -800,7 +793,7 @@ impl ShellView {
                     icon,
                     label,
                     busy: false,
-                    dot: false,
+                    has_updates: false,
                 },
                 window,
                 cx,

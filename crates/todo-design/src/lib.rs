@@ -24,7 +24,7 @@
 //!
 //! Every colour is authored in OKLCH and derived from a hue ([`palette`] module). A room (My Day, a collection,
 //! a list's own page) tints its whole palette with its hue: canvas, sky, hills, accent. Lists tint only their chip,
-//! dot and glyph. The sun is the only fixed amber. [`color::Oklch::to_rgb`] maps out-of-gamut colours by
+//! swatch and glyph. The sun is the only fixed amber. [`color::Oklch::to_rgb`] maps out-of-gamut colours by
 //! reducing chroma, exactly as the design generator did, so the hex values match the approved mockups.
 //!
 //! | Module | Contents |

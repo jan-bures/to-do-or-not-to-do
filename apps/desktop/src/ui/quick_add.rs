@@ -148,7 +148,7 @@ impl Render for QuickAddView {
             div()
                 .flex()
                 .items_center()
-                .gap(px(component::CHIP_GAP))
+                .gap(px(component::META_GAP))
                 .child(kit::kbd(&p, key))
                 .child(what)
         };

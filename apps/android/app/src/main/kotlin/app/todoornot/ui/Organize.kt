@@ -43,7 +43,7 @@ internal fun PickerCard(title: String, inSheet: Boolean = false, content: @Compo
 }
 
 @Composable
-internal fun Choice(label: String, selected: Boolean? = null, multiple: Boolean = false, onClick: () -> Unit) {
+internal fun Choice(label: String, selected: Boolean? = null, multiple: Boolean = false, tagHue: String? = null, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     val on = selected == true
     val action = when {
@@ -55,7 +55,9 @@ internal fun Choice(label: String, selected: Boolean? = null, multiple: Boolean 
         .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
         .then(if (on) Modifier.background(r.wash) else Modifier)
         .then(action).padding(horizontal = S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-        Label(label, Tokens.Type.NAV, if (on) r.accentStrong else r.ink, Modifier.weight(1f),
+        val tagInk = tagHue?.let { LocalDesign.current.list(it).ink }
+        Label(label, if (tagInk != null) Tokens.Type.TAG else Tokens.Type.NAV,
+            tagInk ?: if (on) r.accentStrong else r.ink, Modifier.weight(1f),
             weight = if (on) Tokens.Type.BUTTON.weight else null)
         if (on) Icon("check", r.accentStrong)
     }
@@ -180,7 +182,7 @@ internal fun SwatchCard(target: ColorTarget, selected: String, choose: (String) 
                     .selectable(on, role = Role.RadioButton) { choose(hue) }
                     .semantics { contentDescription = swatchName(hue) }, contentAlignment = Alignment.Center) {
                     Box(Modifier.size(S.S8.dp).background(if (on) colors.strong else colors.tint, CircleShape)
-                        .border(Tokens.Elevation.HAIRLINE.dp, colors.dot, CircleShape), contentAlignment = Alignment.Center) {
+                        .border(Tokens.Elevation.HAIRLINE.dp, colors.swatch, CircleShape), contentAlignment = Alignment.Center) {
                         if (on) Icon("check", colors.onStrong)
                     }
                 }
@@ -203,9 +205,8 @@ internal fun TagsCard(tags: List<TagChoice>, toggle: (TagChoice) -> Unit, manage
         Label("Tags", Tokens.Type.DETAIL_TITLE_PHONE, LocalDesign.current.room.ink)
         Column(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {
             filtered.forEach { t -> Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(LocalDesign.current.list(t.hue).dot, CircleShape))
-                Box(Modifier.weight(1f)) { Choice("#${t.name}", t.selected, multiple = true) { toggle(t) } }
-                IconButton("chevron-right", "Options for #${t.name}") { manage(t) }
+                Box(Modifier.weight(1f)) { Choice(t.label, t.selected, multiple = true, tagHue = t.hue) { toggle(t) } }
+                IconButton("chevron-right", "Options for ${t.label}") { manage(t) }
             } }
             if (tags.isEmpty() && typed.isEmpty()) Label("No tags yet. Type a name to create one.", Tokens.Type.META_PHONE, LocalDesign.current.room.ink3)
         }
@@ -235,7 +236,7 @@ internal fun ConfirmOrganize(target: ColorTarget, actions: Actions, overlay: Ove
 
 @Composable
 internal fun TagOptions(tag: TagChoice, toggle: () -> Unit, navigate: (String) -> Unit, inSheet: Boolean = false) {
-    PickerCard("#${tag.name}", inSheet) {
+    PickerCard(tag.label, inSheet) {
         Choice(if (tag.selected) "Remove from task" else "Add to task", onClick = toggle)
         Choice("Rename tag") { navigate("Rename") }
         Choice("Color…") { navigate("Colour") }

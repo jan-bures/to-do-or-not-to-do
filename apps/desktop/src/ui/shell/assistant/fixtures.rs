@@ -17,7 +17,7 @@ impl ShellView {
         if !name.starts_with("ai-") {
             return;
         }
-        self.ai.open = true;
+        self.ai.open = name != "ai-pending";
         self.settle_detail();
         if name == "ai-unconfigured" {
             cx.notify();
@@ -104,7 +104,7 @@ impl ShellView {
             stale_snapshot: false,
         };
         let (turns, composer) = match name {
-            "ai-proposal" => {
+            "ai-proposal" | "ai-pending" => {
                 let item = ProposalItem {
                     index: 0,
                     effects: vec![Effect::Edited {

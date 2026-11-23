@@ -1571,7 +1571,7 @@ impl ShellView {
                                 .min_w_0()
                                 .flex()
                                 .flex_col()
-                                .gap(px(component::CHIP_GAP))
+                                .gap(px(component::META_GAP))
                                 .child(
                                     div()
                                         .style(ty::NAV_SUB)
@@ -1938,6 +1938,8 @@ impl ShellView {
         let action = item.action;
         let hover = if item.checked { p.tint } else { p.hover };
         let merge_choice = matches!(action, MenuAction::AskMerge(..));
+        let tag_choice = matches!(action, MenuAction::ToggleTag(..)) && item.more.is_some();
+        let identity = item.dot.map(|hue| theme::list_colors(self.theme, hue));
         div()
             .id(item.key.clone())
             .group(item.key.clone())
@@ -1961,36 +1963,20 @@ impl ShellView {
             .style(ty::NAV_SUB)
             .when(item.checked, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
             .text_color(ink)
-            .child(match (item.glyph, item.dot) {
-                // A list's own glyph in its colour, as in the sidebar.
-                (Some((glyph, hue)), _) => {
-                    kit::glyph(glyph, theme::list_colors(self.theme, hue).glyph).into_any_element()
-                }
-                // A tag's colour, or the colour Colour… changes: a disc in the icon's place.
-                (None, Some(hue)) => div()
-                    .size(px(component::ICON_SMALL))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .child(
-                        div()
-                            .size(px(component::CHIP_DOT + space::S1))
-                            .rounded_full()
-                            .bg(theme::list_colors(self.theme, hue).dot),
-                    )
-                    .into_any_element(),
-                (None, None) => kit::icon(
+            .children((!tag_choice).then(|| match item.glyph {
+                Some((glyph, hue)) => kit::glyph(glyph, theme::list_colors(self.theme, hue).glyph),
+                None => kit::icon(
                     item.icon,
                     component::ICON_SMALL,
                     if item.danger {
                         p.danger
+                    } else if let Some(colors) = &identity {
+                        colors.glyph
                     } else {
                         kit::task_toggle_fill(p, item.icon).unwrap_or(p.ink_3)
                     },
-                )
-                .into_any_element(),
-            })
+                ),
+            }))
             .child(if merge_choice {
                 div()
                     .flex_1()
@@ -2010,6 +1996,8 @@ impl ShellView {
                     .flex_1()
                     .min_w_0()
                     .truncate()
+                    .when(tag_choice, |d| d.style(ty::TAG))
+                    .when_some(identity, |d, colors| d.text_color(colors.ink))
                     .child(item.label.clone())
             })
             .children(item.hint.clone().filter(|_| !merge_choice).map(|hint| {
@@ -2100,7 +2088,7 @@ impl ShellView {
             .border_color(if highlighted {
                 p.accent
             } else if item.checked {
-                colors.dot
+                colors.swatch
             } else {
                 gpui::transparent_black()
             })
@@ -2112,7 +2100,7 @@ impl ShellView {
                     .items_center()
                     .justify_center()
                     .rounded_full()
-                    .bg(colors.dot)
+                    .bg(colors.swatch)
                     .when(item.checked, |d| {
                         d.child(kit::icon(Icon::Check, component::ICON_SMALL, p.on_accent))
                     }),

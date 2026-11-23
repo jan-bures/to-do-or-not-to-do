@@ -1642,7 +1642,8 @@ async fn organize_and_page_activity_with_exact_event_undo() {
     })
     .await;
     let stale = e.activity_view(&all, now());
-    assert_eq!(stale.refresh_label, "Refresh activity •");
+    assert_eq!(stale.refresh_label, "Refresh activity");
+    assert!(stale.has_updates);
     assert_eq!(
         before,
         stale
@@ -1654,6 +1655,7 @@ async fn organize_and_page_activity_with_exact_event_undo() {
     );
     let latest = load_activity(&e, &all, ActivityLoad::Refresh).await;
     assert_eq!(latest.refresh_label, "Refresh activity");
+    assert!(!latest.has_updates);
     assert!(latest.days[0].rows[0].seq > before[0]);
     let agent = ActivityPager::new(Some("gardener".into()));
     let filtered = load_activity(&e, &agent, ActivityLoad::Initial).await;

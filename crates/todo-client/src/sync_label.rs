@@ -14,6 +14,15 @@ pub enum SyncLabel<'a> {
     Paused(usize),
 }
 
+/// The four live sync light colors, independent of the client's palette.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SyncTone {
+    Ok,
+    Busy,
+    Idle,
+    Problem,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncText {
     pub short: String,
@@ -41,6 +50,15 @@ impl<'a> SyncLabel<'a> {
                 Some(Connection::Syncing) => Self::Syncing,
                 Some(Connection::Online) => Self::Synced(local_time),
             }
+        }
+    }
+
+    pub const fn tone(self) -> SyncTone {
+        match self {
+            Self::Synced(_) => SyncTone::Ok,
+            Self::Syncing => SyncTone::Busy,
+            Self::Offline(_) | Self::Paused(_) => SyncTone::Idle,
+            Self::Unpaired | Self::SignedOut | Self::Failed(_) => SyncTone::Problem,
         }
     }
 
@@ -93,6 +111,18 @@ mod tests {
                 SyncLabel::for_client(connection, 3, 2, false, Some("20:18")),
                 SyncLabel::Failed(2),
             );
+        }
+    }
+
+    #[test]
+    fn light_distinguishes_healthy_working_offline_and_failed() {
+        for (label, tone) in [
+            (SyncLabel::Synced(Some("10:34")), SyncTone::Ok),
+            (SyncLabel::Syncing, SyncTone::Busy),
+            (SyncLabel::Offline(3), SyncTone::Idle),
+            (SyncLabel::Failed(3), SyncTone::Problem),
+        ] {
+            assert_eq!(label.tone(), tone);
         }
     }
 

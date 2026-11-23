@@ -1067,9 +1067,9 @@ test("tags and links sync across tabs, and delete rechecks the tag’s impact at
   await expect(link(other)).toHaveCount(0);
 
   await tags(page).click();
-  await picker(page).getByRole("button", { name: tag, exact: true }).click();
+  await picker(page).getByRole("button", { name: `#${tag}`, exact: true }).click();
   await expect(tags(other)).not.toContainText(tag);
-  await picker(page).getByRole("button", { name: tag, exact: true }).click();
+  await picker(page).getByRole("button", { name: `#${tag}`, exact: true }).click();
   await expect(tags(other)).toContainText(tag);
   await picker(page).getByRole("button", { name: `Manage tag “${tag}”` }).click();
   await page.getByRole("button", { name: "Delete tag…" }).click();
@@ -1079,7 +1079,7 @@ test("tags and links sync across tabs, and delete rechecks the tag’s impact at
   // The owner added the tag to another task since the question was presented.
   await select(other, second);
   await tags(other).click();
-  await picker(other).getByRole("button", { name: tag, exact: true }).click();
+  await picker(other).getByRole("button", { name: `#${tag}`, exact: true }).click();
   await expect(row(page, second)).toContainText(`#${tag}`);
   const remove = confirm.getByRole("button", { name: "Delete tag", exact: true });
   await remove.click();
@@ -1112,7 +1112,7 @@ test("undo of a tag delete reports a name clash; losing the task closes the tag 
     const filter = picker(tab).getByRole("textbox", { name: "Type to find or create a tag" });
     await filter.fill(tag);
     await filter.press("Enter");
-    await expect(tags(tab)).toHaveAccessibleDescription(tag);
+    await expect(tags(tab)).toHaveAccessibleDescription(`#${tag}`);
     await filter.press("Escape");
   };
   const askDelete = async () => {
@@ -1143,7 +1143,7 @@ test("undo of a tag delete reports a name clash; losing the task closes the tag 
   expect((await response.json()).error.code).toBe("duplicate_name");
   await expect(author.locator(".toast")).toContainText("Couldn't undo: another tag already uses that name.");
   await expect(tags(author)).toHaveAccessibleDescription("No tags");
-  await expect(tags(other)).toHaveAccessibleDescription(tag);
+  await expect(tags(other)).toHaveAccessibleDescription(`#${tag}`);
 
   await askDelete();
   const status = await other.evaluate(async (id) => {
@@ -1157,7 +1157,7 @@ test("undo of a tag delete reports a name clash; losing the task closes the tag 
   expect(status).toBe(200);
   await expect(confirm).toBeHidden();
   await expect(originalRow).toHaveCount(0);
-  await expect(tags(other)).toHaveAccessibleDescription(tag);
+  await expect(tags(other)).toHaveAccessibleDescription(`#${tag}`);
   await expect(other.locator(".sync-text")).toContainText("1 not synced");
   await author.getByRole("button", { name: "1 couldn't sync" }).click();
   const failures = author.getByRole("dialog", { name: "Not synced" });

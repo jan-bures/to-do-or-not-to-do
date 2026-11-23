@@ -68,7 +68,7 @@ internal fun StatusMark(stage: WorkflowStage) {
     val r = LocalDesign.current.room
     val active = stage == WorkflowStage.IN_PROGRESS
     Row(
-        (if (active) Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.SM.dp)).padding(horizontal = S.S1.dp) else Modifier)
+        (if (active) Modifier.background(r.wash, RoundedCornerShape(Tokens.Radius.CHIP.dp)).padding(horizontal = S.S1.dp) else Modifier)
             .heightIn(min = C.CHIP.dp).semantics { contentDescription = "Status: ${stage.label}" },
         verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
     ) {

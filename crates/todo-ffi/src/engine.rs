@@ -145,7 +145,7 @@ pub struct SyncText {
 
 #[uniffi::export]
 pub fn sync_status_text(status: SyncStatus, local_time: Option<String>) -> SyncText {
-    use todo_client::sync_label::SyncLabel;
+    use todo_client::sync_label::{SyncLabel, SyncTone as SharedTone};
 
     let connection = match status.state {
         SyncState::Paused => None,
@@ -160,11 +160,11 @@ pub fn sync_status_text(status: SyncStatus, local_time: Option<String>) -> SyncT
         status.revoked,
         local_time.as_deref(),
     );
-    let tone = match label {
-        SyncLabel::Synced(_) => SyncTone::Ok,
-        SyncLabel::Syncing => SyncTone::Busy,
-        SyncLabel::Paused(_) => SyncTone::Idle,
-        _ => SyncTone::Problem,
+    let tone = match label.tone() {
+        SharedTone::Ok => SyncTone::Ok,
+        SharedTone::Busy => SyncTone::Busy,
+        SharedTone::Idle => SyncTone::Idle,
+        SharedTone::Problem => SyncTone::Problem,
     };
     let text = label.text();
     SyncText {

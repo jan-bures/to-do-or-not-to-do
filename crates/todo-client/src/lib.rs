@@ -69,6 +69,7 @@ pub mod storage;
 pub mod sync_label;
 pub mod task_activity;
 pub mod task_drag;
+pub mod task_labels;
 pub mod timeline;
 pub mod trash;
 

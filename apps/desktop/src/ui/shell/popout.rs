@@ -11,8 +11,8 @@ use gpui::{
 use todo_core::ids::TaskId;
 
 use super::{Blend, FocusQuickAdd, ShellView, UndoTask, header_landscape, kit, win};
-use crate::model::popouts::Room;
-use crate::theme::{Icon, TextStyled, component, desktop, elevation, space, ty, with_alpha};
+use crate::model::{self, RoomKey, popouts::Room};
+use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, space, ty, with_alpha};
 use crate::ui::popouts::Settings;
 
 pub(super) struct Compact {
@@ -339,13 +339,27 @@ impl ShellView {
                     .pl(px(space::S4))
                     .pr(px(space::S2))
                     .window_control_area(WindowControlArea::Drag)
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(px(component::CHIP_DOT))
-                            .rounded_full()
-                            .bg(p.accent_strong),
-                    )
+                    .children(match self.ui.room {
+                        RoomKey::List(_) => Some(
+                            kit::glyph(
+                                model::lists::list_glyph(&title),
+                                theme::list_colors(self.theme, self.shell.room.hue).glyph,
+                            )
+                            .into_any_element(),
+                        ),
+                        RoomKey::Collection(_) => Some(
+                            kit::glyph(
+                                model::lists::collection_glyph(&title),
+                                theme::list_colors(self.theme, self.shell.room.hue).glyph,
+                            )
+                            .into_any_element(),
+                        ),
+                        RoomKey::Smart(smart) => Some(
+                            kit::icon(smart.icon(), component::GLYPH, p.accent_strong)
+                                .into_any_element(),
+                        ),
+                        RoomKey::Activity(_) | RoomKey::Trash => None,
+                    })
                     .child(
                         div()
                             .min_w_0()

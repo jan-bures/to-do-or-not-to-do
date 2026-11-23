@@ -569,7 +569,7 @@ body.preview-mode .device-screen {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
   flex: 0 0 6px;
 }
 .step-meter {
@@ -798,7 +798,7 @@ body.preview-mode .device-screen {
   width: 7px;
   height: 7px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
 }
 .room-pill.active .pill-dot {
   background: var(--list-on-strong);

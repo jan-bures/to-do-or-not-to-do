@@ -393,7 +393,7 @@ private fun Fields(detail: TaskDetail, page: DetailPage?, open: (DetailPage, Foc
     if (detail.workflow.features.workflow) {
         val focus = remember { FocusRequester() }
         val stage = detail.workflow.stage
-        FieldRow(DetailField(null, stage.icon, "Status", "", false, false), "Change status",
+        FieldRow(DetailField(null, "columns-3", "Status", "", false, false), "Change status",
             modifier = Modifier.focusRequester(focus), valueContent = { StatusMark(stage) }) { open(DetailPage.Status, focus) }
     }
     if (detail.workflow.features.timeline) {
@@ -708,10 +708,7 @@ private fun FieldRow(f: DetailField, editLabel: String? = null, tags: List<app.t
             if (valueContent != null) valueContent()
             else if (tags.isNotEmpty()) {
                 Row(Modifier.horizontalScroll(rememberScrollState()), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-                    tags.forEach { tag ->
-                        Box(Modifier.size(C.CHIP_DOT.dp).background(LocalDesign.current.list(tag.hue).dot, CircleShape))
-                        Label("#${tag.name}", Tokens.Type.DUE, r.ink)
-                    }
+                    tags.forEach { tag -> TagLabel(tag.label, tag.hue) }
                 }
             } else if (f.mono) {
                 Label(f.value, Tokens.Type.DUE, color, weight = if (f.empty) null else Tokens.Type.OVERDUE_BADGE.weight)

@@ -23,7 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('Fixtures')) {
-    $Fixtures += @('date-format', 'ai-empty', 'ai-unconfigured', 'ai-typing', 'ai-proposal', 'ai-batch', 'ai-settings', 'ai-settings-testing', 'ai-settings-unreachable', 'ai-error', 'ai-blocked')
+    $Fixtures += @('date-format', 'sidebar-footer-syncing', 'ai-empty', 'ai-unconfigured', 'ai-typing', 'ai-proposal', 'ai-pending', 'ai-batch', 'ai-settings', 'ai-settings-testing', 'ai-settings-unreachable', 'ai-error', 'ai-blocked')
 }
 $app = Resolve-Path (Join-Path $PSScriptRoot '..')
 if (-not $OutDir) { $OutDir = Join-Path $app 'target/gallery' }

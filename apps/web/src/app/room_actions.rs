@@ -614,10 +614,10 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
                     activate(c, origin, item);
                 }
             }>
+            {icon(glyph)}
             {if item == Item::Colour {
-                view! { <span class="tag-dot" data-list-hue=move || c.state.with(|s| subject.hue(s))></span> }.into_any()
-            } else { icon(glyph).into_any() }}
-            {label}
+                view! { <span class="identity-label" data-list-hue=move || c.state.with(|s| subject.hue(s))>{label}</span> }.into_any()
+            } else { label.into_any() }}
         </button>
     }
 }

@@ -165,7 +165,7 @@ private fun MetaLine(task: TaskRow, quietInk: Color) {
         }
         if (task.fromMail) Icon("mail", quietInk, size = Tokens.Metrics.Component.ICON_SMALL.dp, label = "From an email")
         task.steps?.let { StepMeter(it, quietInk = quietInk) }
-        for (tag in task.tags) Label(tag, Tokens.Type.TAG, quietInk)
+        for (tag in task.tags) TagLabel(tag.label, tag.hue)
     }
 }
 

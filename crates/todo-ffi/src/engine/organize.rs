@@ -73,6 +73,8 @@ fn tag_id(id: &str) -> Result<TagId, FfiError> {
 pub struct TagChoice {
     pub id: String,
     pub name: String,
+    /// The shared `#tag` display label (not the editable name).
+    pub label: String,
     pub hue: String,
     pub selected: bool,
 }

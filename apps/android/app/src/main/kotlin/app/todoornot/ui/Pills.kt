@@ -3,16 +3,13 @@ package app.todoornot.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -91,12 +88,11 @@ fun RoomPill(item: NavItem, on: Boolean, roomy: Boolean = false, onClick: () -> 
                 .then(if (drop) Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.accentStrong, shape) else Modifier)
                 .then(press).padding(start = Micro.pillStart, end = S.S3.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(Tokens.Metrics.Component.CHIP_GAP.dp),
+            horizontalArrangement = Arrangement.spacedBy(Tokens.Metrics.Component.META_GAP.dp),
         ) {
             when {
                 item.glyph != null -> Glyph(item.glyph!!, mark)
-                on && item.icon != null -> Icon(item.icon!!, mark, size = Tokens.Metrics.Component.GLYPH.dp)
-                else -> Box(Modifier.size(Micro.pillDot).background(if (on || drop) mark else l.dot, CircleShape))
+                item.icon != null -> Icon(item.icon!!, mark, size = Tokens.Metrics.Component.GLYPH.dp)
             }
             Label(item.name, Tokens.Type.ROOM_PILL, ink, weight = if (on) Tokens.Type.BUTTON.weight else null)
         }

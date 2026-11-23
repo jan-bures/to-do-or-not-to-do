@@ -178,12 +178,12 @@ pub fn dusk(room_hue: Hue) -> Dusk {
     }
 }
 
-/// Colours of one list: its chip, dot and sidebar glyph.
+/// Colors for list pills, tag text, swatches, and glyphs.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ListColors {
     pub tint: Hsla,
     pub ink: Hsla,
-    pub dot: Hsla,
+    pub swatch: Hsla,
     pub glyph: Hsla,
 }
 
@@ -192,7 +192,7 @@ pub fn list_colors(theme: Theme, hue: Hue) -> ListColors {
     ListColors {
         tint: color(c.tint),
         ink: color(c.ink),
-        dot: color(c.dot),
+        swatch: color(c.swatch),
         glyph: color(c.glyph),
     }
 }

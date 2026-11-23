@@ -6,10 +6,7 @@ mod scrollbar;
 pub use caption::{CaptionPreview, caption_button_tints, window_controls};
 pub use scrollbar::Scrollbar;
 
-use gpui::{
-    Div, Hsla, IntoElement, PathBuilder, SharedString, Styled, Svg, Window, canvas, div, point,
-    prelude::*, px, svg,
-};
+use gpui::{Div, Hsla, IntoElement, SharedString, Styled, Svg, Window, div, prelude::*, px, svg};
 
 use crate::assets::{glyph_path, icon_path};
 use crate::model::ListRef;
@@ -66,9 +63,13 @@ pub fn task_toggle(p: &Palette, glyph: Icon, size: f32, fill: f32, scale: f32) -
 
 /// A hand-drawn list glyph at `component::GLYPH`.
 pub fn glyph(glyph: Glyph, color: Hsla) -> Svg {
+    glyph_at(glyph, color, component::GLYPH)
+}
+
+pub fn glyph_at(glyph: Glyph, color: Hsla, size: f32) -> Svg {
     svg()
         .path(glyph_path(glyph))
-        .size(px(component::GLYPH))
+        .size(px(size))
         .flex_none()
         .text_color(color)
 }
@@ -80,7 +81,12 @@ pub fn status_light(color: Hsla, style: ty::TextStyle) -> Div {
         .h(px(style.line_height))
         .flex()
         .items_center()
-        .child(div().size(px(component::CHIP_DOT)).rounded_full().bg(color))
+        .child(
+            div()
+                .size(px(component::STATUS_LIGHT))
+                .rounded_full()
+                .bg(color),
+        )
 }
 
 /// The round checkbox. Overdue tasks get the danger ring and wash.
@@ -184,13 +190,12 @@ pub fn agent_mark(theme: Theme, agent: Agent, size: f32) -> Div {
         .child(agent.letter())
 }
 
-/// A pill: list chips and the overdue badge (the only pills on the desktop).
+/// The shared shape of the list and overdue pills.
 fn pill(bg: Hsla) -> Div {
     div()
         .flex()
         .flex_none()
         .items_center()
-        .gap(px(component::CHIP_GAP))
         .h(px(component::CHIP))
         .px(px(component::CHIP_PAD_X))
         .rounded(px(radius::CHIP))
@@ -199,13 +204,14 @@ fn pill(bg: Hsla) -> Div {
 
 /// What a list chip says: "Collection · List" (smart lists) or just the list name.
 pub fn chip_label(list: &ListRef, with_collection: bool) -> SharedString {
-    match (&list.collection, with_collection) {
-        (Some(c), true) => format!("{c} · {}", list.name).into(),
-        _ => list.name.clone(),
-    }
+    todo_client::task_labels::list_chip(
+        &list.name,
+        list.collection.as_deref().filter(|_| with_collection),
+    )
+    .into()
 }
 
-/// A list chip: dot plus [`chip_label`]. It is at most `desktop::CHIP_MAX` wide and gives way when its row
+/// A tinted list pill with [`chip_label`]. It is at most `desktop::CHIP_MAX` wide and gives way when its row
 /// is short of room; a label that doesn't fit ends in an ellipsis inside the pill (laid out short, never
 /// clipped).
 pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
@@ -218,13 +224,6 @@ pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
         .style(ty::CHIP)
         .child(
             div()
-                .flex_none()
-                .size(px(component::CHIP_DOT))
-                .rounded_full()
-                .bg(c.dot),
-        )
-        .child(
-            div()
                 .min_w_0()
                 .whitespace_nowrap()
                 .text_ellipsis()
@@ -232,19 +231,15 @@ pub fn chip(theme: Theme, list: &ListRef, with_collection: bool) -> Div {
         )
 }
 
-/// How wide [`chip`] draws: its measured label plus the dot and padding, up to `desktop::CHIP_MAX`.
+/// How wide [`chip`] draws: its measured label plus padding, up to `desktop::CHIP_MAX`.
 pub fn chip_width(window: &Window, list: &ListRef, with_collection: bool) -> f32 {
     let label = text_width(window, ty::CHIP, &chip_label(list, with_collection));
-    (2. * component::CHIP_PAD_X + component::CHIP_DOT + component::CHIP_GAP + label)
-        .min(desktop::CHIP_MAX)
+    (2. * component::CHIP_PAD_X + label).min(desktop::CHIP_MAX)
 }
 
-/// The narrowest [`chip`] gets in a metadata line: its padding, the dot and an ellipsis.
+/// The narrowest [`chip`] gets in a metadata line: its padding and an ellipsis.
 pub fn chip_min_width(window: &Window) -> f32 {
-    2. * component::CHIP_PAD_X
-        + component::CHIP_DOT
-        + component::CHIP_GAP
-        + text_width(window, ty::CHIP, "…")
+    2. * component::CHIP_PAD_X + text_width(window, ty::CHIP, "…")
 }
 
 /// The width `text` takes on one line in `style`, as GPUI lays it out (`TextStyled::style` sets the same
@@ -279,34 +274,11 @@ pub fn text_width(window: &Window, style: ty::TextStyle, text: &str) -> f32 {
     f32::from(line.width)
 }
 
-/// A filled diamond, `size` across (the overdue badge's mark).
-fn diamond(size: f32, color: Hsla) -> impl IntoElement {
-    canvas(
-        |_, _, _| {},
-        move |bounds, (), window, _| {
-            let c = bounds.center();
-            let r = px(size / 2.);
-            let mut b = PathBuilder::fill();
-            b.move_to(point(c.x, c.y - r));
-            b.line_to(point(c.x + r, c.y));
-            b.line_to(point(c.x, c.y + r));
-            b.line_to(point(c.x - r, c.y));
-            b.close();
-            if let Ok(path) = b.build() {
-                window.paint_path(path, color);
-            }
-        },
-    )
-    .size(px(size))
-    .flex_none()
-}
-
 /// The overdue badge.
 pub fn overdue_badge(p: &Palette, label: SharedString) -> Div {
     pill(p.danger_bg)
         .text_color(p.danger_ink)
         .style(ty::OVERDUE_BADGE)
-        .child(diamond(component::CHIP_DOT + 1., p.danger))
         .child(label)
 }
 

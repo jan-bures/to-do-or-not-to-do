@@ -463,7 +463,7 @@ pub struct Row {
     /// The list chip (not shown in the list's own room).
     pub chip: Option<Chip>,
     /// `#tag` names.
-    pub tags: Vec<String>,
+    pub tags: Vec<Chip>,
     /// Created from an email.
     pub email: bool,
     /// Steps done and total, when it has steps.
@@ -591,13 +591,23 @@ pub fn board_row(state: &State, id: TaskId, dates: DateLabels) -> Option<Row> {
     Some(row)
 }
 
+fn tag_labels(state: &State, task: &Task) -> Vec<Chip> {
+    todo_client::task_labels::tags(state, task)
+        .into_iter()
+        .map(|tag| Chip {
+            label: todo_client::task_labels::tag(&tag.name),
+            hue: swatch(tag.color.as_deref(), tag.id.as_uuid().as_bytes()),
+        })
+        .collect()
+}
+
 fn row(state: &State, t: &Task, dates: DateLabels, mode: ChipMode) -> Row {
     let chip = state.lists.get(&t.list).and_then(|l| {
         let hue = swatch(l.color.as_deref(), l.id.as_uuid().as_bytes());
         match mode {
             ChipMode::Hidden => None,
             ChipMode::ListOnly => Some(Chip {
-                label: l.name.clone(),
+                label: todo_client::task_labels::list_chip(&l.name, None),
                 hue,
             }),
             ChipMode::Full => {
@@ -606,20 +616,13 @@ fn row(state: &State, t: &Task, dates: DateLabels, mode: ChipMode) -> Row {
                     .and_then(|c| state.collections.get(&c))
                     .map(|c| c.name.as_str());
                 Some(Chip {
-                    label: coll.map_or_else(|| l.name.clone(), |c| format!("{c} · {}", l.name)),
+                    label: todo_client::task_labels::list_chip(&l.name, coll),
                     hue,
                 })
             }
         }
     });
-    let mut tags: Vec<String> = t
-        .tags
-        .iter()
-        .filter_map(|id| state.tags.get(id))
-        .filter(|tag| tag.deleted.is_none())
-        .map(|tag| tag.name.clone())
-        .collect();
-    tags.sort();
+    let tags = tag_labels(state, t);
     let steps: Vec<_> = state
         .steps
         .values()
@@ -1151,20 +1154,7 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         .collect();
     steps.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
     let reminder = intent::reminder::Seen::of(state, id, &now.eval());
-    let mut tags: Vec<_> = t
-        .tags
-        .iter()
-        .filter_map(|tid| state.tags.get(tid))
-        .filter(|tag| tag.deleted.is_none())
-        .collect();
-    tags.sort_by_cached_key(|tag| (fold(&tag.name), tag.id));
-    let tags = tags
-        .into_iter()
-        .map(|tag| Chip {
-            label: tag.name.clone(),
-            hue: swatch(tag.color.as_deref(), tag.id.as_uuid().as_bytes()),
-        })
-        .collect();
+    let tags = tag_labels(state, t);
     let sources = state
         .links
         .values()
@@ -1830,7 +1820,7 @@ mod tests {
         let d = detail(&s, &n, task).unwrap();
         assert_eq!(
             d.tags.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(),
-            ["ábel", "čaj", "ops", "Zebra"]
+            ["#ábel", "#čaj", "#ops", "#Zebra"]
         );
     }
 

@@ -234,15 +234,15 @@ token_struct! {
 }
 
 token_struct! {
-    /// The colours of one list hue: the chip, the dot, the sidebar glyph and the active room pill. Get one from
+    /// The colors of one list hue: chips, tag text, glyphs, swatches, and the active room pill. Get one from
     /// [`list_colors()`].
     ListColors {
         /// Chip background.
         tint = h(0.935, 0.042), h(0.300, 0.050);
         /// Chip text.
         ink = h(0.410, 0.100), h(0.880, 0.075);
-        /// The 6 px chip dot and the room-pill dot.
-        dot = h(0.640, 0.150), h(0.760, 0.120);
+        /// The color choice swatch and colored borders and rails.
+        swatch = h(0.640, 0.150), h(0.760, 0.120);
         /// The hand-drawn list glyph in the sidebar.
         glyph = h(0.540, 0.130), h(0.780, 0.100);
         /// The active room pill (phone).
@@ -303,7 +303,11 @@ pub const GUARDS: [(&str, &[&str], f64); 17] = [
     ("ink-2", &["pane", "sky"], 4.5),
     ("ink-3", &["pane", "canvas", "wash"], 4.5),
     ("accent-strong", &["pane", "sky", "wash", "tint"], 4.5),
-    ("danger-ink", &["danger-bg"], 4.5),
+    (
+        "danger-ink",
+        &["danger-bg", "sky", "pane", "canvas", "wash"],
+        4.5,
+    ),
     ("toast-ink", &["toast"], 4.5),
     ("toast-ink-2", &["toast"], 4.5),
     ("toast-accent", &["toast"], 4.5),

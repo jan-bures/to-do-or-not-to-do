@@ -136,7 +136,7 @@ class ThumbZoneActionsTest {
         val home = e.home(FIXTURE_NOW)
         val agent = home.agents.first()
         val state = UiState(home, e.room(RoomKey.Smart(SmartList.MY_DAY), FIXTURE_NOW), null, e.status(), emptyList(), null,
-            activity = "", pagerId = 5L, feed = ActivityView(null, emptyList(), 0u, "Refresh activity", false, ActivityFooter.None))
+            activity = "", pagerId = 5L, feed = ActivityView(null, emptyList(), 0u, "Refresh activity", false, false, ActivityFooter.None))
         val requests = mutableListOf<ActivityLoad>()
         var filter: String? = null
         val actions = object : Actions by Actions.None {

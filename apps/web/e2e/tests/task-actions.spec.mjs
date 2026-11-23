@@ -51,7 +51,7 @@ test("row context delete exits, hands off focus and offers exact Undo", async ({
   expect(await detail.locator('.step-rows [role="checkbox"]').evaluateAll(
     (steps) => steps.map((step) => step.getAttribute("aria-checked")),
   )).toEqual(["true", "true", "false", "false", "false"]);
-  await expect(detail.getByRole("button", { name: "Tags", exact: true })).toHaveAccessibleDescription("docs, quarterly");
+  await expect(detail.getByRole("button", { name: "Tags", exact: true })).toHaveAccessibleDescription("#docs, #quarterly");
   await expect(detail.getByRole("button", { name: "Reminder", exact: true })).toHaveAccessibleDescription("Today, 15:30");
   await expect(detail.getByRole("region", { name: "Attachments" })).toContainText("board-pack-draft.pdf");
   await expect(detail.getByRole("link", { name: /^Board pack — November/ })).toHaveAttribute("href", "https://example.com/mail/board-pack");

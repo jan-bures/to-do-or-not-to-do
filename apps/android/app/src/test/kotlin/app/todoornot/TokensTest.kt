@@ -47,7 +47,7 @@ class TokensTest {
         "toast-ink" to { it.toastInk }, "toast-ink-2" to { it.toastInk2 }, "wash" to { it.wash },
     )
     private val list: Map<String, (ListColors) -> Color> = mapOf(
-        "dot" to { it.dot }, "glyph" to { it.glyph }, "ink" to { it.ink },
+        "swatch" to { it.swatch }, "glyph" to { it.glyph }, "ink" to { it.ink },
         "on-strong" to { it.onStrong }, "strong" to { it.strong }, "tint" to { it.tint },
     )
     private val agent: Map<String, (AgentColors) -> Color> = mapOf("bg" to { it.bg }, "ink" to { it.ink }, "ring" to { it.ring })

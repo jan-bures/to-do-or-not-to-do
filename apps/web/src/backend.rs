@@ -491,7 +491,11 @@ pub fn status() -> Sync {
         }
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => Sync {
-            connection: Connection::Online,
+            connection: match crate::platform::query().as_str() {
+                "?fixture=syncing" => Connection::Syncing,
+                "?fixture=offline" => Connection::Offline,
+                _ => Connection::Online,
+            },
             reminders_ready: true,
             offline_demo: true,
             failed: l.failures.len(),

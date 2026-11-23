@@ -71,7 +71,7 @@ impl Undos {
 }
 
 /// The pages read so far (shared with every client), and the replica's position when the newest
-/// page was read, for the refresh button's dot.
+/// page was read, for the refresh button's accent.
 #[derive(Default)]
 pub(super) struct FeedState {
     pages: Pages,
@@ -209,9 +209,9 @@ pub(super) fn Feed(agent: Option<AgentId>, reached_bottom: RwSignal<u64>) -> imp
                             on:click=link_room(c, RoomId::Activity(None))>{activity::CLEAR_FILTER}</a>
                     })}
                     <button class="button activity-button" type="button" aria-disabled=move || refresh_pending().to_string()
+                        class:has-updates=move || has_updates() && !refresh_pending()
                         on:click=move |_| request.run(None)>
                         {activity::REFRESH}
-                        <span aria-hidden="true">{move || has_updates().then_some(" •")}</span>
                     </button>
                 </div>
             </div>

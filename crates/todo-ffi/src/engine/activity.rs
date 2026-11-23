@@ -31,6 +31,7 @@ pub struct ActivityView {
     /// Changes only when the pager discards its pages (not when it first learns its epoch).
     pub reset_count: u64,
     pub refresh_label: String,
+    pub has_updates: bool,
     pub refreshing: bool,
     pub footer: ActivityFooter,
 }
@@ -263,11 +264,8 @@ impl TodoEngine {
             agent: pager.agent.as_deref().map(activity::agent_name),
             days,
             reset_count: pages.reset_count,
-            refresh_label: if pages.read_at.is_some_and(|at| at != cursor) {
-                format!("{} •", activity::REFRESH)
-            } else {
-                activity::REFRESH.into()
-            },
+            refresh_label: activity::REFRESH.into(),
+            has_updates: pages.read_at.is_some_and(|at| at != cursor),
             refreshing: feed.refreshing(),
             footer: ActivityFooter::for_feed(feed, pager.agent.is_some()),
         }

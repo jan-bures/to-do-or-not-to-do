@@ -899,13 +899,13 @@ fn metadata(row: Row, completed: Option<String>) -> impl IntoView {
             {completed.map(|label| view! { <span class="board-completed-date mono">{label}</span> })}
             {row.due.map(|d| { let overdue = d.tone == model::DueTone::Overdue; view! {
                 <span class="due" data-tone=if overdue { "overdue" } else { "later" }>
-                    {overdue.then(|| view! { <i class="diamond" aria-hidden="true"></i> })}{d.text}
+                    {d.text}
                 </span>
             }})}
             {row.steps.filter(|_| !row.done).map(|(d, t)| view! { <span class="steps">{bars(d, t)}{format!("{d}/{t}")}</span> })}
             {(!row.done && row.priority > 0).then(|| view! { <span class="board-priority">{"!".repeat(usize::from(row.priority))}</span> })}
             {row.email.then(|| view! { <span class="meta-icon" role="img" aria-label="From an email" title="From an email">{icon(Icon::Mail)}</span> })}
-            {row.tags.into_iter().take(2).map(|tag| view! { <span class="tag board-tag">{format!("#{tag}")}</span> }).collect_view()}
+            {row.tags.into_iter().take(2).map(|tag| view! { <span class="tag board-tag tag-label" data-list-hue=tag.hue>{tag.label}</span> }).collect_view()}
             {(rest > 0).then(|| view! { <span class="tag">{format!("+{rest}")}</span> })}
             {row.agent.as_ref().map(|agent| view! { <span class="board-agent">{mark(agent)}</span> })}
         </div>

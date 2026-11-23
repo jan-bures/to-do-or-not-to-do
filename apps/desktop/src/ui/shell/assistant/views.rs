@@ -230,10 +230,10 @@ impl ShellView {
                     if self.ai.open { p.accent_strong } else { p.ink },
                     "Ask AI",
                 ))
+                .when(pending, |b| b.child(text(ty::COUNT, p.accent_strong, "1")))
                 .when(self.width == Width::Wide, |b| {
                     b.child(kit::kbd(&p, "Ctrl J"))
-                })
-                .when(pending, |b| b.child(text(ty::COUNT, p.accent_strong, "1"))),
+                }),
             true,
             |this, window, cx| this.toggle_ai(window, cx),
             cx,
@@ -1470,7 +1470,6 @@ impl ShellView {
             .min_w_0()
             .flex()
             .items_center()
-            .gap(px(component::CHIP_GAP))
             .px(px(component::CHIP_PAD_X))
             .rounded(px(radius::CHIP))
             .bg(c.tint)

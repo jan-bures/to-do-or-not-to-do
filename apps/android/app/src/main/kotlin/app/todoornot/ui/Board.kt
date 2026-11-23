@@ -402,7 +402,7 @@ private fun BoardCard(task: TaskRow, stage: WorkflowStage, state: UiState, actio
                     task.steps?.let { StepMeter(it) }
                     if (task.priority > 0u) Priority(task.priority.toInt())
                     if (task.fromMail) Icon("mail", r.ink3, size = C.ICON_SMALL.dp, label = "From an email")
-                    task.tags.take(2).forEach { Label(it, Tokens.Type.TAG, r.ink3) }
+                    task.tags.take(2).forEach { TagLabel(it.label, it.hue) }
                     if (task.tags.size > 2) Label("+${task.tags.size - 2}", Tokens.Type.COUNT, r.ink3)
                 }
                 task.agent?.let { AgentBadge(it) }

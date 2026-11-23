@@ -1098,9 +1098,9 @@ impl ShellView {
                             div()
                                 .absolute()
                                 .bottom_0()
-                                .left(px(x - geometry::TODAY_DOT / 2.))
-                                .size(px(geometry::TODAY_DOT))
-                                .rounded_full()
+                                .left(px(x - geometry::TODAY_LINE / 2.))
+                                .w(px(geometry::TODAY_LINE))
+                                .h(px(space::S1))
                                 .bg(p.accent_strong),
                         )
                     }),
@@ -1187,12 +1187,12 @@ impl ShellView {
                         )
                         .into_any_element()
                     } else if cross {
-                        div()
-                            .flex_none()
-                            .size(px(component::CHIP_DOT))
-                            .rounded_full()
-                            .bg(list.dot)
-                            .into_any_element()
+                        kit::glyph_at(
+                            crate::model::lists::list_glyph(&row.list.name),
+                            list.glyph,
+                            component::GLYPH_SMALL,
+                        )
+                        .into_any_element()
                     } else {
                         kit::icon(
                             stage_icon,
@@ -1284,7 +1284,7 @@ impl ShellView {
         let progress = lane.stage == QueryStatus::InProgress && self.shell.room.features.workflow;
         let backlog = lane.stage == QueryStatus::Backlog && self.shell.room.features.workflow;
         let (fill, edge, ink, cap) = if cross {
-            (list.tint, list.dot, list.ink, Some(list.dot))
+            (list.tint, list.swatch, list.ink, Some(list.swatch))
         } else if overdue {
             (p.danger_bg, p.danger, p.danger_ink, None)
         } else if progress {
@@ -1359,11 +1359,11 @@ impl ShellView {
                     )
             })
             .when(span.kind == SpanKind::Milestone, |d| {
-                if overdue {
-                    d.child(div().style(ty::CAPS_LABEL).child("◆"))
-                } else {
-                    d.child(kit::icon(Icon::Flag, component::ICON_SMALL, ink))
-                }
+                d.child(kit::icon(
+                    Icon::Flag,
+                    component::ICON_SMALL,
+                    if overdue { p.danger_ink } else { ink },
+                ))
             })
             .when(span.kind != SpanKind::Milestone, |d| {
                 if let Some(agent) = row.agent.filter(|_| inline) {
@@ -1781,9 +1781,9 @@ impl ShellView {
                 div()
                     .max_w(px(desktop::CHIP_MAX / 2.))
                     .truncate()
-                    .style(ty::COUNT)
-                    .text_color(p.ink_3)
-                    .child(tag.clone())
+                    .style(ty::TAG)
+                    .text_color(crate::theme::list_colors(self.theme, tag.hue).ink)
+                    .child(tag.label.clone())
             }))
             .children(
                 row.agent

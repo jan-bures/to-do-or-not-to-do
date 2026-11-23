@@ -344,8 +344,8 @@ pub struct TaskRow {
     pub agent: Option<AgentMark>,
     /// Steps, if it has any.
     pub steps: Option<StepCount>,
-    /// `#tags`.
-    pub tags: Vec<String>,
+    /// Single-line `#tags` with their individual hue keys.
+    pub tags: Vec<Chip>,
     /// Created from an email.
     pub from_mail: bool,
     /// When it was completed (none while open), exactly: an RFC 3339 timestamp to nanoseconds, opaque to
@@ -750,7 +750,7 @@ impl Index {
 fn list_chip(state: &State, list: ListId) -> Option<Chip> {
     let l = state.lists.get(&list)?;
     Some(Chip {
-        label: l.name.clone(),
+        label: todo_client::task_labels::list_chip(&l.name, None),
         hue: lists::swatch(l.color.as_deref(), l.id.as_uuid().as_bytes()).into(),
     })
 }
@@ -791,12 +791,12 @@ fn row(state: &State, ix: &Index, task: &Task, now: &Now, chip: bool) -> TaskRow
         priority: priority_marks(task.priority),
         agent: lists::agent(&task.updated.by).or_else(|| lists::agent(&task.created.by)),
         steps: ix.steps.get(&task.id).copied(),
-        tags: task
-            .tags
-            .iter()
-            .filter_map(|t| state.tags.get(t))
-            .filter(|t| t.deleted.is_none())
-            .map(|t| format!("#{}", labels::one_line(&t.name)))
+        tags: todo_client::task_labels::tags(state, task)
+            .into_iter()
+            .map(|tag| Chip {
+                label: todo_client::task_labels::tag(&tag.name),
+                hue: lists::swatch(tag.color.as_deref(), tag.id.as_uuid().as_bytes()).into(),
+            })
             .collect(),
         from_mail: ix.mail.contains(&task.id),
         completed_at: task.completed_at.map(|c| c.to_string()),
@@ -1246,12 +1246,9 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         mono: false,
         empty: task.recurrence.is_none(),
     });
-    let tags: Vec<String> = task
-        .tags
-        .iter()
-        .filter_map(|t| state.tags.get(t))
-        .filter(|t| t.deleted.is_none())
-        .map(|t| format!("#{}", labels::one_line(&t.name)))
+    let tags: Vec<String> = todo_client::task_labels::tags(state, task)
+        .into_iter()
+        .map(|t| todo_client::task_labels::tag(&t.name))
         .collect();
     fields.push(DetailField {
         edit: Some(FieldEdit::Tags),
@@ -1337,6 +1334,7 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
             .map(|t| crate::engine::organize::TagChoice {
                 id: t.id.to_string(),
                 name: labels::one_line(&t.name),
+                label: todo_client::task_labels::tag(&t.name),
                 hue: lists::swatch(t.color.as_deref(), t.id.as_uuid().as_bytes()).into(),
                 selected: task.tags.contains(&t.id),
             })

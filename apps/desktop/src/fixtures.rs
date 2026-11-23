@@ -105,6 +105,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "ai-unconfigured"
         | "ai-typing"
         | "ai-proposal"
+        | "ai-pending"
         | "ai-batch"
         | "ai-settings"
         | "ai-settings-testing"
@@ -229,6 +230,11 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // Tab onto the pinned New button without scrolling the rooms.
         "tab-new" | "tab-new-collection" | "sidebar-footer" | "sidebar-new-menu" => {
             Some(long_sidebar())
+        }
+        "sidebar-footer-syncing" => {
+            let mut f = long_sidebar();
+            f.sync.connection = todo_client::Connection::Syncing;
+            Some(f)
         }
         "sidebar-footer-min" => {
             let mut f = long_sidebar();

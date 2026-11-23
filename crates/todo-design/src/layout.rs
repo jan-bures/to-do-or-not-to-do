@@ -564,11 +564,9 @@ pub mod timeline {
 
     /// Below this width titles sit next to bars instead of inside them.
     pub const INLINE_LABEL_MIN: f32 = 110.0;
-    /// Dot that joins the date ruler to the Today line.
-    pub const TODAY_DOT: f32 = 7.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 13] = [
+    pub const ALL: [(&str, f32); 12] = [
         ("toolbar-height", TOOLBAR_HEIGHT),
         ("ruler-height", RULER_HEIGHT),
         ("rail-width", RAIL_WIDTH),
@@ -581,7 +579,6 @@ pub mod timeline {
         ("tray-collapsed", TRAY_COLLAPSED),
         ("tray-expanded", TRAY_EXPANDED),
         ("inline-label-min", INLINE_LABEL_MIN),
-        ("today-dot", TODAY_DOT),
     ];
 }
 
@@ -597,10 +594,8 @@ pub mod component {
     pub const AGENT_MARK: f32 = 20.0;
     /// Chip and overdue badge height.
     pub const CHIP: f32 = 20.0;
-    /// The dot inside a chip.
-    pub const CHIP_DOT: f32 = 6.0;
-    /// Gap between the dot and the label.
-    pub const CHIP_GAP: f32 = 6.0;
+    /// Gap between adjacent compact metadata, or the icon and label in a room pill.
+    pub const META_GAP: f32 = 6.0;
     /// Chip horizontal padding.
     pub const CHIP_PAD_X: f32 = 8.0;
     /// Button height.
@@ -622,8 +617,10 @@ pub mod component {
     pub const NEW_MENU: f32 = 152.0;
     /// Leading semantic stripe width on AI proposal cards (`accent` create, `sun-ink` edit, `danger` delete).
     pub const PROPOSAL_BAR: f32 = 3.0;
-    /// Status dot diameter in the AI model and privacy indicator.
-    pub const PRIVACY_DOT: f32 = CHIP_DOT;
+    /// Diameter of a live connection or sync status light.
+    pub const STATUS_LIGHT: f32 = 6.0;
+    /// Hand-drawn list glyph in the timeline task rail.
+    pub const GLYPH_SMALL: f32 = 14.0;
 
     /// Height of the desktop/web segmented view switcher.
     pub const VIEW_SWITCHER: f32 = 28.0;
@@ -635,8 +632,7 @@ pub mod component {
         ("checkbox-tick", CHECKBOX_TICK),
         ("agent-mark", AGENT_MARK),
         ("chip", CHIP),
-        ("chip-dot", CHIP_DOT),
-        ("chip-gap", CHIP_GAP),
+        ("meta-gap", META_GAP),
         ("chip-pad-x", CHIP_PAD_X),
         ("button", BUTTON),
         ("button-small", BUTTON_SMALL),
@@ -647,7 +643,8 @@ pub mod component {
         ("pairing-qr", PAIRING_QR),
         ("new-menu", NEW_MENU),
         ("proposal-bar", PROPOSAL_BAR),
-        ("privacy-dot", PRIVACY_DOT),
+        ("status-light", STATUS_LIGHT),
+        ("glyph-small", GLYPH_SMALL),
         ("view-switcher", VIEW_SWITCHER),
     ];
 }

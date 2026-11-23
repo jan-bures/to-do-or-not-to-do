@@ -269,7 +269,7 @@ body.capture-mode .dev-toolbar { display: none; }
 .list-chip {
   display: inline-flex;
   align-items: center;
-  gap: var(--component-chip-gap);
+  gap: var(--component-meta-gap);
   height: var(--component-chip);
   padding: 0 var(--component-chip-pad-x);
   border-radius: var(--radius-chip);
@@ -282,10 +282,10 @@ body.capture-mode .dev-toolbar { display: none; }
   text-overflow: ellipsis;
 }
 .list-chip .dot {
-  width: var(--component-chip-dot);
-  height: var(--component-chip-dot);
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
   flex: none;
 }
 
@@ -579,8 +579,8 @@ body.preview-mode .desktop-window {
   color: var(--color-ink-3);
 }
 .status-dot {
-  width: var(--component-privacy-dot);
-  height: var(--component-privacy-dot);
+  width: var(--component-status-light);
+  height: var(--component-status-light);
   border-radius: 50%;
   flex: none;
 }
@@ -991,7 +991,7 @@ body.preview-mode .desktop-window {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
   flex: none;
 }
 .task-link .tl-title {
@@ -1751,7 +1751,7 @@ body.preview-mode .device-screen {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
 }
 
 /* Bottom Sheet Overlay (Android Cover & Web Narrow) */

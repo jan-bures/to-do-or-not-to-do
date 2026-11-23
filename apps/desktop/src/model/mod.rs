@@ -406,7 +406,7 @@ pub struct TaskRow {
     pub id: TaskId,
     pub title: SharedString,
     pub list: ListRef,
-    pub tags: Vec<SharedString>,
+    pub tags: Vec<TagChip>,
     /// (done, total) steps, when it has steps.
     pub steps: Option<(u32, u32)>,
     pub agent: Option<Agent>,
@@ -594,13 +594,7 @@ pub struct AgentRow {
     pub status: SharedString,
 }
 
-/// The footer's sync line.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Tone {
-    Ok,
-    Busy,
-    Problem,
-}
+pub use todo_client::sync_label::SyncTone as Tone;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Sidebar {
@@ -669,11 +663,11 @@ pub struct Field {
     pub edit: Option<FieldEdit>,
 }
 
-/// A tag on the task, as the detail pane's Tags row shows it: a dot in its colour and its name.
+/// A tag on the task: a tinted mono label (`#tag`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct TagChip {
     pub id: TagId,
-    pub name: SharedString,
+    pub label: SharedString,
     pub hue: Hue,
 }
 
@@ -713,7 +707,7 @@ pub struct Detail {
     pub steps: Vec<StepRow>,
     pub notes: SharedString,
     pub fields: Vec<Field>,
-    /// The task's tags, by name (the Tags field's value, drawn as chips).
+    /// The task's tags, by name (the Tags field's value, in tinted text).
     pub tags: Vec<TagChip>,
     pub links: Vec<LinkRow>,
     pub attachments: Vec<AttachmentRow>,

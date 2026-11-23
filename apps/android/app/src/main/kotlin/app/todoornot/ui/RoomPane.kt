@@ -318,9 +318,10 @@ private fun BottomRoomBar(
     val drag = LocalTaskDrag.current
     val hasMenu = roomMenu(state.home, state.room.key, state.showCompleted).isNotEmpty()
     val dot = when {
-        state.status.problem != null -> r.danger
+        state.status.failed > 0u || state.status.revoked -> r.danger
         state.status.state == SyncState.OFFLINE -> r.ink4
-        state.status.pending > 0u -> r.accent
+        state.status.problem != null -> r.danger
+        state.status.state == SyncState.SYNCING || state.status.pending > 0u -> r.accent
         else -> null
     }
     val roomsAction by rememberUpdatedState(onRooms)
@@ -344,7 +345,7 @@ private fun BottomRoomBar(
             Box(Modifier.onGloballyPositioned { drag?.roomsButton = it.boundsInRoot() }) {
                 IconButton("menu", "Rooms", onClick = onRooms)
                 dot?.let { Box(Modifier.align(Alignment.TopEnd).padding(top = S.S2.dp, end = S.S2.dp)
-                    .size(Tokens.Metrics.Component.CHIP_DOT.dp).background(it, CircleShape)) }
+                    .size(Tokens.Metrics.Component.STATUS_LIGHT.dp).background(it, CircleShape)) }
             }
         }
         val search: @Composable () -> Unit = { if (!draggingTask) IconButton("search", "Filter", expanded = state.searching, onClick = onFilter) }

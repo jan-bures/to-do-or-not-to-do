@@ -980,7 +980,7 @@ fn DateStrip(ruler: bool) -> impl IntoView {
                     }
                 }).collect_view()
             }}
-            <i class=if ruler { "timeline-today-dot" } else { "timeline-today-line" } aria-hidden="true"
+            <i class="timeline-today-line" class:timeline-ruler-mark=ruler aria-hidden="true"
                 hidden=move || {
                     let a = ui.surface(); let x = a.x(c.now.get().today()) + a.day_width() / 2.;
                     !(0. ..a.width * WINDOWS as f32).contains(&x)
@@ -1164,7 +1164,7 @@ fn TaskLane(id: TaskId) -> impl IntoView {
                 on:click=move |ev| click_task(c, id, &ev)>
                 <Show when=move || completion.get().is_some() fallback=move || view! {
                     <Show when=cross fallback=move || view! { <span class="timeline-stage" title=move || ui_workflow::stage_info(stage()).0>{move || icon(ui_workflow::stage_info(stage()).2)}</span> }>
-                        <i class="timeline-list-dot" aria-hidden="true"></i>
+                        {move || task.with(|t| t.as_ref().map(|t| super::glyph(todo_design::icons::Glyph::for_list(&todo_core::query::fold(&t.list)))))}
                     </Show>
                 }>
                     <span class="check timeline-completion" aria-hidden="true">{super::tick_svg()}</span>
@@ -1191,7 +1191,7 @@ fn TaskLane(id: TaskId) -> impl IntoView {
                     on:click=move |ev| click_task(c, id, &ev)>
                     <span class="timeline-inline" hidden=move || !bar.get().is_some_and(|b| b.inline)>{title}</span>
                     <Show when=move || bar.get().is_some_and(|b| b.span.kind == SpanKind::Milestone)>
-                        <span class="timeline-milestone" aria-hidden="true">{move || if overdue() { "◆".into_any() } else { icon(Icon::Flag).into_any() }}</span>
+                        <span class="timeline-milestone" aria-hidden="true">{icon(Icon::Flag)}</span>
                     </Show>
                     {move || {
                         let b = bar.get()?;
@@ -1274,7 +1274,7 @@ fn TrayCard(id: TaskId) -> impl IntoView {
             {move || task.with(|t| t.as_ref().map(|t| icon(ui_workflow::stage_info(t.stage).2)))}
             <button type="button" id=row_id(id) class="timeline-tray-title" title=title
                 on:focus=move |_| ui.cursor.set(Some(id))>{title}</button>
-            {move || task.with(|t| t.as_ref().and_then(|t| t.row.tags.first().cloned()).map(|tag| view! { <span class="timeline-tray-tag">{tag}</span> }))}
+            {move || task.with(|t| t.as_ref().and_then(|t| t.row.tags.first().cloned()).map(|tag| view! { <span class="timeline-tray-tag tag-label" data-list-hue=tag.hue>{tag.label}</span> }))}
             {move || task.with(|t| t.as_ref().and_then(|t| t.row.agent.as_ref()).map(super::mark))}
             <button type="button" class="timeline-control timeline-schedule" id=anchor.get_value() data-calendar-anchor=""
                 aria-haspopup="dialog" aria-controls="timeline-calendar" aria-label=move || format!("Schedule {}", title()) disabled=move || c.read_only()

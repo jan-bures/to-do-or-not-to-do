@@ -67,8 +67,10 @@ test("four scales keep the centre, Today jumps back, and zoom is remembered", as
   await expect(page.locator(".timeline-range")).toHaveText(/19\.11\.–02\.12\./);
   expect(await visibleDates(page)).toHaveLength(14);
   await expect(day(page, "2026-11-21")).toHaveAttribute("aria-current", "date");
-  await expect(page.locator(".timeline-today-line")).toBeInViewport();
-  await expect(page.locator(".timeline-today-dot")).toBeInViewport();
+  await expect(page.locator("#timeline-lanes .timeline-today-line")).toBeInViewport();
+  const rulerMark = page.locator("#timeline-ruler .timeline-ruler-mark");
+  await expect(rulerMark).toBeInViewport();
+  await expect(rulerMark).toHaveCSS("width", "2px");
   for (const [name, min, max] of [["Week", 7, 8], ["Month", 35, 36], ["Quarter", 12, 13], ["Two weeks", 14, 15]]) {
     await zoom(page, name).click();
     await expect(zoom(page, name)).toHaveAttribute("aria-pressed", "true");
@@ -249,7 +251,7 @@ test("narrow room compacts controls and the sticky rail, scrolls locally and ope
   await expect(zoom(page, "Week").getByText("1W", { exact: true })).toBeVisible();
   const railBox = await page.locator("#timeline-rail-toggle").boundingBox();
   expect(railBox.width).toBeLessThan(224);
-  await expect(page.locator(".timeline-today-dot")).toBeInViewport();
+  await expect(page.locator("#timeline-ruler .timeline-ruler-mark")).toBeInViewport();
   const left = (await row(page, TITLE).boundingBox()).x;
   const old = await timeline(page).evaluate((el) => el.scrollLeft);
   await timeline(page).evaluate((el) => el.scrollLeft += 30);

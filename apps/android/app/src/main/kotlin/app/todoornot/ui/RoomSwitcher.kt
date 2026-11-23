@@ -480,7 +480,7 @@ private fun Footer(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(S.S2.dp, Alignment.CenterHorizontally),
         ) {
-            Box(Modifier.size(Tokens.Metrics.Component.CHIP_DOT.dp).background(color, CircleShape))
+            Box(Modifier.size(Tokens.Metrics.Component.STATUS_LIGHT.dp).background(color, CircleShape))
             Label(line.short, Tokens.Type.COUNT, r.ink3)
         }
         if (left) NewMenu(newFocus, onNewList, onNewCollection) else SettingsButton(settingsFocus, onSettings)

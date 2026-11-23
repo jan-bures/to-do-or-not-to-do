@@ -76,7 +76,7 @@ internal fun ActivityRoom(state: UiState, actions: Actions, drawer: () -> Unit, 
                     }
                 }
             }
-            if (feed.refreshLabel.endsWith('•')) {
+            if (feed.hasUpdates) {
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true).padding(horizontal = s.S3.dp, vertical = s.S1.dp)) {
                     Button(feed.refreshLabel, false, enabled = !feed.refreshing) { load(ActivityLoad.REFRESH) }
                 }

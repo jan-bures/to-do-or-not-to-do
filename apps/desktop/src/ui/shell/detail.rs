@@ -1462,7 +1462,7 @@ impl ShellView {
 }
 
 impl ShellView {
-    /// The Tags row's value: each tag as a dot in its colour and its name, side by side. Tags that don't
+    /// The Tags row's value: tinted mono labels, side by side. Tags that don't
     /// fit whole are counted as `+N` (`fit::fit_tags`, as on a row), never cut.
     fn tag_chips(&self, tags: &[model::TagChip], window: &Window) -> Div {
         let p = self.palette;
@@ -1476,11 +1476,7 @@ impl ShellView {
             - 3. * desktop::PROP_GAP;
         let widths: Vec<f32> = tags
             .iter()
-            .map(|t| {
-                component::CHIP_DOT
-                    + component::CHIP_GAP
-                    + kit::text_width(window, ty::TAG, &t.name)
-            })
+            .map(|t| kit::text_width(window, ty::TAG, &t.label))
             .collect();
         let more_width = |n: usize| kit::text_width(window, ty::TAG, &fit::more_label(n));
         // The first tag has no gap before it.
@@ -1495,22 +1491,10 @@ impl ShellView {
             .children(tags.iter().take(fit.shown).map(|t| {
                 div()
                     .flex_none()
-                    .flex()
-                    .items_center()
-                    .gap(px(component::CHIP_GAP))
-                    .child(
-                        div()
-                            .size(px(component::CHIP_DOT))
-                            .rounded_full()
-                            .bg(theme::list_colors(self.theme, t.hue).dot),
-                    )
-                    .child(
-                        div()
-                            .whitespace_nowrap()
-                            .style(ty::TAG)
-                            .text_color(p.ink_2)
-                            .child(t.name.clone()),
-                    )
+                    .whitespace_nowrap()
+                    .style(ty::TAG)
+                    .text_color(theme::list_colors(self.theme, t.hue).ink)
+                    .child(t.label.clone())
             }))
             .when(fit.more > 0, |d| {
                 d.child(

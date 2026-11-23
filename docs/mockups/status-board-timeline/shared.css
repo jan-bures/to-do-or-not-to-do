@@ -250,7 +250,7 @@ body.capture-mode .dev-toolbar { display: none; }
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--list-dot);
+  background: var(--list-swatch);
   flex: 0 0 6px;
 }
 

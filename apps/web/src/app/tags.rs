@@ -177,7 +177,7 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                     {move || detail.with(|d| {
                         if let Some(d) = d.as_ref().filter(|d| !d.tags.is_empty()) {
                             d.tags.iter().map(|tag| view! {
-                                <span class="detail-tag" data-list-hue=tag.hue><span class="tag-dot"></span>{tag.label.clone()}</span>
+                                <span class="tag-label" data-list-hue=tag.hue>{tag.label.clone()}</span>
                             }).collect_view().into_any()
                         } else { "—".into_any() }
                     })}
@@ -290,8 +290,9 @@ fn TagChoice(task: TaskId, id: TagId, manage: Callback<()>) -> impl IntoView {
                         ev.prevent_default(); manage.run(());
                     }
                 }>
-                <span class="tag-dot" data-list-hue=move || tag.with(|t| t.as_ref().map(|(_, hue)| *hue))></span>
-                <span class="picker-label">{move || tag.with(|t| t.as_ref().map(|(name, _)| name.clone()))}</span>
+                <span class="picker-label tag-label" data-list-hue=move || tag.with(|t| t.as_ref().map(|(_, hue)| *hue))>
+                    {move || tag.with(|t| t.as_ref().map(|(name, _)| todo_client::task_labels::tag(name)))}
+                </span>
                 <span class="picker-tick" aria-hidden="true">{icon(Icon::Check)}</span>
             </button>
             <button type="button" class="tag-manage" aria-label=move || tag.with(|t| t.as_ref().map(|(name, _)| format!("Manage tag “{name}”")))
@@ -311,13 +312,13 @@ fn TagActions(
     let c = ctx();
     view! {
         <div class="picker-page">
-            <h3 id="tag-picker-heading">{move || tag_display(c, id).map(|(name, _)| format!("#{name}"))}</h3>
+            <h3 id="tag-picker-heading">{move || tag_display(c, id).map(|(name, _)| todo_client::task_labels::tag(&name))}</h3>
             <button type="button" id="toggle-tag" data-picker-option="" on:click=move |_| toggle(c, task, id)>
                 {icon(Icon::Hash)}{move || if attached(c, task, id) { "Remove from task" } else { "Add to task" }}
             </button>
             <button type="button" data-picker-option="" on:click=move |_| edit.run(Edit::Rename(id))>{icon(Icon::Pencil)}"Rename tag"</button>
             <button type="button" data-picker-option="" on:click=move |_| colour.run(())>
-                <span class="tag-dot" data-list-hue=move || tag_display(c, id).map(|(_, hue)| hue)></span>"Color…"
+                {icon(Icon::Pencil)}<span class="identity-label" data-list-hue=move || tag_display(c, id).map(|(_, hue)| hue)>"Color…"</span>
             </button>
             <button type="button" data-picker-option="" class="danger" on:click=move |_| edit.run(Edit::Delete(id))>{icon(Icon::TrashTwo)}"Delete tag…"</button>
             <button type="button" data-picker-option="" on:click=move |_| back.run(())>{icon(Icon::ChevronLeft)}"All tags"</button>

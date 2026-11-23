@@ -19,7 +19,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -45,8 +44,8 @@ import app.todoornot.design.text
 private val C = Tokens.Metrics.Component
 
 /**
- * Drawn details below the token scale, from the F2 mockups: the step meter's bars, the summary's
- * separator dot, the eyebrow's divider and the room pill's dot and leading inset. Everything else comes from [Tokens].
+ * Drawn details below the token scale: the step meter's bars, the eyebrow's divider, and the room
+ * pill's leading inset. Everything else comes from [Tokens].
  */
 internal object Micro {
     val meterBar = 3.dp
@@ -54,10 +53,8 @@ internal object Micro {
     val meterGap = 2.dp
     val meterRadius = 1.dp
     val meterBars = 5
-    val separator = 3.dp
     val eyebrowBar = 9.dp
     val pillStart = 10.dp
-    val pillDot = 7.dp
 }
 
 /** One line (by default) of text in a type token. */
@@ -95,7 +92,7 @@ fun Modifier.selectionBar(color: Color): Modifier = drawBehind {
     }
 }
 
-/** A list chip: dot and name on the list's tint. The only pill shape besides room pills. */
+/** A list label on its tint, with equal padding on both sides. */
 @Composable
 fun ListChip(chip: Chip, modifier: Modifier = Modifier) {
     val l = LocalDesign.current.list(chip.hue)
@@ -105,14 +102,12 @@ fun ListChip(chip: Chip, modifier: Modifier = Modifier) {
             .background(l.tint, RoundedCornerShape(Tokens.Radius.CHIP.dp))
             .padding(horizontal = C.CHIP_PAD_X.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(C.CHIP_GAP.dp),
     ) {
-        Box(Modifier.size(C.CHIP_DOT.dp).background(l.dot, CircleShape))
         Label(chip.label, Tokens.Type.CHIP, l.ink)
     }
 }
 
-/** The overdue badge: a diamond and "2d overdue" in danger colours. */
+/** The overdue badge, e.g. "2d overdue" on the danger tint. */
 @Composable
 fun OverdueBadge(text: String, modifier: Modifier = Modifier) {
     val r = LocalDesign.current.room
@@ -122,11 +117,15 @@ fun OverdueBadge(text: String, modifier: Modifier = Modifier) {
             .background(r.dangerBg, RoundedCornerShape(Tokens.Radius.CHIP.dp))
             .padding(horizontal = C.CHIP_PAD_X.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(C.CHIP_GAP.dp),
     ) {
-        Box(Modifier.size(C.CHIP_DOT.dp).rotate(45f).background(r.dangerInk))
         Label(text, Tokens.Type.OVERDUE_BADGE, r.dangerInk)
     }
+}
+
+/** A tag is tinted mono text, not a pill or a status light. */
+@Composable
+fun TagLabel(label: String, hue: String) {
+    Label(label, Tokens.Type.TAG, LocalDesign.current.list(hue).ink)
 }
 
 /** A due label: plain, soon (accent) or overdue (badge). */
@@ -187,7 +186,7 @@ fun StepMeter(steps: StepCount, modifier: Modifier = Modifier, showCount: Boolea
             }
         }
         if (showCount) {
-            Spacer(Modifier.width(C.CHIP_GAP.dp))
+            Spacer(Modifier.width(C.META_GAP.dp))
             Label("$done/$total", Tokens.Type.COUNT, quietInk ?: r.ink3)
         }
     }
