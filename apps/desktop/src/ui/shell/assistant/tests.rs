@@ -32,6 +32,22 @@ fn press(window: &mut TestAppWindow<ShellView>, key: &'static str) {
 }
 
 #[test]
+fn assistant_dates_follow_the_current_display_preference() {
+    let mut app = TestApp::new();
+    let window = shell(&mut app);
+    window.read(|shell, _| {
+        let date = Some("2026-11-23".parse().expect("fixture date"));
+        assert_eq!(shell.ai_date(date), "Mon 23.11.");
+        shell
+            .store
+            .set_date_format(todo_client::date_format::DateFormat::Iso)
+            .expect("set format");
+        assert_eq!(shell.ai_date(date), "Mon 2026-11-23");
+        assert_eq!(shell.ai_date(None), "No date");
+    });
+}
+
+#[test]
 fn shortcut_opens_an_unconfigured_chat_without_erasing_task_selection() {
     let mut app = TestApp::new();
     let mut window = shell(&mut app);

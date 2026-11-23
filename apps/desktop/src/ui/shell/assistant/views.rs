@@ -91,16 +91,15 @@ fn step_label(kind: StepKind) -> &'static str {
     }
 }
 
-impl ShellView {
-    fn ai_date(&self, date: Option<Date>) -> String {
-        date.map_or_else(|| "No date".into(), |d| self.store.now().dates().weekday(d))
-    }
-}
 fn completion(done: bool) -> String {
     if done { "Completed" } else { "Open" }.into()
 }
 
 impl ShellView {
+    pub(super) fn ai_date(&self, date: Option<Date>) -> String {
+        date.map_or_else(|| "No date".into(), |d| self.store.now().dates().weekday(d))
+    }
+
     fn ai_action(
         &self,
         id: impl Into<SharedString>,
