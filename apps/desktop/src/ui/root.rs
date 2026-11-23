@@ -11,6 +11,7 @@ use gpui::{
 
 use super::failed::{FailedEvent, FailedView};
 use super::pairing::{PairingEvent, PairingView};
+use super::popouts::Popouts;
 use super::quick_add::QuickAddView;
 use super::shell::{ShellEvent, ShellView};
 use crate::config::{self, Pairing, Paths};
@@ -166,6 +167,8 @@ pub struct RootView {
     quick: Option<WeakEntity<QuickAddView>>,
     focus: FocusHandle,
     signing_out: bool,
+    restore_popouts: bool,
+    popouts: Option<Popouts>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -173,6 +176,7 @@ impl RootView {
     pub fn new(
         startup: Startup,
         theme: Theme,
+        restore_popouts: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -190,6 +194,8 @@ impl RootView {
             quick: None,
             focus: cx.focus_handle(),
             signing_out: false,
+            restore_popouts,
+            popouts: None,
             _subscriptions: Vec::new(),
         };
         this.show(opened, last_server, window, cx);
@@ -325,7 +331,8 @@ impl RootView {
     }
 
     fn show_shell(&mut self, session: Session, window: &mut Window, cx: &mut Context<Self>) {
-        let prefs = session.data().load_ui();
+        let data = session.data().clone();
+        let prefs = data.load_ui();
         let ui = UiState {
             collapsed_collections: prefs.collapsed_collections,
             panes: prefs.panes,
@@ -343,15 +350,41 @@ impl RootView {
                 window,
                 |this, _, event: &ShellEvent, window, cx| match event {
                     ShellEvent::SignOut => this.sign_out(window, cx),
+                    ShellEvent::PopOut(room) => {
+                        if !this.signing_out
+                            && let Some(popouts) = &mut this.popouts
+                        {
+                            popouts.open(*room, true, cx);
+                        }
+                    }
                 },
             );
-        let changes = cx.observe(&view, |this, _, cx| this.push_progress(cx));
+        let changes = cx.observe(&view, |this, _, cx| {
+            this.push_progress(cx);
+            this.reconcile_popouts(cx);
+        });
+        if self.restore_popouts {
+            self.popouts = Some(Popouts::new(data, view.downgrade(), window, theme));
+            // In startup the main HWND is still being built. Open sibling windows after that.
+            let root = cx.weak_entity();
+            cx.defer(move |cx| {
+                let _ = root.update(cx, Self::reconcile_popouts);
+            });
+        }
         self._subscriptions = vec![events, changes];
         let focus = view.focus_handle(cx);
         window.focus(&focus, cx);
         self.screen = Screen::Shell(view);
         self.push_progress(cx);
         cx.notify();
+    }
+
+    fn reconcile_popouts(&mut self, cx: &mut Context<Self>) {
+        if !self.signing_out
+            && let Some(popouts) = &mut self.popouts
+        {
+            popouts.reconcile(cx);
+        }
     }
 
     /// Signs out (`session::sign_out`): stops syncing, removes the saved sign-in, then the pairing's
@@ -369,6 +402,10 @@ impl RootView {
             self.signing_out = false;
             return;
         };
+        // The other windows must let go of the session before its cache is removed.
+        if let Some(mut popouts) = self.popouts.take() {
+            popouts.close_all(cx);
+        }
         // The pairing's reminder toasts go with it.
         shell.update(cx, |s, _| s.stop_reminders());
         let stopped = session.shutdown();
@@ -434,8 +471,11 @@ impl RootView {
         }
     }
 
-    /// The app is quitting: its reminder toasts go, as nothing would answer their buttons.
+    /// The app is quitting: save the list windows for next time and remove the reminder toasts.
     pub fn before_quit(&mut self, cx: &mut Context<Self>) {
+        if let Some(mut popouts) = self.popouts.take() {
+            popouts.close_all(cx);
+        }
         if let Screen::Shell(shell) = &self.screen {
             shell.update(cx, |s, _| s.stop_reminders());
         }

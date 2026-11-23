@@ -312,11 +312,16 @@ impl ShellView {
 
     /// Shows a task in the window: in the room the window shows, if it's there, else in its list
     /// (with no filter hiding it), open in the detail pane.
-    fn reveal_task(&mut self, task: TaskId, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn reveal_task(
+        &mut self,
+        task: TaskId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let state = self.store.view();
-        let Some(list) = (state.tasks.get(&task))
+        let Some((list, done)) = (state.tasks.get(&task))
             .filter(|_| state.is_live(task.into()))
-            .map(|t| t.list)
+            .map(|t| (t.list, t.is_done()))
         else {
             return;
         };
@@ -326,6 +331,10 @@ impl ShellView {
                 self.filter.update(cx, |i, cx| i.reset(window, cx));
             }
             self.select_room(RoomKey::List(list), cx);
+            if self.ui.room == RoomKey::List(list) && done && !self.ui.show_completed {
+                self.ui.show_completed = true;
+                self.refresh(cx);
+            }
         }
         self.select_task(Some(task), cx);
         window.focus(&self.list_focus, cx);

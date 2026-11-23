@@ -14,7 +14,7 @@ Usage:
   todo-desktop --bench <startup|hotkey> --metrics <out.txt>
 
 Options:
-  --background      Start in the tray without showing the window (used by Start with Windows).
+  --background      Start in the tray without showing the main window (used by Start with Windows).
   --screenshot      Render one hidden fixture window, save its PNG and exit.
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
@@ -34,7 +34,7 @@ Options:
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, detail-wide, detail-wide-1920 (1920 × 1080),
                     resize-handle-hover, caption-hover,
-                    caption-close-hover, empty, finished, finished-short (700 px
+                    caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, pairing,
                     pairing-code, open-failed or open-failed-confirm.
   --theme           Light or dark (default light).
@@ -123,6 +123,8 @@ pub const FIXTURES: &[&str] = &[
     "resize-handle-hover",
     "caption-hover",
     "caption-close-hover",
+    "popout-pinned",
+    "popout-unpinned",
     "empty",
     "finished",
     "finished-short",

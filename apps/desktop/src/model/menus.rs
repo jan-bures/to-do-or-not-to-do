@@ -17,7 +17,8 @@ use todo_core::model::Priority;
 use todo_core::query::fold;
 use todo_core::time::Date;
 
-use super::{AgentKey, AgentRow, RoomKey, commands, labels, lists};
+use super::popouts::Room as PopoutRoom;
+use super::{AgentKey, AgentRow, RoomKey, Smart, commands, labels, lists};
 use crate::theme::{Glyph, Hue, Icon, hues};
 
 /// What a list's, a collection's or the room's menu shows: its items, or in their place the delete
@@ -47,6 +48,8 @@ pub const SWATCH_COLUMNS: usize = 6;
 /// What choosing a menu item does.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
+    PopOut(PopoutRoom),
+    ShowTaskInMain(TaskId),
     /// Rename in place, in the sidebar.
     RenameList(ListId),
     RenameCollection(CollectionId),
@@ -643,8 +646,7 @@ pub fn colour_menu(state: &State, id: EntityId) -> Vec<MenuEntry> {
     ]
 }
 
-/// The room's menu (the header's "more" button): only what applies to the room. Empty when nothing
-/// does (Completed, Agent activity), and then the button isn't drawn. `page` turns it into a delete
+/// The room's menu (the header's "more" button): only what applies to the room. `page` turns it into a delete
 /// confirmation, the collection picker (a list's room) or the colour swatches.
 pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page) -> Vec<MenuEntry> {
     match (room, page) {
@@ -675,9 +677,14 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         match room {
             RoomKey::List(id) => id.into(),
             RoomKey::Collection(id) => id.into(),
-            RoomKey::Smart(_) | RoomKey::Activity(_) | RoomKey::Trash => {
-                return completed_only(room, show_completed);
+            RoomKey::Smart(smart) => {
+                let mut entries = smart_context_menu(smart);
+                if has_completed_section(room) {
+                    entries.push(completed_item(show_completed));
+                }
+                return entries;
             }
+            RoomKey::Activity(_) | RoomKey::Trash => return Vec::new(),
         },
     );
     match room {
@@ -709,6 +716,12 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         }
         _ => {}
     }
+    if let RoomKey::List(id) = room {
+        if !state.is_live(id.into()) {
+            return Vec::new();
+        }
+        entries.push(pop_out_item(PopoutRoom::List(id)));
+    }
     entries.push(completed_item(show_completed));
     match room {
         RoomKey::List(id) if state.is_live(id.into()) => {
@@ -734,7 +747,6 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
     entries
 }
 
-/// A smart list's room menu: the Completed toggle, where it has a Completed section.
 /// The Activity room's menu (the header's "more" button): Refresh activity, then whose changes it
 /// shows: every change, or one of the agents the sidebar lists, the current choice ticked.
 pub fn activity_menu(agents: &[AgentRow], current: Option<AgentKey>) -> Vec<MenuEntry> {
@@ -785,12 +797,36 @@ pub fn activity_menu(agents: &[AgentRow], current: Option<AgentKey>) -> Vec<Menu
     entries
 }
 
-fn completed_only(room: RoomKey, show_completed: bool) -> Vec<MenuEntry> {
-    if has_completed_section(room) {
-        vec![completed_item(show_completed)]
-    } else {
-        Vec::new()
+fn pop_out_item(room: PopoutRoom) -> MenuEntry {
+    item(
+        "pop-out",
+        Icon::ExternalLink,
+        "Pop out",
+        MenuAction::PopOut(room),
+    )
+}
+
+pub fn smart_context_menu(smart: Smart) -> Vec<MenuEntry> {
+    vec![pop_out_item(PopoutRoom::Smart(smart))]
+}
+
+pub fn popout_task_menu(state: &State, task: TaskId, today: Date) -> Vec<MenuEntry> {
+    let mut entries = task_menu(state, task, today);
+    entries.retain(
+        |entry| !matches!(entry, MenuEntry::Item(i) if matches!(i.action, MenuAction::AskLinks(_))),
+    );
+    if !entries.is_empty() {
+        entries.insert(
+            0,
+            item(
+                "open-in-main",
+                Icon::ExternalLink,
+                "Open in main window",
+                MenuAction::ShowTaskInMain(task),
+            ),
+        );
     }
+    entries
 }
 
 /// A list's context menu in the sidebar, or (`page`) its delete confirmation, collection picker or
@@ -826,6 +862,7 @@ pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
         ));
     }
     entries.extend([
+        pop_out_item(PopoutRoom::List(id)),
         item(
             "list-up",
             Icon::ChevronUp,
@@ -1521,6 +1558,7 @@ mod tests {
                 MenuAction::RenameList(office),
                 MenuAction::AskColour(office.into()),
                 MenuAction::AskMoveList(office),
+                MenuAction::PopOut(super::super::popouts::Room::List(office)),
                 MenuAction::ToggleCompleted,
                 MenuAction::AskDeleteList(office),
             ]
@@ -1660,15 +1698,45 @@ second line"
     }
 
     #[test]
+    fn pop_out_uses_the_context_list_not_the_selected_room() {
+        use super::super::popouts::Room;
+        let f = fixtures::work();
+        let list = list_named(&f.state, "Office");
+        let key = RoomKey::List(list);
+        for menu in [
+            list_menu(&f.state, list, Page::Main),
+            room_menu(&f.state, key, true, Page::Main),
+        ] {
+            assert_eq!(
+                chosen(&menu, Some("pop-out")),
+                Some(MenuAction::PopOut(Room::List(list)))
+            );
+        }
+        assert!(Room::for_key(RoomKey::Trash).is_none());
+        let task = f.ui.task.expect("selected task");
+        let menu = popout_task_menu(&f.state, task, f.now.today());
+        assert_eq!(
+            chosen(&menu, Some("open-in-main")),
+            Some(MenuAction::ShowTaskInMain(task))
+        );
+        assert!(!actions(&menu).contains(&MenuAction::AskLinks(task)));
+    }
+
+    #[test]
     fn smart_rooms_offer_only_what_applies() {
         let f = fixtures::my_day();
         for smart in Smart::ALL {
             let menu = room_menu(&f.state, RoomKey::Smart(smart), false, Page::Main);
+            let popout = MenuAction::PopOut(super::super::popouts::Room::Smart(smart));
             let expected: &[MenuAction] = match smart {
-                Smart::Completed | Smart::AgentActivity => &[],
-                _ => &[MenuAction::ToggleCompleted],
+                Smart::Completed | Smart::AgentActivity => &[popout],
+                _ => &[popout, MenuAction::ToggleCompleted],
             };
             assert_eq!(actions(&menu), expected, "{smart:?}");
+            assert_eq!(
+                chosen(&smart_context_menu(smart), Some("pop-out")),
+                Some(popout)
+            );
             // A smart list can't be deleted, even when asked to confirm.
             assert!(
                 !actions(&room_menu(

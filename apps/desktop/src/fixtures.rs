@@ -102,6 +102,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
         "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
         "work" => Some(work()),
+        "popout-pinned" | "popout-unpinned" => Some(popout()),
         // Keep the same detail and task row in both captures, outside the My Day filter.
         "toggle-states-on" | "toggle-states-off" => {
             let mut f = my_day();
@@ -1134,6 +1135,25 @@ pub fn list_room() -> Fixture {
         UiState {
             room: RoomKey::List(l.planning),
             task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// Planning in its own window, including a long Czech title on the narrow row grid.
+fn popout() -> Fixture {
+    let (mut b, l) = sample();
+    b.task(t(
+        l.planning,
+        "Vyřídit žádost o přeplatek na zdravotním pojištění a doložit potvrzení",
+    ));
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::List(l.planning),
+            task: Some(l.q4),
+            compact: true,
             ..UiState::default()
         },
         MORNING,

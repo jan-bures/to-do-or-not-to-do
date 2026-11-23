@@ -564,6 +564,13 @@ impl ShellView {
                     cx,
                     move |this, _, _, cx| this.select_room(RoomKey::Smart(s), cx),
                 )
+                .on_mouse_down(
+                    MouseButton::Right,
+                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                        cx.stop_propagation();
+                        this.open_menu(MenuKind::Smart(s), Some(e.position), None, window, cx);
+                    }),
+                )
             })
             .collect();
         // Activity right after Agent activity, followed by the agents active today.

@@ -83,6 +83,8 @@ pub(super) enum MenuKind {
         id: ListId,
         page: Page,
     },
+    /// A built-in smart list's sidebar context menu.
+    Smart(crate::model::Smart),
     /// A collection's context menu, or the page one of its items turned it into.
     Collection {
         id: CollectionId,
@@ -203,6 +205,7 @@ impl ShellView {
                 menus::account_menu(self.store.server().as_deref(), confirm)
             }
             MenuKind::List { id, page } => menus::list_menu(&state, id, page),
+            MenuKind::Smart(smart) => menus::smart_context_menu(smart),
             MenuKind::Collection { id, page } => menus::collection_menu(
                 &state,
                 id,
@@ -258,6 +261,10 @@ impl ShellView {
                 .filter(|_| state.is_live(task.into()))
                 .map(|t| menus::priority_menu(task, t.priority))
                 .unwrap_or_default(),
+            MenuKind::Task {
+                id,
+                page: TaskPage::Main,
+            } if self.ui.compact => menus::popout_task_menu(&state, id, self.store.now().today()),
             MenuKind::Task {
                 id,
                 page: TaskPage::Main,
@@ -856,6 +863,8 @@ impl ShellView {
             }
             MenuAction::SyncNow => self.sync_now(cx),
             MenuAction::SignOut => cx.emit(ShellEvent::SignOut),
+            MenuAction::PopOut(room) => cx.emit(ShellEvent::PopOut(room)),
+            MenuAction::ShowTaskInMain(task) => self.show_task_in_main(task, cx),
             MenuAction::SetPriority(task, level) => {
                 if let Some(cmd) = commands::pick_priority(&self.store.view(), task, level) {
                     self.submit(vec![cmd]);

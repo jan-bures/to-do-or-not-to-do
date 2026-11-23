@@ -48,8 +48,8 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | One running copy | n/a | wired `D/platform/single_instance.rs` | n/a | n/a |
 | Global quick-add hotkey (Ctrl+Alt+Space, adds to My Day) | n/a | wired `D/platform/hotkey.rs:21`, `D/ui/quick_add.rs:69`, `D/ui/root.rs:457` | n/a | n/a |
 | Start with Windows | n/a | wired `D/platform/autostart.rs:75` | n/a | n/a |
-| Installer and auto-update | n/a | missing (planned) | n/a (deploys with the server) | n/a (sideloaded APK) |
-| Pop-out list windows (always on top) | n/a | missing (planned) | n/a | n/a |
+| Installer and auto-update | n/a | wired: [Velopack installer and paired updates](desktop.md#windows-installer-and-updates) (`apps/desktop/scripts/package.ps1`, `D/updates.rs`) | n/a (deploys with the server) | n/a (sideloaded APK) |
+| Pop-out list windows (always on top) | n/a | wired: **Pop out** from a list or smart list's context menu or room header; pin, resize and reopen per room (`D/ui/popouts.rs`, `D/ui/shell/popout.rs`) | n/a | n/a |
 | Home-screen task widget | shares room derivation and the syncing outbox (`F/engine.rs`) | n/a | n/a | wired: resizable Glance widget with a per-widget smart list, list, or collection; task detail, quick add, complete and importance (`A/widget/`) |
 | Drop an email (`.eml`) to create a task | client parses, sends `CreateTask` and, when identifiable, `AddLink` (`T/intent/email.rs`) | wired: drop files onto the list, one task per email with Undo (`D/ui/shell/email_drop.rs`) | wired: drop files onto the task list, same parsing and Undo (`W/app/email_drop.rs`) | n/a |
 | Share text into the app | `CreateTask` | n/a | n/a | wired: `A/MainActivity.kt:30` (`ACTION_SEND`) pre-fills the composer |
@@ -120,7 +120,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Task context menu (right-click or long-press) | n/a | wired: right-click a row, or Shift+F10: complete or reopen, My Day, Important, Priority…, Move to…, Merge into…, Links…, Delete (`D/ui/shell.rs:2129`, `D/model/menus.rs:915`) | wired: right-click a row, use Shift+F10, or use ⋯ in detail; offers Move to…, Merge into… and Delete task (`W/app/task_actions.rs`) | wired: long-press a row or use ⋯ in detail (`A/ui/TaskActions.kt`, `A/model/Menus.kt`) |
 | Drag and drop (reorder, to a list, to My Day) | `Reorder`, `MoveTask`, `SetMyDay` | missing | missing | missing |
 | Multi-select and bulk actions | n/a | missing | missing | missing |
-| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, colour, move a list to another collection, show or hide completed, delete the list or collection (`D/ui/shell.rs:1382`, `D/model/menus.rs:549`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, recolour, reorder, move a list to another collection, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ menu offers rename, colour, move, Show or Hide completed and delete as applicable (`A/model/Menus.kt`); no sliders |
+| Room header's "view options" (sliders) and "more" (ellipsis) icons | n/a | "more" wired: the room menu, with what applies to the room: rename, colour, move a list to another collection, pop out lists and smart lists, show or hide completed, delete the list or collection (`D/ui/shell.rs:1382`, `D/model/menus.rs:549`, `D/ui/shell/menu.rs:351`). The sliders are hidden until there are sort or view options. | "more" wired for lists and collections: rename, recolour, reorder, move a list to another collection, toggle completed and delete (`W/app/room_actions.rs`); sliders hidden | wired: the ⋯ menu offers rename, colour, move, Show or Hide completed and delete as applicable (`A/model/Menus.kt`); no sliders |
 | Finished My Day: hand-over to tomorrow | read-only | wired: a click selects (`D/ui/shell.rs:2442`, `:2476`) | wired: click or J/K selects (`W/app.rs`, `Handover`) | wired: a tap selects, the box completes (`A/ui/RoomPane.kt:460`, `:465`) |
 | Hand-over row checkbox | `CompleteTask` | wired: completes the task with the row choreography, once reachable (`D/ui/shell.rs:2578`) | wired: completes in place, with the usual completion undo (`W/app.rs`, `HandoverCheck`) | wired `A/ui/RoomPane.kt:465` |
 | Plan <weekday> (opens Planned) | n/a | wired `D/ui/shell.rs:2160` | wired `W/app.rs:1538` | wired `A/ui/RoomPane.kt:398`, `:438` |
@@ -217,10 +217,10 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 2.5 | **Done.** Repeat presets, custom interval/unit/weekly days, clear and tracked undo. | M |
 | 2.6 | **Done.** Tags: create, rename, recolour, delete with confirmation and undo, add to and remove from a task. | M–L |
 | 2.7 | **Done.** Add and remove web links; upload attachments with the file picker or a drop onto task detail, and remove attachments with Undo. | — |
-| 2.8 | Pop-out list windows. | L |
+| 2.8 | **Done.** Pop-out list windows. | — |
 | 2.9 | **Done for `.eml` files** on desktop and web. New Outlook works when it supplies a real `.eml` file. Classic Outlook's virtual `.msg` is not supported. | — |
 | 2.10 | **Done in D1.** Settings: a link to the admin pages, Sync now. | S |
-| 2.11 | Installer and auto-update. | L |
+| 2.11 | **Done.** Velopack installer and auto-update. | — |
 | 2.12 | **Done on desktop, web and Android.** Search for another open task across lists, confirm the merge and undo it as one change. | S–M |
 
 ### 3. What the web lacks relative to the desktop

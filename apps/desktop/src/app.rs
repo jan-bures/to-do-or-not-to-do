@@ -199,7 +199,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         let hotkey_ok = hotkey.is_some();
 
         let main = match cx.open_window(main_window_options(cx, !background), |window, cx| {
-            cx.new(|cx| RootView::new(startup, theme, window, cx))
+            cx.new(|cx| RootView::new(startup, theme, bench.is_none(), window, cx))
         }) {
             Ok(w) => w,
             Err(e) => {

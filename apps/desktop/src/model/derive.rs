@@ -258,11 +258,11 @@ fn room(state: &State, ix: &Index, ui: &UiState, now: &Now, ctx: &EvalContext) -
     };
 
     let finished = header.finished_day();
-    let tomorrow = (finished && !filtered)
+    let tomorrow = (finished && !filtered && !ui.compact)
         .then(|| tomorrow(state, ix, now, &ui.holding))
         .flatten();
     // Planning the next day is offered whenever the day is finished, even with nothing due then.
-    let plan_weekday = (finished && !filtered)
+    let plan_weekday = (finished && !filtered && !ui.compact)
         .then(|| add_days(now.today(), 1))
         .flatten()
         .map(|d| SharedString::from(labels::weekday(d)));

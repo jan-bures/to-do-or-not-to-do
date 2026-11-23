@@ -17,10 +17,11 @@ use windows_sys::Win32::System::Threading::{
 };
 use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, GetForegroundWindow, GetWindowRect, IsIconic, IsWindowVisible, PostMessageW,
-    SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_RESTORE, SW_SHOW, SWP_NOACTIVATE, SWP_NOZORDER,
-    SetForegroundWindow, SetWindowPos, ShowWindow, SystemParametersInfoW, USER_DEFAULT_SCREEN_DPI,
-    WM_PAINT,
+    GWL_EXSTYLE, GetCursorPos, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect,
+    HWND_NOTOPMOST, HWND_TOPMOST, IsIconic, IsWindowVisible, IsZoomed, PostMessageW,
+    SPI_GETCLIENTAREAANIMATION, SW_HIDE, SW_RESTORE, SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER, SetForegroundWindow, SetWindowPos,
+    ShowWindow, SystemParametersInfoW, USER_DEFAULT_SCREEN_DPI, WM_CLOSE, WM_PAINT, WS_EX_TOPMOST,
 };
 
 /// The native handle of a GPUI window, as an integer (0 if unavailable).
@@ -188,6 +189,113 @@ pub fn position_popup(hwnd: isize, rect: RECT) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The last normal (not minimized or maximized) outer rect, expressed in logical size.
+pub fn list_window_placement(hwnd: isize) -> Option<crate::model::popouts::Placement> {
+    use crate::model::popouts::Placement;
+    let h = hwnd as HWND;
+    // SAFETY: both functions query the window state and tolerate invalid HWNDs.
+    if hwnd == 0 || unsafe { IsIconic(h) != 0 || IsZoomed(h) != 0 } {
+        return None;
+    }
+    let r = window_rect(hwnd).ok()?;
+    // SAFETY: this only queries the DPI of the caller's window, or returns zero if invalid.
+    let dpi = unsafe { GetDpiForWindow(h) };
+    let scale = dpi as f32 / USER_DEFAULT_SCREEN_DPI as f32;
+    let (width, height) = (
+        (r.right - r.left) as f32 / scale,
+        (r.bottom - r.top) as f32 / scale,
+    );
+    (dpi > 0 && width > 0. && height > 0.).then_some(Placement {
+        x: r.left,
+        y: r.top,
+        width,
+        height,
+    })
+}
+
+/// Restore a list window on the monitor containing its saved top-left, or the cursor's monitor
+/// if that screen isn't there any more. Clamp to the current work area (including the taskbar).
+pub fn position_list_window(
+    hwnd: isize,
+    saved: Option<crate::model::popouts::Placement>,
+    cascade: usize,
+) -> anyhow::Result<()> {
+    let saved_target = saved.and_then(|p| {
+        // SAFETY: MonitorFromPoint only reads desktop state.
+        let monitor = unsafe { MonitorFromPoint(POINT { x: p.x, y: p.y }, MONITOR_DEFAULTTONULL) };
+        (!monitor.is_null())
+            .then(|| popup_target(monitor).ok())
+            .flatten()
+    });
+    let target = saved_target.map_or_else(cursor_popup_target, Ok)?;
+    position_popup(
+        hwnd,
+        list_window_rect(target, saved, saved_target.is_some(), cascade),
+    )
+}
+
+fn list_window_rect(
+    target: PopupTarget,
+    saved: Option<crate::model::popouts::Placement>,
+    keep_origin: bool,
+    cascade: usize,
+) -> RECT {
+    use crate::model::popouts::{MIN_SIZE, SIZE};
+    let (width, height) = saved.map_or(SIZE, |p| {
+        (p.width.max(MIN_SIZE.0), p.height.max(MIN_SIZE.1))
+    });
+    let mut rect = popup_rect(target, gpui::size(gpui::px(width), gpui::px(height)), 0.2);
+    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
+    let work = target.work_area;
+    let offset = ((cascade % 6) as f32 * crate::theme::space::S5 * target.scale()).round() as i32;
+    let (x, y) = saved
+        .filter(|_| keep_origin)
+        .map_or((rect.left + offset, rect.top + offset), |p| (p.x, p.y));
+    rect.left = x.clamp(work.left, work.right - width);
+    rect.top = y.clamp(work.top, work.bottom - height);
+    rect.right = rect.left + width;
+    rect.bottom = rect.top + height;
+    rect
+}
+
+/// Change the window's z-order group, without moving, resizing, or activating it.
+pub fn set_topmost(hwnd: isize, pinned: bool) -> std::io::Result<()> {
+    let order = if pinned { HWND_TOPMOST } else { HWND_NOTOPMOST };
+    // SAFETY: we own this HWND. No pointers, activation, geometry change, or owner z-order change.
+    if unsafe {
+        SetWindowPos(
+            hwnd as HWND,
+            order,
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_NOOWNERZORDER,
+        )
+    } == 0
+    {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+/// What Windows set, independent of the state the pin button draws (checked by the gallery).
+pub fn is_topmost(hwnd: isize) -> bool {
+    // SAFETY: only reads the extended style of our window.
+    unsafe { GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE) as u32 & WS_EX_TOPMOST != 0 }
+}
+
+pub fn show_without_focus(hwnd: isize) {
+    // SAFETY: we own the HWND; ShowWindow tolerates stale handles.
+    unsafe { ShowWindow(hwnd as HWND, SW_SHOWNOACTIVATE) };
+}
+
+pub fn request_close(hwnd: isize) {
+    // SAFETY: only posts WM_CLOSE to our own HWND; no pointer parameters.
+    unsafe { PostMessageW(hwnd as HWND, WM_CLOSE, 0, 0) };
+}
+
 /// Shows, restores and focuses a window.
 pub fn show_and_focus(hwnd: isize) {
     if hwnd == 0 {
@@ -284,6 +392,50 @@ mod tests {
         let size = gpui::size(gpui::px(640.), gpui::px(196.));
         let r = popup_rect(target, size, 0.2);
         (r.left, r.top, r.right, r.bottom)
+    }
+
+    #[test]
+    fn list_window_placement_fits_the_current_work_area_and_scale() {
+        use crate::model::popouts::Placement;
+        let target = PopupTarget {
+            work_area: RECT {
+                left: -1500,
+                top: 40,
+                right: 0,
+                bottom: 900,
+            },
+            dpi: 144,
+        };
+        let saved = Placement {
+            x: -480,
+            y: 20,
+            width: 480.,
+            height: 480.,
+        };
+        let rect = list_window_rect(target, Some(saved), true, 1);
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (-720, 40, 0, 760)
+        );
+        let rect = list_window_rect(target, Some(saved), false, 0);
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (-1110, 180, -390, 900)
+        );
+        let rect = list_window_rect(
+            target,
+            Some(Placement {
+                width: 10000.,
+                height: 10000.,
+                ..saved
+            }),
+            true,
+            0,
+        );
+        assert_eq!(
+            (rect.left, rect.top, rect.right, rect.bottom),
+            (-1500, 40, 0, 900)
+        );
     }
 
     #[test]

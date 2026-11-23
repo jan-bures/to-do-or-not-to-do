@@ -7,6 +7,7 @@ pub mod landscape;
 #[cfg(windows)]
 pub mod pairing;
 mod pairing_qr;
+mod popouts;
 pub mod quick_add;
 #[cfg(windows)]
 pub mod root;

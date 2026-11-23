@@ -38,6 +38,7 @@ const MAIN_SIZE: (f32, f32) = (desktop::SIDEBAR + desktop::LIST + desktop::DETAI
 /// smallest (`short-sidebar`), or the large wide-detail showcase.
 pub fn window_size(fixture: &str) -> (f32, f32) {
     match fixture {
+        "popout-pinned" | "popout-unpinned" => model::popouts::SIZE,
         "quick-add" => (
             f32::from(quick_add::SIZE.width),
             f32::from(quick_add::SIZE.height),
@@ -194,7 +195,13 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     };
     let logical = window_size(&opts.fixture);
     let expected = expected_size(logical, opts.scale);
-    let main_options = || fixture_window_options(logical.0, logical.1);
+    let main_options = || {
+        let mut options = fixture_window_options(logical.0, logical.1);
+        if fixture.ui.compact {
+            options.is_resizable = true;
+        }
+        options
+    };
     let opened_at = Instant::now();
     let handle: AnyWindowHandle = cx.update(|cx| {
         if quick {
@@ -243,6 +250,9 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                         cx,
                     );
                     shell.preview_caption(caption);
+                    if fixture.ui.compact {
+                        shell.preview_popout(opts.fixture == "popout-pinned", cx);
+                    }
                     shell.preview_splitter_hover(opts.fixture == "resize-handle-hover");
                     shell.preview_email_drop(opts.fixture == "email-drop");
                     shell.still();
@@ -262,6 +272,18 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     })?;
     let hwnd = handle.update(cx, |_, window, _| win::hwnd_of(window))?;
     anyhow::ensure!(hwnd != 0, "no native window handle");
+    if fixture.ui.compact {
+        // Test both transitions on a real, never-shown normal HWND. The pixels alone can't
+        // tell us whether Win32 honored the pin state.
+        let pinned = opts.fixture == "popout-pinned";
+        for state in [!pinned, pinned] {
+            win::set_topmost(hwnd, state)?;
+            anyhow::ensure!(
+                win::is_topmost(hwnd) == state,
+                "list window pin state did not change"
+            );
+        }
+    }
     let image = capture(cx, handle, hwnd, opened_at).await?;
     handle.update(cx, |_, window, _| window.remove_window())?;
     let got = image.dimensions();

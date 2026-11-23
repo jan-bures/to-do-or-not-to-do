@@ -19,6 +19,7 @@ pub mod layout;
 pub mod lists;
 pub mod menus;
 pub mod motion;
+pub mod popouts;
 pub mod reminders;
 pub use todo_client::intent::{self as commands, quick_add};
 
@@ -85,7 +86,10 @@ impl Now {
 }
 
 /// The built-in smart lists, in sidebar order.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Deserialize, serde::Serialize,
+)]
+#[serde(rename_all = "snake_case")]
 pub enum Smart {
     MyDay,
     Important,
@@ -242,6 +246,8 @@ mod task_room_tests {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct UiState {
     pub room: RoomKey,
+    /// Compact list windows stay in their room, even when My Day is finished.
+    pub compact: bool,
     /// The selected task (shown in the detail pane).
     pub task: Option<TaskId>,
     /// Inline filter text (query language, or plain words).

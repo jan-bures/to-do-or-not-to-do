@@ -6,6 +6,7 @@
 //! | `device-token.bin` | same | the device token, encrypted with DPAPI for the current user |
 //! | `pairings\<pairing ID>\cache.sqlite` | `%LOCALAPPDATA%\to-do-or-not-to-do\` | the sync engine's replica and outbox |
 //! | `pairings\<pairing ID>\ui.json` | same | local sidebar and pane-width preferences |
+//! | `pairings\<pairing ID>\popouts.json` | same | open list windows, their placement and pin state |
 //! | `pairings\<pairing ID>\reminders.json` | same | reminders shown and snoozed here (IDs and times only) |
 //! | `pairings\<pairing ID>\attachments\` | same | attachments downloaded to be opened |
 //!
@@ -31,6 +32,7 @@ use todo_client::Entropy as _;
 use todo_core::{DeviceId, ids::CollectionId};
 
 use crate::model::layout::PaneWidths;
+use crate::model::popouts;
 use crate::platform::dpapi;
 
 const APP_DIR: &str = "to-do-or-not-to-do";
@@ -39,6 +41,7 @@ const TOKEN_FILE: &str = "device-token.bin";
 const PAIRINGS_DIR: &str = "pairings";
 pub(crate) const CACHE_FILE: &str = "cache.sqlite";
 const UI_FILE: &str = "ui.json";
+const POPOUTS_FILE: &str = "popouts.json";
 const REMINDERS_FILE: &str = "reminders.json";
 const ATTACHMENTS_DIR: &str = "attachments";
 /// `<pairing ID>.signed-out`, beside a pairing's directory once its sign-in is gone: remove it.
@@ -121,14 +124,14 @@ impl DataDir {
 
     /// Returns local preferences, falling back to defaults if the file is missing or unreadable.
     pub fn load_ui(&self) -> UiPreferences {
-        let mut ui = self.read_ui().unwrap_or_default();
+        let mut ui: UiPreferences = self.read_preferences(UI_FILE).unwrap_or_default();
         ui.panes = ui.panes.clamped();
         ui
     }
 
-    fn read_ui(&self) -> anyhow::Result<UiPreferences> {
+    fn read_preferences<T: serde::de::DeserializeOwned>(&self, file: &str) -> anyhow::Result<T> {
         self.check()?;
-        let path = self.path.join(UI_FILE);
+        let path = self.path.join(file);
         let meta = std::fs::symlink_metadata(&path)?;
         anyhow::ensure!(
             meta.is_file() && todo_fs::is_plain(&meta),
@@ -140,13 +143,25 @@ impl DataDir {
     /// Writes into the existing pairing directory, using a flushed temporary file and a durable
     /// replacement. A failed or interrupted write never leaves a partially written `ui.json`.
     pub fn save_ui(&self, prefs: &UiPreferences) -> anyhow::Result<()> {
+        self.save_preferences(UI_FILE, prefs)
+    }
+
+    pub fn load_popouts(&self) -> popouts::Preferences {
+        self.read_preferences(POPOUTS_FILE).unwrap_or_default()
+    }
+
+    pub fn save_popouts(&self, prefs: &popouts::Preferences) -> anyhow::Result<()> {
+        self.save_preferences(POPOUTS_FILE, prefs)
+    }
+
+    fn save_preferences(&self, file: &str, prefs: &impl Serialize) -> anyhow::Result<()> {
         self.check()?;
         let mut tmp = tempfile::NamedTempFile::new_in(self.path())?;
         serde_json::to_writer(&mut tmp, prefs)?;
         tmp.flush()?;
         tmp.as_file().sync_all()?;
         let tmp = tmp.into_temp_path();
-        todo_fs::replace_durably(&tmp, &self.path.join(UI_FILE))?;
+        todo_fs::replace_durably(&tmp, &self.path.join(file))?;
         Ok(())
     }
 
@@ -647,6 +662,63 @@ mod tests {
 
         remove_data(&data).expect("remove pairing data");
         assert!(!data.path().exists());
+    }
+
+    #[test]
+    fn popouts_remember_open_and_closed_rooms_independently_of_sidebar_settings() {
+        use crate::model::Smart;
+        use popouts::{Placement, Preference, Room};
+        let dir = tempfile::tempdir().expect("temp dir");
+        let paths = Paths::in_dir(dir.path().to_owned());
+        let data = paths.data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("pairing directory");
+        let list = Room::List(todo_core::ids::ListId::from_uuid(todo_core::ids::uuid_v7(
+            2, [0; 10],
+        )));
+        let smart = Room::Smart(Smart::MyDay);
+        let mut preferences = data.load_popouts();
+        assert!(preferences.get(list).pinned, "new windows start pinned");
+        let place = Placement {
+            x: -870,
+            y: 200,
+            width: 456.,
+            height: 520.,
+        };
+        preferences.set(
+            list,
+            Preference {
+                open: true,
+                pinned: false,
+                place: Some(place),
+            },
+        );
+        preferences.set(
+            smart,
+            Preference {
+                open: true,
+                ..Preference::default()
+            },
+        );
+        data.save_popouts(&preferences).expect("save");
+        assert_eq!(data.load_popouts(), preferences);
+
+        // Explicit close only changes the restore flag; the next Pop out remembers pin and size.
+        let mut closed = preferences.get(list);
+        closed.open = false;
+        preferences.set(list, closed);
+        data.save_popouts(&preferences).expect("save close");
+        data.save_ui(&UiPreferences::default())
+            .expect("unrelated sidebar save");
+        let loaded = data.load_popouts();
+        assert_eq!(loaded.open_rooms().collect::<Vec<_>>(), [smart]);
+        assert_eq!(loaded.get(list).place, Some(place));
+        assert!(!loaded.get(list).pinned);
+        assert_eq!(
+            paths.data(&PairingId::random()).load_popouts(),
+            popouts::Preferences::default()
+        );
+        std::fs::write(data.path().join(POPOUTS_FILE), "{").expect("corrupt");
+        assert_eq!(data.load_popouts(), popouts::Preferences::default());
     }
 
     #[test]

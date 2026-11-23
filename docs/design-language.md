@@ -196,6 +196,10 @@ of it (the shared `elevation::scrim`: room ink at 16% in light mode, black at 40
 Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
 move to a line of their own under it, so the title never gives way to them.
 
+**A desktop pop-out** keeps just the room: its title in the 36 px caption bar, a slim sky and progress strip,
+quick-add, and the same task rows and Undo inset. Its labelled **Pin** control sits outside the drag area,
+uses a filled box with a tick when on, and keeps the name *Always on top* for assistive technology.
+
 **Desktop and web pane dividers.** Drag the docked detail’s left edge, or the sidebar’s right edge on
 desktop. The 12 px hit strip (`desktop::PANE_HANDLE_HIT`) starts 1 px before the divider and extends into
 the pane on its right, leaving both the sidebar and list scrollbar tracks clear. Only the 1 px hairline

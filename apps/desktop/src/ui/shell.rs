@@ -9,6 +9,7 @@ mod device_pairing;
 mod email_drop;
 mod menu;
 mod panes;
+mod popout;
 mod reminders;
 mod sidebar;
 mod trash;
@@ -125,6 +126,7 @@ pub fn quick_add_colors(p: &Palette) -> InputColors {
 pub enum ShellEvent {
     /// Sign out: forget the token and the cache, and show pairing.
     SignOut,
+    PopOut(model::popouts::Room),
 }
 
 #[derive(Clone, Copy)]
@@ -252,6 +254,7 @@ pub struct ShellView {
     attachment_ui: attachments::AttachmentUi,
     detail_bar: kit::Scrollbar,
     caption_preview: kit::CaptionPreview,
+    compact: Option<popout::Compact>,
     menu: Option<Menu>,
     /// The menu the current mouse press closed, if it closed one: the click that press ends on that
     /// menu's own button leaves it closed (`toggle_menu`). Every press in the window is counted.
@@ -333,6 +336,8 @@ pub struct ShellView {
     activity_more_focus: FocusHandle,
     /// The live session's reminder toasts (`start_reminders`); none for a fixture.
     alerts: Option<reminders::Alerts>,
+    /// Closing a window cancels its watchers, even if no further sync change comes in.
+    watchers: Vec<gpui::Task<()>>,
 }
 
 impl EventEmitter<ShellEvent> for ShellView {}
@@ -369,7 +374,13 @@ impl ShellView {
                         input.update(cx, |i, cx| i.reset(window, cx));
                     }
                 }
-                InputEvent::Cancel => window.focus(&this.list_focus, cx),
+                InputEvent::Cancel => {
+                    if this.ui.compact {
+                        this.close_popout(window);
+                    } else {
+                        window.focus(&this.list_focus, cx);
+                    }
+                }
                 InputEvent::Changed => cx.notify(),
             },
         )
@@ -426,6 +437,7 @@ impl ShellView {
             attachment_ui: attachments::AttachmentUi::new(cx),
             detail_bar: kit::Scrollbar::default(),
             caption_preview: kit::CaptionPreview::Live,
+            compact: None,
             menu: None,
             menu_press: menu::PressGuard::default(),
             menu_focus: cx.focus_handle(),
@@ -478,6 +490,7 @@ impl ShellView {
             activity_refresh_focus: cx.focus_handle(),
             activity_more_focus: cx.focus_handle(),
             alerts: None,
+            watchers: Vec::new(),
         };
         cx.on_focus(&this.undo_focus, window, |_, _, cx| cx.notify())
             .detach();
@@ -505,7 +518,7 @@ impl ShellView {
             return;
         };
         let mut changes = session.client().changes();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+        let changes = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 changes.next().await;
                 cx.background_executor()
@@ -515,9 +528,8 @@ impl ShellView {
                     break;
                 }
             }
-        })
-        .detach();
-        cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
+        });
+        let clock = cx.spawn(async move |this: WeakEntity<Self>, cx: &mut AsyncApp| {
             loop {
                 cx.background_executor()
                     .timer(Duration::from_secs(30))
@@ -526,8 +538,8 @@ impl ShellView {
                     break;
                 }
             }
-        })
-        .detach();
+        });
+        self.watchers = vec![changes, clock];
     }
 
     /// Re-derives the shell from the store and the UI state.
@@ -540,6 +552,16 @@ impl ShellView {
         let state = self.undo_state();
         // Capture the painted rows before releasing the old room's holds and deriving new counts.
         let room = self.ui.room.resolved(&state);
+        if self.ui.compact {
+            let available = room == self.ui.room;
+            self.popout_available(available, cx);
+            if !available {
+                // A fixed room never turns into My Day during catch-up or after removal.
+                self.menu = None;
+                self.menu_dropped = true;
+                return;
+            }
+        }
         let room_changed = room != self.shell.room.key;
         let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
         if self
@@ -618,7 +640,7 @@ impl ShellView {
                 self.detail_bar.reset_to_top(&self.detail_scroll);
             }
         }
-        if self.animate {
+        if self.animate && !self.ui.compact {
             self.aim_sidebar(&shell);
         }
         self.trash_selected = self.trash_selected.filter(|id| {
@@ -697,7 +719,7 @@ impl ShellView {
         self.motion.aim_header(
             room.key,
             sun_at(room.done, room.total),
-            room.finished_day(),
+            room.finished_day() && !self.ui.compact,
             now,
             pace,
         );
@@ -1335,6 +1357,9 @@ impl ShellView {
     }
 
     fn aim_detail(&mut self) {
+        if self.ui.compact {
+            return;
+        }
         self.motion.detail.aim(
             self.ui.task,
             self.detail_placement() == DetailPane::Docked,
@@ -1345,6 +1370,9 @@ impl ShellView {
     }
 
     fn settle_detail(&mut self) {
+        if self.ui.compact {
+            return;
+        }
         self.motion.detail = DetailMotion::rest(
             self.shell.detail.as_ref().map(|d| d.task),
             self.detail_placement() == DetailPane::Docked,
@@ -2468,7 +2496,11 @@ impl ShellView {
 
     /// The room pane's width (and so a row's): the window less the sidebar and a docked detail pane.
     fn room_width(&self, window: &Window) -> f32 {
-        self.columns(window).room_width()
+        if self.ui.compact {
+            window.viewport_size().width.into()
+        } else {
+            self.columns(window).room_width()
+        }
     }
 
     /// The narrow window's detail: over the right part of the room, with a scrim over the rest of it.
@@ -2788,12 +2820,17 @@ impl ShellView {
                     })
             })
             .when_some(room, |el, room| {
-                el.on_click(cx.listener(move |this, _, window, cx| {
-                    if this.row_can_act(room, id) {
-                        window.focus(&this.list_focus, cx);
-                        this.select_task(Some(id), cx);
-                    }
-                }))
+                el.on_click(
+                    cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                        if this.row_can_act(room, id) {
+                            window.focus(&this.list_focus, cx);
+                            this.select_task(Some(id), cx);
+                            if this.ui.compact && event.click_count() >= 2 {
+                                this.show_task_in_main(id, cx);
+                            }
+                        }
+                    }),
+                )
                 // Right-click: the task's context menu, at the pointer. The row isn't selected.
                 .on_mouse_down(
                     MouseButton::Right,
@@ -3202,7 +3239,9 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                        if this.in_activity() {
+                        if this.ui.compact {
+                            this.close_popout(window);
+                        } else if this.in_activity() {
                             this.feed_input(FeedInput::Escape, false, window, cx);
                         } else if this.shell.room.key == RoomKey::Trash {
                             this.trash_selected = None;
@@ -3212,15 +3251,21 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &EditTask, window, cx| {
-                        if this.ui.task.is_some() {
+                        if this.ui.compact {
+                            if let Some(task) = this.ui.task {
+                                this.show_task_in_main(task, cx);
+                            }
+                        } else if this.ui.task.is_some() {
                             let handle = this.edit.title.read(cx).focus_handle.clone();
                             this.edit.title.update(cx, |a, cx| a.select_everything(cx));
                             window.focus(&handle, cx);
                         }
                     }))
-                    .on_action(
-                        cx.listener(|this, _: &EditDue, window, cx| this.start_due(window, cx)),
-                    )
+                    .on_action(cx.listener(|this, _: &EditDue, window, cx| {
+                        if !this.ui.compact {
+                            this.start_due(window, cx);
+                        }
+                    }))
                     .on_action(cx.listener(|this, _: &CyclePriority, _, cx| {
                         if let Some(id) = this.ui.task {
                             this.cycle_priority(id, cx);
@@ -3241,7 +3286,9 @@ impl ShellView {
                         // In Activity, R reads the newest changes again.
                         if this.in_activity() {
                             this.feed_input(FeedInput::Refresh, false, window, cx);
-                        } else if let Some(task) = this.repeat_target() {
+                        } else if !this.ui.compact
+                            && let Some(task) = this.repeat_target()
+                        {
                             this.scroll_into_view(&this.detail_scroll, "repeat-row");
                             this.open_menu(
                                 MenuKind::Repeat { task, draft: None },
@@ -3254,15 +3301,19 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &PickReminder, window, cx| {
-                        if !this.in_activity() {
+                        if !this.ui.compact && !this.in_activity() {
                             this.pick_reminder(hints::Stop::List, window, cx);
                         }
                     }))
                     .on_action(cx.listener(|this, _: &PickTags, window, cx| {
-                        this.pick_tags(window, cx);
+                        if !this.ui.compact {
+                            this.pick_tags(window, cx);
+                        }
                     }))
                     .on_action(cx.listener(|this, _: &AddLinkKey, window, cx| {
-                        if let Some(task) = this.ui.task {
+                        if !this.ui.compact
+                            && let Some(task) = this.ui.task
+                        {
                             this.start_link(task, window, cx);
                         }
                     }))
@@ -3980,8 +4031,11 @@ impl Render for ShellView {
         if !self.task_toggles.is_empty() {
             window.request_animation_frame();
         }
-        self.drive_splitters(window, cx);
         self.keep_focus(window, cx);
+        if self.compact.is_some() {
+            return self.compact_shell(window, cx).into_any_element();
+        }
+        self.drive_splitters(window, cx);
         self.sync_attachment_focus(window, cx);
         let p = self.palette;
         // Activity has no tasks to add: its toolbar takes the quick-add's place.
@@ -4112,11 +4166,15 @@ impl Render for ShellView {
                 |k| {
                     matches!(
                         k,
-                        MenuKind::List { .. } | MenuKind::Collection { .. } | MenuKind::Task { .. }
+                        MenuKind::List { .. }
+                            | MenuKind::Smart(_)
+                            | MenuKind::Collection { .. }
+                            | MenuKind::Task { .. }
                     )
                 },
                 cx,
             ))
+            .into_any_element()
     }
 }
 
