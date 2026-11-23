@@ -16,6 +16,7 @@ import java.time.Instant
 import java.time.ZoneId
 import app.todoornot.core.DateStyle
 import app.todoornot.core.displayDate
+import app.todoornot.core.displayDateTime
 import app.todoornot.core.localNow
 import app.todoornot.reminders.clockLabel
 import kotlinx.coroutines.CancellationException
@@ -38,7 +39,7 @@ data class PushStatus(val state: State = State.OFF, val lastWake: Instant? = nul
         val at = it.atZone(zone).toLocalDateTime()
         val iso = at.toLocalDate().toString()
         val date = displayDate(iso, now, DateStyle.DATE) ?: iso
-        " · Last wake: $date, ${clockLabel(at)}"
+        " · Last wake: ${displayDateTime(date, clockLabel(at))}"
     } ?: "")
 }
 

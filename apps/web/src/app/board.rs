@@ -879,7 +879,10 @@ fn completed_label(c: Ctx, id: TaskId) -> Option<String> {
         -1 => "Yesterday".into(),
         _ => now.dates().weekday(day),
     };
-    Some(format!("{label}, {}", local.strftime("%H:%M")))
+    Some(todo_client::date_format::date_time(
+        &label,
+        &local.strftime("%H:%M").to_string(),
+    ))
 }
 
 fn metadata(row: Row, completed: Option<String>) -> impl IntoView {

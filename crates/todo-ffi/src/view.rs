@@ -1034,7 +1034,7 @@ fn tomorrow(state: &State, ix: &Index, now: &Now) -> Option<Tomorrow> {
     let first = tmrw.first()?;
     let first_when = match ix.reminder.get(&first.id) {
         Some(at) if now.date_of(*at) == tomorrow => {
-            format!("{}, {}", now.dates().weekday(tomorrow), now.clock(*at))
+            todo_client::date_format::date_time(&now.dates().weekday(tomorrow), &now.clock(*at))
         }
         _ => now.dates().weekday(tomorrow),
     };
@@ -1182,7 +1182,8 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         } else {
             now.dates().full(day)
         };
-        subtitle = format!("{subtitle} / Edited {when} {}", now.clock(task.updated.at));
+        let stamp = todo_client::date_format::date_time(&when, &now.clock(task.updated.at));
+        subtitle = format!("{subtitle} / Edited {stamp}");
     }
     let mut steps: Vec<_> = state
         .steps
@@ -1278,10 +1279,12 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
                 url: m.web_link.as_deref().and_then(browser_url),
                 title: m.subject.clone(),
                 subtitle: format!(
-                    "{} · {}, {}",
+                    "{} · {}",
                     m.sender,
-                    now.dates().weekday(now.date_of(m.received_at)),
-                    now.clock(m.received_at)
+                    todo_client::date_format::date_time(
+                        &now.dates().weekday(now.date_of(m.received_at)),
+                        &now.clock(m.received_at),
+                    )
                 ),
                 icon: "mail".into(),
             },

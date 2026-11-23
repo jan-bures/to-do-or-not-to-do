@@ -2491,6 +2491,6 @@ class TodoModelTest {
         val dec = java.time.LocalDateTime.of(2026, 12, 1, 9, 0).atZone(prague).toInstant().toEpochMilli()
         m.setReminder(id, m.ui.value.detail?.reminder, dec)
         s.drain()
-        assertEquals("Tue 01.12., 09:00", m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }.value)
+        assertEquals("Tue 01.12. 09:00", m.ui.value.detail!!.fields.first { it.edit == FieldEdit.REMINDER }.value)
     }
 }

@@ -2,6 +2,7 @@
 
 use jiff::ZonedDateTime;
 use jiff::tz::TimeZone;
+use todo_client::date_format::date_time;
 pub use todo_client::intent::repeat::describe_repeat;
 use todo_core::time::{Date, Timestamp, Weekday, days_between};
 
@@ -37,10 +38,10 @@ pub fn clock(ts: Timestamp, tz: &TimeZone) -> String {
     format!("{:02}:{:02}", z.hour(), z.minute())
 }
 
-/// "Today, 15:30" or "Mon 23 Nov, 09:00".
+/// "Today, 15:30" or "Mon 23.11. 09:00".
 pub fn when(ts: Timestamp, now: &Now) -> String {
     let z = local(ts, &now.tz);
-    format!("{}, {}", now.dates().relative(z.date()), clock(ts, &now.tz))
+    date_time(&now.dates().relative(z.date()), &clock(ts, &now.tz))
 }
 
 /// How a row shows its due date.
@@ -83,14 +84,13 @@ pub fn due(due: Option<Date>, reminder: Option<Timestamp>, now: &Now) -> DueLabe
                     format!("in {}h {:02}m", minutes / 60, minutes % 60)
                 })
             } else {
+                // Keep the compact Today badge in task rows.
                 DueLabel::Plain(format!("Today {}", clock(at, &now.tz)))
             }
         }
-        (_, Some(at)) => DueLabel::Plain(format!(
-            "{} {}",
-            now.dates().relative(due),
-            clock(at, &now.tz)
-        )),
+        (_, Some(at)) => {
+            DueLabel::Plain(date_time(&now.dates().relative(due), &clock(at, &now.tz)))
+        }
         (_, None) => DueLabel::Plain(now.dates().relative(due)),
     }
 }

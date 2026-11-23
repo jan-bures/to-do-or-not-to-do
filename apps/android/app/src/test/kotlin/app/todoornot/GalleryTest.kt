@@ -877,7 +877,11 @@ class GalleryTest {
         for (dark in listOf(false, true)) {
             val suffix = if (dark) "dark" else "light"
             val (e, admin, id) = admin()
-            main("reminder_row_set_$suffix", COVER, state(e, admin, select = id), dark)
+            val set = state(e, admin, select = id)
+            main("reminder_row_set_$suffix", COVER, set, dark)
+            val nextWeek = java.time.Instant.parse("2026-11-23T07:30:00Z").toEpochMilli()
+            e.setReminder(id, requireNotNull(set.detail?.reminder), nextWeek, FIXTURE_NOW)
+            main("reminder_row_dated_$suffix", COVER, state(e, admin, select = id), dark)
             main("reminder_row_empty_$suffix", COVER, freshCarService(e, admin), dark)
         }
     }

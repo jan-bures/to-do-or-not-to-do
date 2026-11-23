@@ -17,7 +17,7 @@ use leptos::prelude::{Get, Memo, RwSignal, With};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 use todo_client::activity::{agent_counts_today, agent_status, select_agent_rows};
-use todo_client::date_format::{DateFormat, DateLabels};
+use todo_client::date_format::{DateFormat, DateLabels, date_time};
 use todo_client::intent::{
     self, TaskRoom,
     organize::{actionable_task, is_actionable, list_live},
@@ -1093,15 +1093,15 @@ fn when(at: Timestamp, now: &Now) -> String {
     let today = now.today();
     let d = dt.date();
     if d == today {
-        format!("today {}", clock(dt))
+        date_time("today", &clock(dt))
     } else if Some(d) == today.yesterday().ok() {
-        format!("yesterday {}", clock(dt))
+        date_time("yesterday", &clock(dt))
     } else {
         now.dates().full(d)
     }
 }
 
-/// `Sat 21 Nov, 17:00` or `Today, 15:30`.
+/// `Sat 21.11. 17:00` or `Today, 15:30`.
 fn long_when(at: Timestamp, now: &Now) -> String {
     local_date_time(now.civil_time_at(at), now.dates())
 }
@@ -1109,7 +1109,7 @@ fn long_when(at: Timestamp, now: &Now) -> String {
 /// A civil date and time, relative to today.
 pub(crate) fn local_date_time(dt: DateTime, dates: DateLabels) -> String {
     let day = date_label(dt.date(), dates);
-    format!("{day}, {}", clock(dt))
+    date_time(&day, &clock(dt))
 }
 
 /// The repeat rule in words.
@@ -1209,11 +1209,8 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         crumb: (crumb_chip, list.name.clone()),
         stamps: {
             let dt = now.civil_time_at(t.created.at);
-            format!(
-                "Created {}, {}{edited}",
-                now.dates().full(dt.date()),
-                clock(dt)
-            )
+            let stamp = date_time(&now.dates().full(dt.date()), &clock(dt));
+            format!("Created {stamp}{edited}")
         },
         steps: steps
             .into_iter()

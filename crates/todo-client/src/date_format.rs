@@ -140,6 +140,12 @@ impl DateLabels {
     }
 }
 
+/// Join a displayed date and time without stacking a comma after a trailing period.
+pub fn date_time(date_label: &str, time: &str) -> String {
+    let separator = if date_label.ends_with('.') { " " } else { ", " };
+    format!("{date_label}{separator}{time}")
+}
+
 fn month_name(date: Date) -> &'static str {
     const MONTHS: [&str; 12] = [
         "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
@@ -167,6 +173,26 @@ mod tests {
                 proptest::prop_assert_eq!(format.on(last).range(first, last), expected);
             }
         }
+    }
+
+    #[test]
+    fn date_and_time_use_one_separator() {
+        let day = d("2026-11-23");
+        for (format, expected) in [
+            (DateFormat::DayMonth, "Mon 23.11. 08:30"),
+            (DateFormat::DayMonthName, "Mon 23 Nov, 08:30"),
+            (DateFormat::MonthNameDay, "Mon Nov 23, 08:30"),
+            (DateFormat::Iso, "Mon 2026-11-23, 08:30"),
+            (DateFormat::NumericUs, "Mon 11/23, 08:30"),
+        ] {
+            assert_eq!(date_time(&format.on(day).weekday(day), "08:30"), expected);
+        }
+        assert_eq!(
+            date_time(&DateFormat::DayMonth.on(day).full(day), "08:30"),
+            "23.11.2026, 08:30"
+        );
+        assert_eq!(date_time("Today", "17:00"), "Today, 17:00");
+        assert_eq!(date_time("Yesterday", "16:48"), "Yesterday, 16:48");
     }
 
     #[test]

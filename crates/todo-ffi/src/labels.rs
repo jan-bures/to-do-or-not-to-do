@@ -151,17 +151,19 @@ pub fn display_date(date: String, now: LocalNow, style: DateStyle) -> Option<Str
     })
 }
 
+/// Join a displayed date and a platform-formatted time using the shared punctuation rule.
+#[uniffi::export]
+pub fn display_date_time(date_label: String, time: String) -> String {
+    todo_client::date_format::date_time(&date_label, &time)
+}
+
 /// A name on one line: control characters (line breaks, tabs) and the line and paragraph separators
 /// become a space, as the desktop's `labels::one_line` does. The data keeps them.
 pub use todo_client::intent::confirm::one_line;
 
-/// "Today, 15:30" or "Mon 23 Nov, 09:00".
+/// "Today, 15:30" or "Mon 23.11. 09:00".
 pub fn when(ts: Timestamp, now: &Now) -> String {
-    format!(
-        "{}, {}",
-        now.dates().relative(now.date_of(ts)),
-        now.clock(ts)
-    )
+    todo_client::date_format::date_time(&now.dates().relative(now.date_of(ts)), &now.clock(ts))
 }
 
 /// How a row shows its due date.
@@ -219,11 +221,12 @@ pub fn due(due: Option<Date>, reminder: Option<Timestamp>, now: &Now) -> Option<
                     DueTone::Soon,
                 )
             } else {
+                // Keep the compact Today badge in task rows.
                 label(format!("Today {}", now.clock(at)), DueTone::Plain)
             }
         }
         (_, Some(at)) => label(
-            format!("{} {}", now.dates().relative(due), now.clock(at)),
+            todo_client::date_format::date_time(&now.dates().relative(due), &now.clock(at)),
             DueTone::Plain,
         ),
         (_, None) => label(now.dates().relative(due), DueTone::Plain),

@@ -2161,7 +2161,7 @@ mod tests {
         let detail = shell.detail.expect("detail");
         assert_eq!(detail.steps.len(), 5);
         assert!(
-            detail.subtitle.contains("Edited today 09:12"),
+            detail.subtitle.contains("Edited today, 09:12"),
             "{}",
             detail.subtitle
         );
@@ -2280,7 +2280,7 @@ mod tests {
         let next = shell.room.tomorrow.expect("tomorrow");
         assert_eq!(next.weekday.as_ref(), "Sunday");
         assert_eq!(next.first.title.as_ref(), "Renew passport appointment");
-        assert_eq!(next.first_when.as_ref(), "Sun 22.11., 09:00");
+        assert_eq!(next.first_when.as_ref(), "Sun 22.11. 09:00");
         assert_eq!(next.also.len(), 1);
         assert_eq!(next.week.len(), 3);
         assert_eq!(shell.sidebar.smart[0].count, Some(0));

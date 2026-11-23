@@ -355,9 +355,9 @@ pub fn entries(
                 clock
             } else {
                 let day = at.to_zoned_datetime(zone).date();
-                format!(
-                    "{} {clock}",
-                    labels::weekday(day).get(..3).unwrap_or_default()
+                todo_client::date_format::date_time(
+                    labels::weekday(day).get(..3).unwrap_or_default(),
+                    &clock,
                 )
             };
             entries.push(MenuEntry::Item(MenuItem {
@@ -583,7 +583,7 @@ mod tests {
                 Some(match p {
                     Preset::LaterToday => labels::clock(at, &n.tz),
                     _ => format!(
-                        "{} {}",
+                        "{}, {}",
                         &labels::weekday(n.date_of(at))[..3],
                         labels::clock(at, &n.tz)
                     ),
@@ -638,7 +638,7 @@ mod tests {
             items(&set)
                 .find(|i| i.key == "tomorrow-morning")
                 .and_then(|i| i.hint.clone()),
-            Some("Sun 09:00".into())
+            Some("Sun, 09:00".into())
         );
     }
 

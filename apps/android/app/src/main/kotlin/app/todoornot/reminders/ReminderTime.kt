@@ -2,6 +2,7 @@ package app.todoornot.reminders
 
 import app.todoornot.core.DateStyle
 import app.todoornot.core.displayDate
+import app.todoornot.core.displayDateTime
 import app.todoornot.core.localNow
 import java.time.Instant
 import java.time.LocalDate
@@ -45,13 +46,13 @@ fun clockLabel(t: LocalDateTime): String = String.format(Locale.ROOT, "%02d:%02d
 
 /**
  * When a reminder is, in words, in the zone that applies on its own day (so across a change of the clocks
- * it reads as set): "Today, 15:30", "Sun 29.03., 03:30".
+ * it reads as set): "Today, 15:30", "Sun 29.03. 03:30".
  */
 fun reminderLabel(atMs: Long, nowMs: Long, zone: ZoneId, dateFormat: String? = null): String {
     val at = LocalDateTime.ofInstant(Instant.ofEpochMilli(atMs), zone)
     val iso = at.toLocalDate().toString()
     val date = displayDate(iso, localNow(nowMs, zone, dateFormat), DateStyle.RELATIVE) ?: iso
-    return "$date, ${clockLabel(at)}"
+    return displayDateTime(date, clockLabel(at))
 }
 
 /**

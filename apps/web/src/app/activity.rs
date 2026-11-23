@@ -300,7 +300,7 @@ fn ActivityRow(id: EventId, entry: Memo<Option<Entry>>) -> impl IntoView {
                         title=move || entry.with(|item| item.as_ref().map(|row| {
                             let now = c.now.get();
                             let local = now.civil_time_at(row.at);
-                            format!("{}, {:02}:{:02}", now.dates().full(local.date()), local.hour(), local.minute())
+                            todo_client::date_format::date_time(&now.dates().full(local.date()), &format!("{:02}:{:02}", local.hour(), local.minute()))
                         }))>
                         {move || entry.with(|item| item.as_ref().map(|row| activity::relative_time(row.at, c.now.with(|now| now.at))))}
                     </time>

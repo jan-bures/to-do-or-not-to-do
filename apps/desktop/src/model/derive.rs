@@ -380,10 +380,9 @@ fn tomorrow(state: &State, ix: &Index, now: &Now, holding: &BTreeSet<TaskId>) ->
         soon.into_iter().partition(|t| t.due == Some(tomorrow));
     let first = tmrw.first()?;
     let first_when = match ix.reminder.get(&first.id) {
-        Some(at) if now.date_of(*at) == tomorrow => format!(
-            "{}, {}",
-            now.dates().weekday(tomorrow),
-            labels::clock(*at, &now.tz)
+        Some(at) if now.date_of(*at) == tomorrow => todo_client::date_format::date_time(
+            &now.dates().weekday(tomorrow),
+            &labels::clock(*at, &now.tz),
         ),
         _ => now.dates().weekday(tomorrow),
     };
@@ -564,10 +563,9 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         } else {
             now.dates().full(day)
         };
-        subtitle = format!(
-            "{subtitle} / Edited {when} {}",
-            labels::clock(task.updated.at, &now.tz)
-        );
+        let stamp =
+            todo_client::date_format::date_time(&when, &labels::clock(task.updated.at, &now.tz));
+        subtitle = format!("{subtitle} / Edited {stamp}");
     }
     let mut steps: Vec<&todo_core::model::Step> = state
         .steps
