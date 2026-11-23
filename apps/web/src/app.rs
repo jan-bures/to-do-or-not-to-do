@@ -1546,7 +1546,9 @@ fn SidebarPane() -> impl IntoView {
                 {navigation}
                 {move || c.new_room.get().map(|kind| view! { <NewRoom kind/> })}
             </div>
-            <div class="sidebar-toast"><ToastView in_drawer=true/></div>
+            <Show when=move || c.drawer.get()>
+                <div class="sidebar-toast"><ToastView in_drawer=true/></div>
+            </Show>
             <div class="side-foot">
                 <NewRoomMenu/>
                 <room_actions::SyncLine/>
