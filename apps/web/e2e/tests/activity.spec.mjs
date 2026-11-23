@@ -24,11 +24,11 @@ test("Activity lists the newest changes by day and pages when scrolled", async (
   await expect(entries(page).first().locator("time")).toHaveText("6 min ago");
   await expect(page.getByRole("button", { name: "Filter tasks" })).toHaveCount(0);
   await expect(page.locator(".qa-input")).toHaveCount(0);
-  await expect(page.getByText('Created task "Catalogue inventory, shelf 1"', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Created task "Catalog inventory, shelf 1"', { exact: true })).toHaveCount(0);
   await page.locator(".room").evaluate((room) => { room.scrollTop = room.scrollHeight; });
   await expect(entries(page)).toHaveCount(31);
   await expect(page.locator(".sb-counts")).toHaveText("31 shown · 4 today");
-  await expect(entries(page).last()).toContainText('Created task "Catalogue inventory, shelf 1"');
+  await expect(entries(page).last()).toContainText('Created task "Catalog inventory, shelf 1"');
   await expect(page.getByRole("heading", { name: "Thu 19 Nov" })).toHaveCount(1);
   await expect(page.getByRole("button", { name: "Load older activity" })).toHaveCount(0);
   await w.check();

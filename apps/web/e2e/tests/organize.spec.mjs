@@ -138,8 +138,8 @@ test("pick tags by name, manage them, and undo through the shared change path", 
     await choice.press("ArrowRight");
   };
   await edit();
-  await page.getByRole("button", { name: "Colour…", exact: true }).click();
-  const swatches = dialog(page, "Tag colour").getByRole("listbox", { name: "Colour swatches" });
+  await page.getByRole("button", { name: "Color…", exact: true }).click();
+  const swatches = dialog(page, "Tag color").getByRole("listbox", { name: "Color swatches" });
   await expect(swatches.getByRole("option")).toHaveCount(12);
   const fern = swatches.getByRole("option", { name: "Fern", exact: true });
   await expect(swatches.getByRole("option", { selected: true })).toBeFocused();
@@ -211,9 +211,9 @@ test("create a collection, move lists into it or out, and recolour lists and col
   const roomMenu = page.getByRole("button", { name: "Room menu" });
   await roomMenu.click();
   const menu = page.getByRole("menu", { name: "Room actions" });
-  await expect(action(page, "Colour…")).toHaveAttribute("aria-haspopup", "dialog");
-  await action(page, "Colour…").click();
-  const colours = dialog(page, "Collection colour");
+  await expect(action(page, "Color…")).toHaveAttribute("aria-haspopup", "dialog");
+  await action(page, "Color…").click();
+  const colours = dialog(page, "Collection color");
   await expect(menu).toBeHidden();
   await expect(page.locator("#room-action-menu")).toHaveAttribute("role", "menu");
   await expect(colours.getByRole("option", { selected: true })).toBeFocused();
@@ -251,8 +251,8 @@ test("create a collection, move lists into it or out, and recolour lists and col
   await undo(page).click();
   await expect(workshop.getByRole("link", { name: /^Finance/ })).toBeVisible();
   await finance.click({ button: "right" });
-  await action(page, "Colour…").click();
-  await dialog(page, "List colour").getByRole("option", { name: "Pink" }).click();
+  await action(page, "Color…").click();
+  await dialog(page, "List color").getByRole("option", { name: "Pink" }).click();
   await expect(finance).toHaveAttribute("data-list-hue", "pink");
   await page.keyboard.press("Control+z");
   await expect(finance).not.toHaveAttribute("data-list-hue", "pink");
@@ -264,8 +264,8 @@ test("closing a room picker does not steal focus from the next keyboard target",
   await open(page);
   await room(page, "Planning").click();
   await page.getByRole("button", { name: "Room menu" }).click();
-  await action(page, "Colour…").click();
-  const colours = dialog(page, "List colour");
+  await action(page, "Color…").click();
+  const colours = dialog(page, "List color");
   await expect(colours.getByRole("option", { selected: true })).toBeFocused();
   // Hold the frame callbacks scheduled by this click so the next focus move wins the race.
   await colours.getByRole("option", { name: "Orchid" }).evaluate((swatch) => {

@@ -566,7 +566,7 @@ fn MenuItem(origin: Origin, item: Item) -> impl IntoView {
         Item::Rename => format!("Rename {}", subject.kind()),
         Item::Up => "Move up".into(),
         Item::Down => "Move down".into(),
-        Item::Colour => "Colour…".into(),
+        Item::Colour => "Color…".into(),
         Item::MoveTo => "Move to…".into(),
         Item::Settings => "List settings…".into(),
         Item::Fold => {
@@ -677,7 +677,7 @@ fn ColourPicker(origin: Origin) -> impl IntoView {
                 choose=Callback::new(move |key| {
                     if c.read_only() { return; }
                     let cmd = c.state.with_untracked(|s| intent::organize::set_color(s, origin.0.id(), key));
-                    if cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Colour changed.".into(), None)) {
+                    if cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Color changed.".into(), None)) {
                         c.room_actions.close_menu(true);
                     }
                 })/>

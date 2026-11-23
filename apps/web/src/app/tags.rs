@@ -245,7 +245,7 @@ pub(super) fn TagEditor(task: TaskId, detail: Memo<Option<Detail>>) -> impl Into
                                         disabled=Signal::derive(move || c.read_only())
                                         choose=Callback::new(move |key| {
                                             let cmd = c.state.with_untracked(|s| organize::set_color(s, id.into(), key));
-                                            if cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Tag colour changed.".into(), None)) { picker.close(true); }
+                                            if cmd.is_none_or(|cmd| c.submit_undoable(cmd, "Tag color changed.".into(), None)) { picker.close(true); }
                                         })/>
                                     <button type="button" id="tag-swatch-back" on:click=move |_| go(Page::Actions(id), "toggle-tag")>
                                         {icon(Icon::ChevronLeft)}"Back"
@@ -317,7 +317,7 @@ fn TagActions(
             </button>
             <button type="button" data-picker-option="" on:click=move |_| edit.run(Edit::Rename(id))>{icon(Icon::Pencil)}"Rename tag"</button>
             <button type="button" data-picker-option="" on:click=move |_| colour.run(())>
-                <span class="tag-dot" data-list-hue=move || tag_display(c, id).map(|(_, hue)| hue)></span>"Colour…"
+                <span class="tag-dot" data-list-hue=move || tag_display(c, id).map(|(_, hue)| hue)></span>"Color…"
             </button>
             <button type="button" data-picker-option="" class="danger" on:click=move |_| edit.run(Edit::Delete(id))>{icon(Icon::TrashTwo)}"Delete tag…"</button>
             <button type="button" data-picker-option="" on:click=move |_| back.run(())>{icon(Icon::ChevronLeft)}"All tags"</button>

@@ -136,7 +136,7 @@ internal class DevicePairingModel(
         run {
             try {
                 api.cancel(id)
-                finish(id, "Invite cancelled.")
+                finish(id, "Invite canceled.")
             } catch (_: FfiException.Expired) {
                 // The status check may still report a join.
             }

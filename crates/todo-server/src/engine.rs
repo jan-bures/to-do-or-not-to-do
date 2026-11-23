@@ -151,7 +151,7 @@ pub enum EngineError {
     #[error("command id {0} was already used for a different request")]
     CommandIdReused(Uuid),
     /// The request was abandoned (its deadline passed) before anything was stored.
-    #[error("the request was cancelled before it was stored")]
+    #[error("the request was canceled before it was stored")]
     Cancelled,
     /// The engine was closed, or failed in a way that needs a restart.
     #[error("the server cannot accept writes right now")]

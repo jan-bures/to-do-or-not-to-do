@@ -238,7 +238,7 @@ internal fun TagOptions(tag: TagChoice, toggle: () -> Unit, navigate: (String) -
     PickerCard("#${tag.name}", inSheet) {
         Choice(if (tag.selected) "Remove from task" else "Add to task", onClick = toggle)
         Choice("Rename tag") { navigate("Rename") }
-        Choice("Colour…") { navigate("Colour") }
+        Choice("Color…") { navigate("Colour") }
         Choice("Delete tag…") { navigate("Delete") }
         Button("All tags", false) { navigate("Tags") }
     }

@@ -100,7 +100,7 @@ impl TodoEngine {
         work: impl Future<Output = Result<T, FfiError>>,
     ) -> Result<T, FfiError> {
         let mut stop = self.transfer_epoch.subscribe();
-        let cancelled = || invalid("Transfer cancelled.");
+        let cancelled = || invalid("Transfer canceled.");
         if *stop.borrow() != epoch {
             return Err(cancelled());
         }

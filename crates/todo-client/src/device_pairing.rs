@@ -71,7 +71,7 @@ pub fn status_message(
 ) -> Option<String> {
     match status {
         Some(InviteStatus::Used { device_name }) => Some(format!("{device_name} signed in.")),
-        Some(InviteStatus::Cancelled) => Some("Invite cancelled.".into()),
+        Some(InviteStatus::Cancelled) => Some("Invite canceled.".into()),
         _ if until_expiry_ms <= -i64::try_from(STATUS_GRACE.as_millis()).unwrap_or(i64::MAX) => {
             Some(UNKNOWN_STATUS.into())
         }

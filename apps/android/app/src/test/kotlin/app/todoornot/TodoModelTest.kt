@@ -184,7 +184,7 @@ class TodoModelTest {
     fun task_activity_survives_a_later_edit_and_reopening_removes_completion() {
         val engine = fixtureEngine("task-activity")
         val completed = RoomKey.Smart(SmartList.COMPLETED)
-        val id = engine.taskId(completed, "Review the colour proofs")
+        val id = engine.taskId(completed, "Review the color proofs")
         val lines = requireNotNull(engine.task(id, FIXTURE_NOW)).activity
         assertEquals(listOf("You", "Pi", "Codex"), lines.map { it.who })
         assertEquals(listOf("edited this", "completed this", "created this"), lines.map { it.action })
@@ -727,7 +727,7 @@ class TodoModelTest {
         s.model.pause()
         s.drain()
         assertEquals(listOf("failed", "cancelled"), discarded)
-        assertEquals("Transfer cancelled.", s.model.ui.value.attachment?.text)
+        assertEquals("Transfer canceled.", s.model.ui.value.attachment?.text)
         assertEquals(0u, e.status().pending)
         assertEquals(before, e.task(id, FIXTURE_NOW)!!.attachments)
         s.scope.cancel()

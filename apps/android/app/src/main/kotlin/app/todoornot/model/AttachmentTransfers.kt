@@ -80,7 +80,7 @@ internal class AttachmentTransfers(
             var file: File? = null
             var accepted: String? = null
             var saved = false
-            var message = "Transfer cancelled."
+            var message = "Transfer canceled."
             val check = { coroutineContext.ensureActive() }
             fun stage() = docs.temporary().also { file = it }
             try {

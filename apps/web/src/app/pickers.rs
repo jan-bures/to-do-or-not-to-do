@@ -15,7 +15,7 @@ pub(super) fn Swatches(
     disabled: Signal<bool>,
 ) -> impl IntoView {
     view! {
-        <div class="swatches" role="listbox" aria-label="Colour swatches" on:focusin=choice_focus>
+        <div class="swatches" role="listbox" aria-label="Color swatches" on:focusin=choice_focus>
             {SWATCHES.into_iter().map(|swatch| view! {
                 <button type="button" data-picker-option="" data-list-hue=swatch.key role="option" tabindex="-1"
                     aria-label=swatch_name(swatch.key) title=swatch_name(swatch.key) disabled=move || disabled.get()

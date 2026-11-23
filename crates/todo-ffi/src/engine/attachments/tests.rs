@@ -158,7 +158,7 @@ fn paired_transfers_preserve_bytes_and_send_metadata_not_json() {
         engine.cancel_attachment_transfers();
         assert_eq!(
             worker.join().unwrap().unwrap_err().to_string(),
-            "Transfer cancelled."
+            "Transfer canceled."
         );
         assert!(engine.transfer(0, async { Ok(()) }).is_err());
         let fresh = engine.attachment_epoch();

@@ -422,7 +422,7 @@ class GalleryTest {
     fun task_activity() {
         val engine = fixtureEngine("task-activity")
         val room = RoomKey.Smart(SmartList.COMPLETED)
-        val s = state(engine, room, select = engine.taskId(room, "Review the colour proofs"))
+        val s = state(engine, room, select = engine.taskId(room, "Review the color proofs"))
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
             main("task_activity_cover_$theme", COVER, s, dark)

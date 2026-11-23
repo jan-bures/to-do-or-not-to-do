@@ -1158,7 +1158,7 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
                         }
                         Err(err) => {
                             // The entry stays unacknowledged and is sent again; the server replays.
-                            self.storage_failed("record an acknowledgement", &err);
+                            self.storage_failed("record an acknowledgment", &err);
                             self.back_off(&mut failures, None).await;
                         }
                     }

@@ -51,7 +51,7 @@ pub fn colour_heading(target: ColorTarget) -> String {
         .entity()
         .ok()
         .and_then(intent::colour_heading)
-        .unwrap_or("Colour")
+        .unwrap_or("Color")
         .into()
 }
 

@@ -887,7 +887,7 @@ fn sample() -> (Builder, Lists) {
         "Plan the offsite agenda",
         "Pay the electricity bill",
         "Clean out the inbox",
-        "Check the tyre pressure",
+        "Check the tire pressure",
     ];
     let homes = [
         planning, finance, office, events, todo_app, home, errands, health, travel,
@@ -1000,7 +1000,7 @@ fn workflow_room(name: &str) -> Fixture {
         status: WorkflowStatus::InProgress,
         tags: vec![bathroom],
         edited_by: Some(("codex", "2026-11-21T09:37:00Z")),
-        ..t(renovation, "Pick grout colour for bathroom tiles")
+        ..t(renovation, "Pick grout color for bathroom tiles")
     });
     b.task(T {
         start: Some("2026-11-20"),
@@ -1105,7 +1105,7 @@ fn workflow_room(name: &str) -> Fixture {
         "Sketch the kitchen",
         "Check the floor plan",
         "Measure window trim",
-        "Catalogue paint samples",
+        "Catalog paint samples",
         "Map electrical outlets",
         "Label storage boxes",
         "Measure door frames",
@@ -1169,7 +1169,7 @@ fn task_activity() -> Fixture {
     let selected = b.task(T {
         by: Some("codex"),
         created: "2026-11-19T09:35:00Z",
-        ..t(list, "Review the colour proofs")
+        ..t(list, "Review the color proofs")
     });
     b.run(
         &agent("pi"),
@@ -2026,7 +2026,7 @@ pub fn activity_items() -> Vec<todo_client::activity::ActivityItem> {
             107,
             &pi,
             "2026-11-18T10:40:00Z",
-            "Updated task \"Check the tyre pressure\" (due date)",
+            "Updated task \"Check the tire pressure\" (due date)",
         ),
         (
             106,

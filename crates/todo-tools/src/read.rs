@@ -36,7 +36,7 @@ pub fn page_limit(limit: Option<usize>) -> usize {
 pub struct InvalidCursor;
 
 #[derive(Debug, Clone, Copy, thiserror::Error)]
-#[error("read cancelled")]
+#[error("read canceled")]
 pub struct Cancelled;
 
 #[derive(Debug, thiserror::Error)]

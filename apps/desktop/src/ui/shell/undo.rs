@@ -518,7 +518,7 @@ impl ShellView {
                 } else if queued.is_some() {
                     Notice::info("Undo queued.")
                 } else {
-                    Notice::info("Change cancelled.")
+                    Notice::info("Change canceled.")
                 }
             })
         });

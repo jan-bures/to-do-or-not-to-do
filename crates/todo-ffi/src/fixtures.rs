@@ -266,7 +266,7 @@ fn task_activity(mut b: Builder<'_>) -> State {
         (
             2 * 24 * 60,
             codex,
-            Command::CreateTask(Box::new(NewTask::new(id, list, "Review the colour proofs"))),
+            Command::CreateTask(Box::new(NewTask::new(id, list, "Review the color proofs"))),
         ),
         (90, pi, Command::CompleteTask { id }),
         (
@@ -430,7 +430,7 @@ fn workflow(mut b: Builder<'_>) -> State {
     });
     b.task(
         renovation,
-        "Pick grout colour for bathroom tiles",
+        "Pick grout color for bathroom tiles",
         Spec {
             status: WorkflowStatus::InProgress,
             due: Some(-1),

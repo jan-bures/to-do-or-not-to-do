@@ -613,7 +613,7 @@ fn delete_collection_confirm(
 /// The "Colour…" item: the colour disc it changes, beside the label.
 fn colour_item(key: &'static str, id: EntityId, hue: Hue) -> MenuEntry {
     with(
-        item(key, Icon::Pencil, "Colour…", MenuAction::AskColour(id)),
+        item(key, Icon::Pencil, "Color…", MenuAction::AskColour(id)),
         |i| MenuItem {
             dot: Some(hue),
             ..i
@@ -2233,7 +2233,7 @@ second line"
         let f = fixtures::my_day();
         let office = list_named(&f.state, "Office");
         let menu = colour_menu(&f.state, office.into());
-        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "List colour"));
+        assert!(matches!(&menu[0], MenuEntry::Heading(h) if h == "List color"));
         assert!(is_grid(&menu));
         let swatches: Vec<&MenuItem> = items(&menu).collect();
         assert_eq!(swatches.len(), hues::SWATCHES.len());
@@ -2260,11 +2260,11 @@ second line"
         // A collection's and a tag's pages say whose colour it is; a task has none.
         let work = commands::collections(&f.state)[0];
         assert!(
-            matches!(&colour_menu(&f.state, work.into())[0], MenuEntry::Heading(h) if h == "Collection colour")
+            matches!(&colour_menu(&f.state, work.into())[0], MenuEntry::Heading(h) if h == "Collection color")
         );
         let tag = commands::tags(&f.state)[0].id;
         assert!(
-            matches!(&colour_menu(&f.state, tag.into())[0], MenuEntry::Heading(h) if h == "Tag colour")
+            matches!(&colour_menu(&f.state, tag.into())[0], MenuEntry::Heading(h) if h == "Tag color")
         );
         let task = f.ui.task.expect("task");
         assert!(colour_menu(&f.state, task.into()).is_empty());

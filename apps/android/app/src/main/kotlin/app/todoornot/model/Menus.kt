@@ -117,7 +117,7 @@ fun swappedWith(home: Home, room: RoomKey, by: Int): RoomKey? {
 private fun moves(home: Home, room: RoomKey): List<MenuEntry> {
     val (up, down) = siblingPlace(home, room) ?: return emptyList()
     return listOfNotNull(
-        MenuEntry.Item("pencil", "Colour…", MenuAction.Colour(room)),
+        MenuEntry.Item("pencil", "Color…", MenuAction.Colour(room)),
         (room as? RoomKey.List)?.let { MenuEntry.Item("list", "Move to…", MenuAction.MoveList(it), enabled = home.groups.any { g -> g.lists.any { list -> list.key == room && list.canMoveList } }) },
         (room as? RoomKey.List)?.let { MenuEntry.Item("settings", "List settings…", MenuAction.ListSettings(it)) },
         MenuEntry.Item("chevron-up", "Move up", MenuAction.Move(room, -1), enabled = up),

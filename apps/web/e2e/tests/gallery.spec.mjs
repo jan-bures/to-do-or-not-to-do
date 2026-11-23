@@ -150,7 +150,7 @@ for (const scheme of ["light", "dark"]) {
       for (const [layout, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
         await page.setViewportSize(viewport);
         await open(page, "/app/completed?fixture=task-activity");
-        await page.getByRole("button", { name: "Review the colour proofs", exact: true }).click();
+        await page.getByRole("button", { name: "Review the color proofs", exact: true }).click();
         const summary = page.getByRole("region", { name: "Activity", exact: true });
         await expect(summary.locator(".act-text")).toHaveText([
           "You edited this", "Pi completed this", "Codex created this",
@@ -271,7 +271,7 @@ for (const scheme of ["light", "dark"]) {
       await expect(page.getByText("ABCDEF-GHJKMN")).toBeVisible();
       await shot(page, `device-invite-${scheme}`);
       await page.getByRole("button", { name: "Cancel invite" }).click();
-      await expect(page.getByText("Invite cancelled.")).toBeVisible();
+      await expect(page.getByText("Invite canceled.")).toBeVisible();
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.getByRole("button", { name: "Approve a device" }).click();
       await page.getByRole("textbox", { name: "Code shown on the device" }).fill("abcd efgh");
@@ -424,8 +424,8 @@ for (const scheme of ["light", "dark"]) {
       await shot(page, `organize-new-collection-${scheme}`);
       await input.press("Enter");
       await page.getByRole("button", { name: "Room menu" }).click();
-      await page.getByRole("menuitem", { name: "Colour…" }).click();
-      const collectionColours = page.getByRole("dialog", { name: "Collection colour", exact: true });
+      await page.getByRole("menuitem", { name: "Color…" }).click();
+      const collectionColours = page.getByRole("dialog", { name: "Collection color", exact: true });
       await expect(collectionColours.getByRole("option", { selected: true })).toBeFocused();
       await shot(page, `organize-collection-colour-${scheme}`);
       await page.keyboard.press("Escape");
@@ -434,8 +434,8 @@ for (const scheme of ["light", "dark"]) {
       await expect(page.getByRole("dialog", { name: "Move to" }).getByRole("option", { selected: true })).toBeFocused();
       await shot(page, `organize-list-move-${scheme}`);
       await page.getByRole("button", { name: "Back", exact: true }).click();
-      await page.getByRole("menuitem", { name: "Colour…" }).click();
-      await expect(page.getByRole("dialog", { name: "List colour" }).getByRole("option", { selected: true })).toBeFocused();
+      await page.getByRole("menuitem", { name: "Color…" }).click();
+      await expect(page.getByRole("dialog", { name: "List color" }).getByRole("option", { selected: true })).toBeFocused();
       await shot(page, `organize-list-colour-${scheme}`);
       await w.check();
     });
@@ -509,8 +509,8 @@ for (const scheme of ["light", "dark"]) {
       await manage().click();
       await expect(page.getByRole("button", { name: "Remove from task" })).toBeFocused();
       await shot(page, `organize-tag-actions-${scheme}`);
-      await page.getByRole("button", { name: "Colour…", exact: true }).click();
-      await expect(page.getByRole("dialog", { name: "Tag colour" }).getByRole("option", { selected: true })).toBeFocused();
+      await page.getByRole("button", { name: "Color…", exact: true }).click();
+      await expect(page.getByRole("dialog", { name: "Tag color" }).getByRole("option", { selected: true })).toBeFocused();
       await shot(page, `organize-tag-colour-${scheme}`);
       await page.getByRole("button", { name: "Back", exact: true }).click();
       await page.getByRole("button", { name: "Rename tag" }).click();

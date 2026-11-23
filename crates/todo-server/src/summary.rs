@@ -60,7 +60,7 @@ fn describe(state: &State, id: EntityId) -> String {
 fn field_name(c: &FieldChange) -> Option<&'static str> {
     Some(match c {
         FieldChange::Name(_) => "name",
-        FieldChange::Color(_) => "colour",
+        FieldChange::Color(_) => "color",
         FieldChange::Position(_) => "position",
         FieldChange::Title(_) => "title",
         FieldChange::Notes(_) | FieldChange::NoteAdded(_) => "notes",

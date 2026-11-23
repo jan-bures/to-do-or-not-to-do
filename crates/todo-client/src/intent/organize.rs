@@ -223,9 +223,9 @@ pub fn swatch_name(key: &str) -> String {
 
 pub fn colour_heading(id: EntityId) -> Option<&'static str> {
     Some(match id {
-        EntityId::Collection(_) => "Collection colour",
-        EntityId::List(_) => "List colour",
-        EntityId::Tag(_) => "Tag colour",
+        EntityId::Collection(_) => "Collection color",
+        EntityId::List(_) => "List color",
+        EntityId::Tag(_) => "Tag color",
         _ => return None,
     })
 }

@@ -31,7 +31,7 @@ class MenusTest {
     fun a_lists_drawer_menu_renames_moves_and_asks_before_deleting() {
         val errands = engine.list("Errands") as RoomKey.List
         val menu = drawerMenu(home, errands)
-        assertEquals(listOf("Rename", "Colour…", "Move to…", "List settings…", "Move up", "Move down", "—", "Delete list…"), menu.labels())
+        assertEquals(listOf("Rename", "Color…", "Move to…", "List settings…", "Move up", "Move down", "—", "Delete list…"), menu.labels())
         assertEquals(MenuAction.Rename(errands), menu.item("Rename").action)
         assertEquals(MenuAction.AskDelete(errands.id), menu.item("Delete list…").action)
         assertTrue(menu.item("Delete list…").danger)
@@ -50,7 +50,7 @@ class MenusTest {
         val collections = home.groups.mapNotNull { it.collection?.key }
         val first = collections.first()
         val menu = drawerMenu(home, first)
-        assertEquals(listOf("Rename", "Colour…", "Move up", "Move down", "—", "Delete collection…"), menu.labels())
+        assertEquals(listOf("Rename", "Color…", "Move up", "Move down", "—", "Delete collection…"), menu.labels())
         assertFalse(menu.item("Move up").enabled)
         assertTrue(menu.item("Move down").enabled)
         assertFalse(drawerMenu(home, collections.last()).item("Move down").enabled)
@@ -66,12 +66,12 @@ class MenusTest {
     fun the_room_menu_offers_only_what_applies() {
         val errands = engine.list("Errands") as RoomKey.List
         assertEquals(
-            listOf("Rename list", "Colour…", "Move to…", "List settings…", "Move up", "Move down", "Show completed", "—", "Delete list…"),
+            listOf("Rename list", "Color…", "Move to…", "List settings…", "Move up", "Move down", "Show completed", "—", "Delete list…"),
             roomMenu(home, errands, showCompleted = false).labels(),
         )
         assertEquals(MenuAction.ShowCompleted(false), roomMenu(home, errands, showCompleted = true).item("Hide completed").action)
         assertEquals(
-            listOf("Rename collection", "Colour…", "Move up", "Move down", "Show completed", "—", "Delete collection…"),
+            listOf("Rename collection", "Color…", "Move up", "Move down", "Show completed", "—", "Delete collection…"),
             roomMenu(home, engine.collection("Personal"), showCompleted = false).labels(),
         )
         for (smart in listOf(SmartList.MY_DAY, SmartList.IMPORTANT, SmartList.PLANNED, SmartList.ALL)) {

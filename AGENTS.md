@@ -81,6 +81,8 @@ with GPUI.
 
 ## Conventions
 
+- User-facing text, docs and comments use American English.
+
 - **Errors.** Libraries use `thiserror` with typed errors. Binaries use `anyhow` at the edges. No `unwrap()`
   outside tests (Clippy warns).
 - **Logging.** Use `tracing`. Never log task content, email metadata or tokens above `debug`.

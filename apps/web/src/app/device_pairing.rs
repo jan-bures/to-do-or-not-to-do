@@ -175,7 +175,7 @@ pub(super) fn DeviceSettings() -> impl IntoView {
             match result {
                 Ok(()) => {
                     invite.set(None);
-                    invite_notice.set(Some("Invite cancelled.".into()));
+                    invite_notice.set(Some("Invite canceled.".into()));
                 }
                 Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
                 Err(e) => report(e),

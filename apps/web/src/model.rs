@@ -1908,7 +1908,7 @@ mod tests {
         let id = link.id;
         let d = detail(&s, &n, task).unwrap();
         assert!(
-            matches!(d.sources.as_slice(), [Source::Web { id: link, title, href }] if *link == id && title == "Timetable" && href == "https://example.com/trains")
+            matches!(d.sources.as_slice(), [Source::Web { id: link, title, href }] if *link == id && title == "Train schedule" && href == "https://example.com/trains")
         );
         for url in ["javascript:void(0)", "data:text/plain,example"] {
             s.links.get_mut(&id).unwrap().kind = LinkKind::Web {

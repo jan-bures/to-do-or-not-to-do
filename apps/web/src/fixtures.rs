@@ -253,7 +253,7 @@ pub fn activity() -> Vec<todo_client::activity::ActivityItem> {
             n,
             codex.clone(),
             when,
-            &format!("Created task \"Catalogue inventory, shelf {n}\""),
+            &format!("Created task \"Catalog inventory, shelf {n}\""),
             false,
         ));
     }
@@ -357,7 +357,7 @@ pub fn task_activity_state() -> State {
     b.run(Command::CreateTask(Box::new(NewTask::new(
         task(1),
         list(1),
-        "Review the colour proofs",
+        "Review the color proofs",
     ))));
     b.owner = pi;
     b.at("2026-11-21T08:04:59Z");
@@ -565,7 +565,7 @@ pub fn state() -> State {
         task: task(22),
         kind: LinkKind::Web {
             url: "https://example.com/trains".into(),
-            title: Some("Timetable".into()),
+            title: Some("Train schedule".into()),
         },
     });
     for (n, t_n, title) in [
@@ -704,7 +704,7 @@ pub fn workflow_state(timeline: bool) -> State {
         ),
         (
             102,
-            "Pick grout colour for bathroom tiles",
+            "Pick grout color for bathroom tiles",
             InProgress,
             "",
             "2026-11-20",
@@ -859,7 +859,7 @@ pub fn workflow_state(timeline: bool) -> State {
             "Sketch the kitchen",
             "Check the floor plan",
             "Measure window trim",
-            "Catalogue paint samples",
+            "Catalog paint samples",
             "Map electrical outlets",
             "Label storage boxes",
             "Measure door frames",

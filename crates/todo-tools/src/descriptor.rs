@@ -61,7 +61,7 @@ pub static LIST_LISTS: Tool<PageArgs> = Tool::new(
 );
 pub static LIST_TAGS: Tool<PageArgs> = Tool::new(
     "list_tags",
-    "List the tags you can see (with their IDs, names and colours). Without a default level of read you see only the tags on tasks you can read. Paginated: pass next_cursor back as cursor.",
+    "List the tags you can see (with their IDs, names and colors). Without a default level of read you see only the tags on tasks you can read. Paginated: pass next_cursor back as cursor.",
 );
 pub static GET_TASK: Tool<GetTaskArgs> = Tool::new(
     "get_task",

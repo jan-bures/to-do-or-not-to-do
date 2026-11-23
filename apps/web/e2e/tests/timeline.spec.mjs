@@ -5,7 +5,7 @@ const BASE = "/app/list/01930000-0000-7000-8002-000000000028";
 const ROOM = `${BASE}?fixture=timeline`;
 const PLANNED = "/app/planned?fixture=timeline";
 const TITLE = "Strip wallpaper and prime hallway walls";
-const GROUT = "Pick grout colour for bathroom tiles";
+const GROUT = "Pick grout color for bathroom tiles";
 const LIGHTS = "Compare kitchen pendant lights";
 const PANELS = "Research acoustic panels for study";
 const INVOICE = "Review the budget";

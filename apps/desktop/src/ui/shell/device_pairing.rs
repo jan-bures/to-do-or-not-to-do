@@ -317,7 +317,7 @@ impl Panel {
                 match result {
                     Ok(()) => {
                         v.invite = None;
-                        v.message = Some("Invite cancelled.".into());
+                        v.message = Some("Invite canceled.".into());
                     }
                     Err(PairError::Refused { status: 404, .. }) => {} // The status check may still report a join.
                     Err(e) => v.error(e),
