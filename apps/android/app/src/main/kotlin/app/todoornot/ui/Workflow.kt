@@ -126,10 +126,14 @@ internal fun ViewControl(state: UiState, actions: Actions, wide: Boolean, labels
     } else {
         var opened by remember(state.generation) { mutableStateOf(false) }
         Box {
-            IconButton(if (features?.workflow == true) ListView.BOARD.icon else ListView.TIMELINE.icon,
-                "View: ${state.view.label}", expanded = opened || state.view != ListView.LIST) {
-                if (views.size == 2 && features?.workflow == true) choose(if (state.view == ListView.BOARD) ListView.LIST else ListView.BOARD)
-                else opened = true
+            if (state.view == ListView.TIMELINE) {
+                TimelineSquareIcon(ListView.TIMELINE.icon, "View: Timeline", selected = true) { opened = true }
+            } else {
+                IconButton(if (features?.workflow == true) ListView.BOARD.icon else ListView.TIMELINE.icon,
+                    "View: ${state.view.label}", expanded = opened || state.view != ListView.LIST) {
+                    if (views.size == 2 && features?.workflow == true) choose(if (state.view == ListView.BOARD) ListView.LIST else ListView.BOARD)
+                    else opened = true
+                }
             }
             if (opened) AnchoredPopup(onDismiss = { opened = false }, above = true) { overlay ->
                 Column(Modifier.padding(S.S2.dp).widthIn(min = P.INNER_LIST.dp / 2)

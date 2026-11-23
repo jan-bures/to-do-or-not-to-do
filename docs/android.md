@@ -87,16 +87,18 @@ What the first version does:
   pager edge turns the page during a drag. Without dragging, use **Task actions → Move to column…** or
   change **Status** in Detail. Column moves offer one Undo, including completion and reopening.
 - **Timeline.** Open it from **View** in an enabled list, an eligible collection, or **Planned**. Swipe
-  across the dates or page with the arrows; **Today** returns to the vertical marker. **Week**, **2 weeks**
-  (default), **Month**, and **Quarter** zoom around the center date. Month and Quarter label ISO weeks;
-  edits always snap to calendar days. The task names stay pinned while you pan. Tap an off-screen task's
-  name to reveal its dates, or a visible name or bar to open Detail. On the inner screen the chart takes
-  the full width when Detail is closed and there is no separating hinge. **Room menu → Show completed on
-  Timeline** reveals dated completed tasks. Planned shows dated open tasks, including start-only tasks,
-  and has no **Unscheduled** tray; its List view still shows the usual due-date membership.
-  Long-press and drag a bar to move its dates, or drag a visible grip on a wide bar to resize it.
-  For a short bar, long-press the task name and choose **Drag start edge** or **Drag end edge**; then the
-  whole bar acts as that edge. A due-only task can grow a start; a start-only task can grow a due date.
+  across the dates; **Today** returns to the current day. The cover chart runs edge to edge, puts task
+  names inside or beside bars, groups lanes by status in workflow lists, and offers a tappable hint for
+  tasks beyond either side. The cover dock offers **1W** (default), **2W**, **M**, **Unscheduled**, and
+  **Add task**. The inner screen keeps a pinned task rail and offers page arrows, **Week**, **2 weeks**
+  (default), **Month**, and **Quarter**. The chart takes the full inner width when Detail is closed and
+  there is no separating hinge. Zoom keeps the center date; Month and Quarter label ISO weeks. Tap a
+  visible task to open Detail, or tap an off-screen task's name in the inner rail to reveal its dates.
+  **Room menu → Show completed on Timeline** reveals dated completed tasks. Planned shows dated open
+  tasks, including start-only tasks, and has no **Unscheduled** tray; its List view keeps the usual membership.
+  Long-press and drag a bar to move its dates, or drag a visible grip on a wide bar to resize it. Edits snap
+  to calendar days. For a short bar, hold it and release without moving on cover, or long-press the task
+  name in the inner rail. Choose **Drag start edge** or **Drag end edge**; then the whole bar acts as that edge. A due-only task can grow a start; a start-only task can grow a due date.
   The same menu offers calendars for editing without dragging. Open **Unscheduled** to drag a task
   onto a day or choose **Schedule**. Pickup and day changes use the Board's haptics. The date readout
   previews the edit, a drop outside the grid cancels, and a valid drop offers one **Undo**. If a task's

@@ -74,6 +74,7 @@ fun RoomHeader(
     selected: Boolean = false,
     activitySummary: String? = null,
     viewLabel: String? = null,
+    eyebrowDetail: String? = null,
     onResetReach: () -> Unit,
 ) {
     val outer = LocalDesign.current
@@ -115,7 +116,7 @@ fun RoomHeader(
                 },
             content = {
                 HeaderPanorama(outer, room.localHour.toInt(), inner, collapse, room.total > 0u, progress, dusk)
-                HeaderText(room, activitySummary, quiet, collapse, viewLabel)
+                HeaderText(room, activitySummary, quiet, collapse, viewLabel, eyebrowDetail)
                 CompactHeader(room, quiet, compact, selected, collapse, progress, dusk, textDesign)
             },
         ) { (scene, text, bar), constraints ->
@@ -144,7 +145,9 @@ fun RoomHeader(
 }
 
 @Composable
-private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?, collapse: HeaderCollapse, viewLabel: String?) {
+private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?, collapse: HeaderCollapse,
+    viewLabel: String?, eyebrowDetail: String?,
+) {
     val r = LocalDesign.current.room
     fun Modifier.detailMotion() = graphicsLayer {
         val fade = HeaderChoreography.detail(collapse.fraction)
@@ -167,7 +170,7 @@ private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?,
         ) {
             Row(Modifier.weight(1f).semantics(mergeDescendants = true) { traversalIndex = 0f },
                 verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
-                EyebrowLine(room.eyebrow)
+                EyebrowLine(room.eyebrow, eyebrowDetail)
                 viewLabel?.let { Label("· $it", T.EYEBROW_META_PHONE, r.ink3) }
             }
             quiet?.let { Label(it, T.SUMMARY_FIGURES, r.ink2, Modifier.semantics { traversalIndex = 4f }) }
@@ -267,7 +270,7 @@ private fun HeaderTitle(title: String, token: TextToken, color: Color, modifier:
 }
 
 @Composable
-private fun EyebrowLine(e: Eyebrow) {
+private fun EyebrowLine(e: Eyebrow, detail: String?) {
     val r = LocalDesign.current.room
     FlowRow(
         Modifier.heightIn(min = T.EYEBROW_DAY_PHONE.lineHeight.dp),
@@ -277,13 +280,16 @@ private fun EyebrowLine(e: Eyebrow) {
         when (e) {
             is Eyebrow.Day -> {
                 Label(e.weekday, T.EYEBROW_DAY_PHONE, r.accentStrong)
-                Label(e.date, T.EYEBROW_META_PHONE, r.ink3)
-                Box(Modifier.size(Tokens.Elevation.HAIRLINE.dp, Micro.eyebrowBar).background(r.lineStrong))
-                Label(e.week, T.EYEBROW_META_PHONE, r.ink3)
+                if (detail != null) Label(detail, T.EYEBROW_META_PHONE, r.ink3)
+                else {
+                    Label(e.date, T.EYEBROW_META_PHONE, r.ink3)
+                    Box(Modifier.size(Tokens.Elevation.HAIRLINE.dp, Micro.eyebrowBar).background(r.lineStrong))
+                    Label(e.week, T.EYEBROW_META_PHONE, r.ink3)
+                }
             }
             is Eyebrow.Kind -> {
                 Label(e.kind, T.EYEBROW_DAY_PHONE, r.accentStrong)
-                Label(e.detail, T.EYEBROW_META_PHONE, r.ink3)
+                Label(detail ?: e.detail, T.EYEBROW_META_PHONE, r.ink3)
             }
         }
     }

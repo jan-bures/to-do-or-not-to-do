@@ -6,6 +6,7 @@ import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.SemanticsNodeInteraction
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.ListView
@@ -37,6 +38,43 @@ import org.robolectric.annotation.Config
 class TimelineInteractionTest {
     @Suppress("DEPRECATION")
     @get:Rule val compose = createComposeRule()
+
+    @Test fun coverShowsOffscreenHintsAndCanPageToEitherSide() {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)
+        val engine = fixtureEngine("workflow")
+        try {
+            val room = engine.list("Home renovation")
+            val model = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = room)
+            model.setRoomView(ListView.TIMELINE, model.read().generation)
+            val state = model.read()
+            val sheets = TimelineSheets()
+            var added = false
+            compose.setContent {
+                TodoTheme(false, state.room.hue) {
+                    TimelineBody(state, Actions.None, blocked = false, sheets, gallery = null, cover = true, onAdd = { added = true })
+                }
+            }
+            compose.onNodeWithText("Tasks").assertDoesNotExist()
+            compose.onNodeWithText("IN PROGRESS · 3").assertExists()
+            compose.onNodeWithText("1d overdue", substring = true).assertExists()
+            for (label in listOf("Timeline zoom: Week", "Timeline zoom: 2 weeks", "Timeline zoom: Month", "Unscheduled: 1", "Add task")) {
+                val bounds = compose.onNodeWithContentDescription(label).fetchSemanticsNode().boundsInRoot
+                with(compose.density) {
+                    assertTrue(bounds.width >= 48.dp.roundToPx())
+                    assertTrue(bounds.height >= 48.dp.roundToPx())
+                }
+            }
+            compose.onNodeWithContentDescription("Add task").performClick()
+            compose.runOnIdle { assertTrue(added); assertTrue(sheets.coverEyebrow.orEmpty().endsWith("W47–W48")) }
+            compose.onNodeWithText("Swipe left →").performClick()
+            compose.onNodeWithText("← Swipe right").assertExists()
+            compose.onNodeWithText("← Swipe right").performClick()
+            compose.onNodeWithText("Swipe left →").assertExists()
+        } finally {
+            scope.cancel()
+            engine.close()
+        }
+    }
 
     @Test fun touchTargetsAndLongPressMoveResizeAndSchedule() {
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Unconfined)

@@ -64,6 +64,9 @@ pub struct TimelineSpan {
     pub last: i32,
     pub bar: TimelineBar,
     pub label: String,
+    pub first_week: String,
+    pub last_week: String,
+    pub overdue_label: Option<String>,
 }
 
 fn offset(today: Date, date: Date) -> i32 {
@@ -71,11 +74,21 @@ fn offset(today: Date, date: Date) -> i32 {
     days_between(today, date) as i32
 }
 
+fn iso_week(date: Date) -> String {
+    format!("W{:02}", date.iso_week_date().week())
+}
+
 fn span(dates: Dates, today: Date, labels: DateLabels) -> Option<TimelineSpan> {
     let span = timeline::Span::from_dates(dates.start, dates.due)?;
     Some(TimelineSpan {
         first: offset(today, span.first),
         last: offset(today, span.last),
+        first_week: iso_week(span.first),
+        last_week: iso_week(span.last),
+        overdue_label: dates
+            .due
+            .filter(|&due| due < today)
+            .map(|due| format!("{}d overdue", days_between(due, today))),
         bar: match span.kind {
             SpanKind::Range => TimelineBar::Range,
             SpanKind::Milestone => TimelineBar::Milestone,
@@ -312,6 +325,8 @@ pub struct TimelineColumn {
     pub day: i32,
     pub days: i32,
     pub label: String,
+    pub weekday: String,
+    pub day_number: String,
     pub month: String,
     pub week: String,
     /// Calendar days through Sunday, including this column's first day.
@@ -343,8 +358,10 @@ pub fn timeline_columns(
             day: x as i32,
             days: width as i32,
             label: now.dates().date(day),
+            weekday: day.strftime("%a").to_string(),
+            day_number: day.day().to_string(),
             month: now.dates().month(day),
-            week: format!("W{:02}", day.iso_week_date().week()),
+            week: iso_week(day),
             week_remaining: (7 - Weekday::of(day).offset()) as i32,
             weekend: matches!(Weekday::of(day), Weekday::Sat | Weekday::Sun),
         })

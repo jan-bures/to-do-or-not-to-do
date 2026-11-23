@@ -11,6 +11,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.saveable.rememberSaveableStateHolder
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
@@ -214,7 +215,19 @@ internal fun RoomPane(
         val holders = rememberSaveableStateHolder()
         var addingWithFilter by remember(state.generation, state.searching) { mutableStateOf(false) }
         var focusAdd by remember { mutableStateOf(false) }
-        val filterShown = state.searching && !addingWithFilter
+        val coverTimeline = !wide && state.timeline != null
+        var addingTimeline by rememberSaveable(state.generation, coverTimeline) { mutableStateOf(false) }
+        val showTimelineAdd = {
+            addingTimeline = true
+            focusAdd = true
+        }
+        val closeTimelineAdd = {
+            addingTimeline = false
+            focusAdd = false
+            stopAdd()
+        }
+        BackHandler(enabled = coverTimeline && addingTimeline && !sheetOpen, onBack = closeTimelineAdd)
+        val filterShown = state.searching && !addingWithFilter && !addingTimeline
         val boardGesture = if (board == null) Modifier else boardDrag(board, state, actions,
             enabled = !sheetOpen && boardMove == null && !state.signedOut && !keyboard, pager = !fullBoard)
         Box(Modifier.fillMaxSize().then(boardGesture)) {
@@ -223,9 +236,9 @@ internal fun RoomPane(
             RoomHeader(room, wide, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp,
                 selected = state.bulk != null, onResetReach = resetReach, viewLabel = when {
                     board != null -> "Board"
-                    state.timeline != null -> "Timeline"
+                    state.timeline != null && !coverTimeline -> "Timeline"
                     else -> null
-                })
+                }, eyebrowDetail = if (coverTimeline) timelineSheets?.coverEyebrow else null)
             Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(collapse.connection)) {
                 androidx.compose.runtime.key(state.generation) {
                     AnimatedContent(RoomBody(state, board), transitionSpec = {
@@ -237,7 +250,8 @@ internal fun RoomPane(
                             body.board != null -> BoardBody(body.state, actions, body.board, wide, fullBoard, boardFold, Modifier.fillMaxSize())
                             body.state.timeline != null && timelineSheets != null -> TimelineBody(body.state, actions,
                                 sheetOpen || keyboard || (!wide && state.detail != null) || state.timeline == null,
-                                timelineSheets, timelineGallery)
+                                timelineSheets, timelineGallery, cover = !wide,
+                                onAdd = if (!addingTimeline && !keyboard) showTimelineAdd else null)
                             else -> TaskList(body.state, actions, resetReach)
                         }
                     }
@@ -282,6 +296,22 @@ internal fun RoomPane(
                         onListSettings = onListSettings, onSwipeRooms = onSwipeRooms,
                         onFilter = { stopAdd(); actions.setSearching(!state.searching) },
                         onBoardAdd = { board.adding = board.active.openStage() ?: app.todoornot.core.OpenStage.TODO })
+                }
+            } else if (coverTimeline) {
+                if (addingTimeline) Row(Modifier.fillMaxWidth().background(r.pane), verticalAlignment = Alignment.CenterVertically) {
+                    Box(Modifier.weight(1f)) {
+                        Composer(room.addPlaceholder, draft, keyboard, actions,
+                            if (focusAdd) {{ focusAdd = false }} else null, docked = true,
+                            features = state.listFeatures ?: ChecklistFeatures, onSubmit = closeTimelineAdd)
+                    }
+                    IconButton("x", "Close quick add", onClick = closeTimelineAdd)
+                } else if (filterShown) {
+                    FilterField(state.filter, actions::setFilter, onClose = { actions.setSearching(false) },
+                        onAdd = if (state.filter.isNotBlank() && !keyboard) showTimelineAdd else null)
+                }
+                AnimatedVisibility(!keyboard, enter = expandVertically(tween(M.PANEL)), exit = shrinkVertically(tween(M.PANEL, easing = M.EASE_EXIT.cubic()))) {
+                    BottomRoomBar(state, actions, left, onMenu, onRoomMenu, onListSettings = onListSettings,
+                        onSwipeRooms = onSwipeRooms, onFilter = { closeTimelineAdd(); actions.setSearching(!state.searching) })
                 }
             } else {
                 AnimatedContent(filterShown, transitionSpec = {

@@ -126,7 +126,17 @@ class TimelineModelTest {
         assertEquals(listOf(-5, 2, 9), q.map { it.day })
         assertEquals(listOf("W47", "W48", "W49"), q.map { it.week })
         assertTrue(q.all { it.days == 7 })
-        assertEquals("23.11.", timelineColumns(TimelineZoom.WEEK, 2, 2, now).single().label)
+        val monday = timelineColumns(TimelineZoom.WEEK, 2, 2, now).single()
+        assertEquals("Mon", monday.weekday)
+        assertEquals("23", monday.dayNumber)
+        assertEquals("23.11.", monday.label)
         assertEquals("2026-11-23", timelineColumns(TimelineZoom.WEEK, 2, 2, now.copy(dateFormat = "iso")).single().label)
+
+        enableTimeline()
+        val id = add("Late task", due = "2026-11-20", start = "2026-11-01")
+        val overdue = engine.timeline(list, now)!!.lanes.single { it.taskId == id }.span!!
+        assertEquals("1d overdue", overdue.overdueLabel)
+        assertEquals("W44", overdue.firstWeek)
+        assertEquals("W47", overdue.lastWeek)
     }
 }

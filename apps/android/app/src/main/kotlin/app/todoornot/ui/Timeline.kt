@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -22,16 +23,20 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -58,8 +63,11 @@ import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalViewConfiguration
 import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.semantics
@@ -133,6 +141,7 @@ internal class TimelineSheets {
     var menu by mutableStateOf<TimelineTask?>(null)
     var picker by mutableStateOf<TimelineCalendarRequest?>(null)
     var resize by mutableStateOf<TimelineResize?>(null)
+    var coverEyebrow by mutableStateOf<String?>(null)
     val open get() = menu != null || picker != null
 }
 
@@ -145,22 +154,29 @@ private data class Lift(val task: TimelineTask, val edit: TimelineEdit, val span
 private class TimelineGesture(val task: TimelineTask, val mode: TimelineDragMode, val origin: Offset) {
     var pointer = origin
     var edit: TimelineEdit? = null
+    var moved = false
 }
 
 @Composable
-internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sheets: TimelineSheets, gallery: TimelineGallery?) {
+internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sheets: TimelineSheets, gallery: TimelineGallery?,
+    cover: Boolean = false, onAdd: (() -> Unit)? = null,
+) {
     val timeline = state.timeline ?: return
     val now = state.timelineNow ?: return
     val r = LocalDesign.current.room
     val haptic = LocalHapticFeedback.current
     val density = LocalDensity.current
-    var zoom by rememberSaveable { mutableStateOf(gallery?.zoom ?: TimelineZoom.TWO_WEEKS) }
+    val touchSlop = LocalViewConfiguration.current.touchSlop
+    var zoom by rememberSaveable(cover) {
+        mutableStateOf(gallery?.zoom ?: if (cover) TimelineZoom.WEEK else TimelineZoom.TWO_WEEKS)
+    }
     val scale = remember(zoom, state.today) { timelineScale(zoom, state.today) }
     val todayLabel = remember(state.today, now.dateFormat) { displayDate(state.today, now, DateStyle.DATE).orEmpty() }
     val textMeasurer = rememberTextMeasurer()
     val rulerInk = Tokens.Type.META_PHONE.style(r.ink2)
     val dateWidth = with(density) { textMeasurer.measure(todayLabel, rulerInk).size.width.toDp() + S.S3.dp }
-    var firstDay by rememberSaveable(state.today) { mutableStateOf(scale.todayOffset.toFloat()) }
+    val todayOffset = if (cover && zoom == TimelineZoom.WEEK) (scale.todayOffset - 1).coerceAtLeast(scale.minOffset) else scale.todayOffset
+    var firstDay by rememberSaveable(state.today, cover) { mutableStateOf(todayOffset.toFloat()) }
     var trayOpen by rememberSaveable { mutableStateOf(gallery?.tray ?: false) }
     var railOpen by rememberSaveable { mutableStateOf(true) }
     var drag by remember { mutableStateOf<TimelineGesture?>(null) }
@@ -172,7 +188,7 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
         cancel()
         sheets.resize = null
     }
-    LaunchedEffect(enabled, state.today, zoom) { cancel() }
+    LaunchedEffect(enabled, state.today, zoom, cover) { cancel() }
 
     val fixtureLift = remember(gallery, timeline, now) {
         gallery?.preview?.let { (id, edit) ->
@@ -183,15 +199,24 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
     val lift = preview ?: fixtureLift
     val hasTray = timeline.unscheduled != null
     val tray = timeline.unscheduled.orEmpty()
+    val steps = if (cover) remember(state.room.tasks, state.room.completed) {
+        (state.room.tasks + state.room.completed).mapNotNull { row ->
+            row.steps?.let { row.id to "${it.done}/${it.total}" }
+        }.toMap()
+    } else emptyMap()
 
     // Dates increase to the right independent of UI mirroring. Each virtualized lane draws only the
     // visible slice of the same ruler; the task rail and ruler remain pinned during either scroll.
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Ltr) {
         BoxWithConstraints(Modifier.fillMaxSize()) {
-            val rail = if (!railOpen) P.TOUCH.dp else minOf(T.RAIL_WIDTH.dp, maxWidth / 3)
+            val rail = if (cover) 0.dp else if (!railOpen) P.TOUCH.dp else minOf(T.RAIL_WIDTH.dp, maxWidth / 3)
             val gridWidth = (maxWidth - rail).coerceAtLeast(S.S1.dp)
-            fun widthFor(zoom: TimelineZoom, days: Int): Dp = maxOf(gridWidth / days, zoom.minDayWidth,
-                if (zoom == TimelineZoom.WEEK || zoom == TimelineZoom.TWO_WEEKS) dateWidth else 0.dp)
+            fun widthFor(zoom: TimelineZoom, days: Int): Dp {
+                // A cover Week shows six touch-sized dates, leaving the rest within a swipe.
+                val count = if (cover && zoom == TimelineZoom.WEEK) days - 1 else days
+                val labelWidth = if (!cover && (zoom == TimelineZoom.WEEK || zoom == TimelineZoom.TWO_WEEKS)) dateWidth else 0.dp
+                return maxOf(gridWidth / count, zoom.minDayWidth, labelWidth)
+            }
             val dayWidth = widthFor(zoom, scale.days)
             val dayPx = with(density) { dayWidth.toPx() }
             val visible = gridWidth / dayWidth
@@ -201,6 +226,12 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
             val through = ceil(offset + visible).toInt() - 1
             val columns = remember(zoom, from, through, now) { timelineColumns(zoom, from, through, now) }
             val month = columns.firstOrNull { offset + visible / 2 < it.day + it.days }?.month.orEmpty()
+            val coverWindow = if (cover) remember(timeline, from, through) { coverWindow(timeline.lanes, from, through) } else null
+            if (cover) {
+                val weeks = columns.firstOrNull()?.let { weekRange(it.week, columns.last().week) }
+                val scheduled = timeline.lanes.count { it.stage != WorkflowStage.DONE }
+                SideEffect { sheets.coverEyebrow = if (weeks == null) "$scheduled scheduled" else "$scheduled scheduled · $weeks" }
+            }
             val pan = rememberScrollableState { delta ->
                 val current = clamped(firstDay)
                 val next = clamped(current - delta / dayPx)
@@ -225,6 +256,7 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
             val move: (Offset) -> Unit = { delta ->
                 drag?.let { gesture ->
                     gesture.pointer += delta
+                    gesture.moved = gesture.moved || (gesture.pointer - gesture.origin).getDistance() >= touchSlop
                     val point = gesture.pointer
                     val by = ((point.x - gesture.origin.x) / dayPx).roundToInt()
                     val edit = when {
@@ -243,7 +275,12 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
                 }
             }
             val finish = {
+                val gesture = drag
                 preview?.let { actions.scheduleTimeline(it.task, it.edit, state.today, state.generation) }
+                if (cover && preview == null && gesture != null && !gesture.moved &&
+                    gesture.mode != TimelineDragMode.PLACE && sheets.resize == null) {
+                    sheets.menu = gesture.task
+                }
                 sheets.resize = null
                 cancel()
             }
@@ -260,27 +297,43 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
                     Column(Modifier.fillMaxSize()) {
                         Row(Modifier.fillMaxWidth().height(P.TOUCH.dp).background(r.canvas).hairline(r.line),
                             verticalAlignment = Alignment.CenterVertically) {
-                            Row(Modifier.width(rail), verticalAlignment = Alignment.CenterVertically) {
-                                IconButton("list", if (railOpen) "Hide task names" else "Show task names", expanded = railOpen) { railOpen = !railOpen }
+                            if (!cover) Row(Modifier.width(rail), verticalAlignment = Alignment.CenterVertically) {
+                                TimelineSquareIcon("list", if (railOpen) "Hide task names" else "Show task names", false) { railOpen = !railOpen }
                                 if (railOpen) Label("Tasks", Tokens.Type.BUTTON_SMALL, r.ink2)
                             }
-                            Ruler(columns, offset, dayWidth, gridWidth, zoom, todayLabel, dateWidth,
-                                Modifier.weight(1f).fillMaxHeight().clipToBounds())
+                            val ruler = Modifier.weight(1f).fillMaxHeight().clipToBounds()
+                            if (cover) CoverRuler(columns, offset, dayWidth, gridWidth, zoom, todayLabel, dateWidth,
+                                ruler, useFullDates = !now.dateFormat.isNullOrEmpty() && now.dateFormat != "day_month")
+                            else Ruler(columns, offset, dayWidth, gridWidth, zoom, todayLabel, dateWidth, ruler)
                         }
                         LazyColumn(Modifier.fillMaxSize(), userScrollEnabled = drag == null) {
                             if (timeline.lanes.isEmpty()) item {
                                 Label(if (state.filter.isNotBlank()) "Nothing matches the filter." else "No scheduled tasks.",
                                     Tokens.Type.META_PHONE, r.ink2, Modifier.fillMaxWidth().background(r.pane).padding(S.S3.dp))
                             }
-                            items(timeline.lanes, key = { it.taskId }) { task ->
-                                val dates = task.span ?: return@items
-                                Lane(task, if (lift?.task?.taskId == task.taskId) lift.span else dates, dates, rail, railOpen,
-                                    offset, dayWidth, gridWidth, enabled, dragEvents,
-                                    workflow = state.home.featuresFor(RoomKey.List(task.listId))?.workflow == true,
-                                    resize = sheets.resize?.takeIf { it.task == task.taskId }?.mode,
-                                    active = lift?.task?.taskId == task.taskId || state.selected == task.taskId || sheets.resize?.task == task.taskId,
-                                    select = { actions.select(task.taskId) }, reveal = { reveal(dates) },
-                                    calendar = { start -> sheets.picker = TimelineCalendarRequest(task, start) }, menu = { sheets.menu = task })
+                            if (coverWindow != null && coverWindow.earlier.isNotEmpty()) item("earlier") {
+                                OffscreenHint(coverWindow.earlier, earlier = true, enabled) { reveal(it) }
+                            }
+                            val visibleTasks = coverWindow?.visible ?: timeline.lanes
+                            val grouped = cover && state.listFeatures?.workflow == true
+                            val sections = if (grouped) coverStages.associateWith { stage -> visibleTasks.filter { it.stage == stage } }
+                                .filterValues { it.isNotEmpty() } else mapOf(null to visibleTasks)
+                            sections.forEach { (stage, tasks) ->
+                                if (stage != null) item("stage-${stage.name}") { CoverSection(stage, tasks.size) }
+                                items(tasks, key = { it.taskId }) { task ->
+                                    val dates = task.span ?: return@items
+                                    Lane(task, if (lift?.task?.taskId == task.taskId) lift.span else dates, dates, rail, railOpen,
+                                        offset, dayWidth, gridWidth, enabled, dragEvents, cover = cover,
+                                        progress = steps[task.taskId]?.takeUnless { lift?.task?.taskId == task.taskId },
+                                        workflow = state.home.featuresFor(RoomKey.List(task.listId))?.workflow == true,
+                                        resize = sheets.resize?.takeIf { it.task == task.taskId }?.mode,
+                                        active = lift?.task?.taskId == task.taskId || state.selected == task.taskId || sheets.resize?.task == task.taskId,
+                                        select = { actions.select(task.taskId) }, reveal = { reveal(dates) },
+                                        calendar = { start -> sheets.picker = TimelineCalendarRequest(task, start) }, menu = { sheets.menu = task })
+                                }
+                            }
+                            if (coverWindow != null && coverWindow.later.isNotEmpty()) item("later") {
+                                OffscreenHint(coverWindow.later, earlier = false, enabled) { reveal(it) }
                             }
                         }
                     }
@@ -301,7 +354,9 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
                 }
                 if (hasTray && trayOpen) UnscheduledTray(tray, enabled, dragEvents, drag != null,
                     select = { actions.select(it.taskId) }, schedule = { sheets.picker = TimelineCalendarRequest(it, false) })
-                TimelineControls(zoom, month, ::changeZoom, { turn(-1) }, { firstDay = scale.todayOffset.toFloat() }, { turn(1) },
+                if (cover) CoverControls(zoom, ::changeZoom, { firstDay = todayOffset.toFloat() },
+                    if (hasTray) tray.size else null, trayOpen, !blocked && drag == null, onAdd.takeUnless { state.signedOut }) { trayOpen = !trayOpen }
+                else TimelineControls(zoom, month, ::changeZoom, { turn(-1) }, { firstDay = todayOffset.toFloat() }, { turn(1) },
                     if (hasTray) tray.size else null, trayOpen, !blocked && drag == null) { trayOpen = !trayOpen }
             }
         }
@@ -367,8 +422,62 @@ private fun timelineDrag(task: TimelineTask, enabled: Boolean, events: DragEvent
     }
 }
 
+private val coverStages = listOf(WorkflowStage.IN_PROGRESS, WorkflowStage.TODO, WorkflowStage.BACKLOG, WorkflowStage.DONE)
+
+private data class CoverWindow(val visible: List<TimelineTask>, val earlier: List<TimelineSpan>, val later: List<TimelineSpan>)
+
+private fun coverWindow(tasks: List<TimelineTask>, from: Int, through: Int): CoverWindow {
+    val visible = mutableListOf<TimelineTask>()
+    val earlier = mutableListOf<TimelineSpan>()
+    val later = mutableListOf<TimelineSpan>()
+    for (task in tasks) {
+        val span = task.span ?: continue
+        when {
+            span.last < from -> earlier += span
+            span.first > through -> later += span
+            else -> visible += task
+        }
+    }
+    return CoverWindow(visible, earlier, later)
+}
+
+private fun weekRange(first: String, last: String) = if (first == last) first else "$first–$last"
+
 @Composable
-private fun GridLines(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, target: Int?) {
+private fun CoverSection(stage: WorkflowStage, count: Int) {
+    val r = LocalDesign.current.room
+    val ink = if (stage == WorkflowStage.IN_PROGRESS) r.accentStrong else r.ink2
+    Row(Modifier.fillMaxWidth().background(r.canvas).hairline(r.line)
+        .padding(horizontal = S.S4.dp, vertical = S.S1.dp).semantics { heading() },
+        horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
+        Icon(stage.icon, ink, size = C.ICON_SMALL.dp)
+        Label("${stage.label} · $count", Tokens.Type.CAPS_LABEL, ink)
+    }
+}
+
+@Composable
+private fun OffscreenHint(spans: List<TimelineSpan>, earlier: Boolean, enabled: Boolean, reveal: (TimelineSpan) -> Unit) {
+    val r = LocalDesign.current.room
+    val weeks = if (earlier) weekRange(spans.minBy { it.last }.lastWeek, spans.maxBy { it.last }.lastWeek)
+        else weekRange(spans.minBy { it.first }.firstWeek, spans.maxBy { it.first }.firstWeek)
+    val tasks = if (spans.size == 1) "task" else "tasks"
+    val direction = if (earlier) "earlier" else "later"
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Row(Modifier.fillMaxWidth().padding(horizontal = S.S4.dp, vertical = S.S1.dp)
+        .heightIn(min = P.TOUCH.dp).clip(shape).background(r.pane).border(E.HAIRLINE.dp, r.line, shape)
+        .clickable(enabled = enabled, role = Role.Button, onClickLabel = "Show $direction tasks") {
+            reveal(if (earlier) spans.maxBy { it.last } else spans.minBy { it.first })
+        }
+        .padding(horizontal = S.S3.dp), verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+        Label("${spans.size} more $tasks $direction in $weeks", Tokens.Type.META_PHONE, r.ink2,
+            Modifier.weight(1f), maxLines = 2)
+        Label(if (earlier) "← Swipe right" else "Swipe left →", Tokens.Type.META_PHONE, r.accentStrong)
+    }
+}
+
+@Composable
+private fun GridLines(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, target: Int?, todayLine: Boolean = true) {
     val r = LocalDesign.current.room
     Canvas(Modifier.fillMaxSize()) {
         val day = dayWidth.toPx()
@@ -379,18 +488,56 @@ private fun GridLines(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp
             drawLine(r.line, Offset(x, 0f), Offset(x, size.height), line)
         }
         target?.let { drawRect(r.tint, Offset((it - offset) * day, 0f), Size(day, size.height)) }
-        val x = (0.5f - offset) * day
-        drawLine(r.accentStrong, Offset(x, 0f), Offset(x, size.height), T.TODAY_LINE.dp.toPx())
+        if (todayLine) {
+            val x = (0.5f - offset) * day
+            drawLine(r.accentStrong, Offset(x, 0f), Offset(x, size.height), T.TODAY_LINE.dp.toPx())
+        }
+    }
+}
+
+@Composable
+private fun CoverRuler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, grid: Dp,
+    zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier, useFullDates: Boolean,
+) {
+    if (zoom == TimelineZoom.MONTH || zoom == TimelineZoom.QUARTER) {
+        Ruler(columns, offset, dayWidth, grid, zoom, today, labelWidth, modifier, todayDot = true)
+        return
+    }
+    val r = LocalDesign.current.room
+    val roomy = dayWidth >= P.TOUCH.dp
+    Box(modifier) {
+        GridLines(columns, offset, dayWidth, null, todayLine = false)
+        columns.forEachIndexed { index, col ->
+            val x = dayWidth * (col.day - offset)
+            val current = col.day == 0
+            val full = x >= 0.dp && x + dayWidth <= grid + E.HAIRLINE.dp
+            if (!full && (!current || x + dayWidth / 2 !in 0.dp..grid)) return@forEachIndexed
+            Box(Modifier.offset(x = x).width(dayWidth).fillMaxHeight().then(if (current) Modifier.background(r.tint) else Modifier)
+                .clearAndSetSemantics { contentDescription = if (current) "Today, ${col.label}" else "${col.weekday}, ${col.label}" }) {
+                if (index == 0 || col.weekRemaining == 7) {
+                    Label(col.week, Tokens.Type.COUNT, r.ink2, Modifier.align(Alignment.TopStart).padding(start = S.S1.dp))
+                }
+                Column(Modifier.align(Alignment.Center).padding(top = if (roomy) 0.dp else S.S2.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally) {
+                    val ink = if (current) r.accentStrong else r.ink2
+                    Label(col.weekday, Tokens.Type.CAPS_LABEL, ink)
+                    // A day number is an axis coordinate. Prefer the selected date format where there is room for it.
+                    val date = if (useFullDates && dayWidth >= labelWidth) col.label else col.dayNumber
+                    Label(date, Tokens.Type.COUNT, if (current) r.accentStrong else r.ink, weight = Tokens.Type.BUTTON.weight)
+                }
+                if (current) Box(Modifier.align(Alignment.BottomCenter).size(T.TODAY_DOT.dp).background(r.accentStrong, CircleShape))
+            }
+        }
     }
 }
 
 @Composable
 private fun Ruler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, grid: Dp,
-    zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier,
+    zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier, todayDot: Boolean = false,
 ) {
     val r = LocalDesign.current.room
     Box(modifier) {
-        GridLines(columns, offset, dayWidth, null)
+        GridLines(columns, offset, dayWidth, null, todayLine = !todayDot)
         val weekly = zoom == TimelineZoom.MONTH || zoom == TimelineZoom.QUARTER
         columns.forEachIndexed { i, col ->
             val show = !weekly || i == 0 || columns[i - 1].week != col.week
@@ -411,11 +558,14 @@ private fun Ruler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, gr
         val todayX = dayWidth * (0.5f - offset)
         if (todayX in 0.dp..grid && labelWidth <= grid) {
             Box(Modifier.align(if (weekly) Alignment.BottomStart else Alignment.TopStart)
-                .offset(x = (todayX - labelWidth / 2).coerceIn(0.dp, grid - labelWidth)).width(labelWidth),
+                .offset(x = (todayX - labelWidth / 2).coerceIn(0.dp, grid - labelWidth)).width(labelWidth)
+                .padding(bottom = if (todayDot) T.TODAY_DOT.dp else 0.dp),
                 contentAlignment = Alignment.Center) {
                 Label(today, Tokens.Type.META_PHONE, r.accentStrong, Modifier.background(r.tint).padding(S.S1.dp)
                     .semantics { contentDescription = "Today, $today" })
             }
+            if (todayDot) Box(Modifier.align(Alignment.BottomStart).offset(x = todayX - T.TODAY_DOT.dp / 2)
+                .size(T.TODAY_DOT.dp).background(r.accentStrong, CircleShape))
         }
     }
 }
@@ -424,7 +574,7 @@ private fun Ruler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, gr
 private fun Lane(
     task: TimelineTask, painted: TimelineSpan, dates: TimelineSpan, rail: Dp, railOpen: Boolean,
     offset: Float, dayWidth: Dp, grid: Dp, enabled: Boolean, events: DragEvents,
-    workflow: Boolean, resize: TimelineDragMode?, active: Boolean,
+    cover: Boolean, progress: String?, workflow: Boolean, resize: TimelineDragMode?, active: Boolean,
     select: () -> Unit, reveal: () -> Unit, calendar: (Boolean) -> Unit, menu: () -> Unit,
 ) {
     val density = LocalDensity.current
@@ -432,9 +582,17 @@ private fun Lane(
     val chip = task.chip
     val list = chip?.let { LocalDesign.current.list(it.hue) }
     val done = task.stage == WorkflowStage.DONE
-    val overdue = !done && task.dates.due != null && dates.last < 0
+    val overdueLabel = painted.overdueLabel?.takeUnless { done }
+    val overdue = overdueLabel != null
     val inProgress = workflow && task.stage == WorkflowStage.IN_PROGRESS
-    val description = if (workflow || done) "${task.stage.label}, ${dates.label}" else dates.label
+    val description = listOfNotNull(chip?.label, task.stage.label.takeIf { workflow || done }, dates.label, overdueLabel)
+        .joinToString(", ")
+    val measurer = rememberTextMeasurer()
+    val barTitleStyle = Tokens.Type.BUTTON.style(r.ink)
+    val barMetaStyle = Tokens.Type.META_PHONE.style(r.ink2)
+    val titleWidth = if (cover) with(density) { measurer.measure(task.title, barTitleStyle).size.width.toDp() } else 0.dp
+    val meta = overdueLabel ?: progress ?: painted.label
+    val metaWidth = if (cover) with(density) { measurer.measure(meta, barMetaStyle).size.width.toDp() } else 0.dp
     val cellLeft = dayWidth * (dates.first - offset)
     val cellRight = dayWidth * (dates.last + 1 - offset)
     val onScreen = cellLeft < grid && cellRight > 0.dp
@@ -450,9 +608,10 @@ private fun Lane(
     val actions = if (!enabled) emptyList() else listOf(
         CustomAccessibilityAction("Change start date") { calendar(true); true },
         CustomAccessibilityAction("Change due date") { calendar(false); true },
+        CustomAccessibilityAction("Schedule options") { menu(); true },
     )
     Row(Modifier.fillMaxWidth().height(T.LANE_ROW_PHONE.dp).hairline(r.line)) {
-        Row(Modifier.width(rail).fillMaxHeight().background(if (active) r.wash else r.pane)
+        if (!cover) Row(Modifier.width(rail).fillMaxHeight().background(if (active) r.wash else r.pane)
             .hairline(r.line).combinedClickable(enabled = enabled, role = Role.Button, onLongClickLabel = "Schedule",
                 onLongClick = menu, onClick = { if (onScreen) select() else reveal() })
             .semantics {
@@ -465,7 +624,8 @@ private fun Lane(
             else if (done || !railOpen) Icon(if (done) "check" else "calendar", r.ink3, size = C.ICON_SMALL.dp)
             if (railOpen) Column(Modifier.weight(1f)) {
                 Label(task.title, Tokens.Type.BUTTON_SMALL, r.ink, decoration = if (done) TextDecoration.LineThrough else null)
-                if (chip == null) Label(painted.label, Tokens.Type.META_PHONE, if (overdue) r.dangerInk else r.ink2)
+                if (overdueLabel != null) Label(overdueLabel, Tokens.Type.META_PHONE, r.dangerInk)
+                else if (chip == null) Label(painted.label, Tokens.Type.META_PHONE, r.ink2)
                 else TimelineListPill(chip)
             }
         }
@@ -483,46 +643,83 @@ private fun Lane(
             val width = right - left
             if (width > 0.dp && naturalLeft < grid && naturalRight > 0.dp) {
                 val color = when {
-                    active -> r.accentStrong
                     overdue -> r.dangerInk
+                    active -> r.accentStrong
                     list != null -> list.ink
+                    cover && workflow && !inProgress && painted.bar == TimelineBar.RANGE -> r.control
                     else -> r.accentStrong
                 }
                 val fill = when {
                     overdue -> r.dangerBg
                     list != null -> list.tint
                     done -> r.canvas
+                    cover && active -> r.tint
+                    cover && workflow && !inProgress && painted.bar == TimelineBar.RANGE -> r.pane
                     else -> r.tint
+                }
+                val ink = when {
+                    overdue -> r.dangerInk
+                    list != null -> list.ink
+                    else -> r.ink
                 }
                 // Only actual endpoints are rounded, never the edge of a clipped viewport.
                 val startRadius = if (startVisible) Tokens.Radius.MD.dp else 0.dp
                 val endRadius = if (endVisible) Tokens.Radius.MD.dp else 0.dp
                 val shape = RoundedCornerShape(topStart = startRadius, bottomStart = startRadius, topEnd = endRadius, bottomEnd = endRadius)
-                val railMark = (inProgress || list != null) && startVisible && width >= S.S8.dp
+                val marker = overdue || painted.bar == TimelineBar.MILESTONE
+                val railMark = !marker && (inProgress || list != null) && startVisible && width >= S.S8.dp
                 val showStartGrip = startGrip && startVisible
                 val showEndGrip = endGrip && endVisible
+                val pad = if (marker && width < C.ICON_SMALL.dp + S.S2.dp) 0.dp else S.S1.dp
+                val padStart = if (railMark || showStartGrip) S.S3.dp else pad
+                val padEnd = if (showEndGrip) S.S3.dp else pad
+                val inner = (width - padStart - padEnd).coerceAtLeast(0.dp)
+                val after = grid - right - S.S2.dp
+                val before = left - S.S2.dp
+                val useAfter = after >= before
+                val space = maxOf(after, before)
+                val markerWidth = if (marker) C.ICON_SMALL.dp + S.S1.dp else 0.dp
+                val titleInside = cover && (!marker || width >= T.INLINE_LABEL_MIN.dp) &&
+                    (inner - markerWidth >= titleWidth || inner - markerWidth >= maxOf(space, P.TOUCH.dp))
+                val metaInside = titleInside && inner - markerWidth >= metaWidth + S.S2.dp + minOf(titleWidth, T.INLINE_LABEL_MIN.dp)
                 Row(Modifier.align(Alignment.CenterStart).offset(x = left).wrapContentWidth(Alignment.Start, unbounded = true)
                     .width(width).height(T.BAR_HEIGHT_PHONE.dp).clip(shape).background(fill)
                     .then(if (painted.bar == TimelineBar.OPEN_ENDED && endVisible) Modifier.openEnd(fill, color) else Modifier)
                     .then(if (showStartGrip && !railMark || showEndGrip) Modifier.resizeMarks(color, showStartGrip && !railMark, showEndGrip) else Modifier)
                     .border(E.HAIRLINE.dp, color, shape)
                     .then(if (railMark) Modifier.selectionBar(color) else Modifier)
-                    .padding(start = if (railMark || showStartGrip) S.S3.dp else S.S1.dp,
-                        end = if (showEndGrip) S.S3.dp else S.S1.dp),
-                    verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
-                    if (painted.bar == TimelineBar.MILESTONE && width >= C.ICON_SMALL.dp + S.S2.dp)
+                    .padding(start = padStart, end = padEnd), verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = if (marker && !titleInside && (cover || width < T.INLINE_LABEL_MIN.dp))
+                        Arrangement.Center else Arrangement.spacedBy(S.S1.dp)) {
+                    if (overdue) OverdueDiamond(ink, inner)
+                    else if (painted.bar == TimelineBar.MILESTONE && inner >= C.ICON_SMALL.dp)
                         Icon("flag", color, size = C.ICON_SMALL.dp)
-                    if (width >= (if (railOpen) T.INLINE_LABEL_MIN.dp else S.S8.dp))
-                        Label(if (railOpen) painted.label else task.title, Tokens.Type.META_PHONE, if (list != null && !overdue) list.ink else r.ink)
+                    if (titleInside) {
+                        Label(task.title, Tokens.Type.BUTTON, ink, Modifier.weight(1f),
+                            decoration = TextDecoration.LineThrough.takeIf { done })
+                        if (metaInside || (overdue && inner >= metaWidth + T.INLINE_LABEL_MIN.dp))
+                            Label(meta, Tokens.Type.META_PHONE, if (overdue) ink else list?.ink ?: r.ink2)
+                    } else if (!cover && width >= (if (railOpen) T.INLINE_LABEL_MIN.dp else S.S8.dp)) {
+                        Label(overdueLabel ?: if (railOpen) painted.label else task.title, Tokens.Type.META_PHONE, ink)
+                    }
                 }
-                if (!railOpen && width < S.S8.dp) {
-                    val after = grid - right - S.S2.dp
-                    val before = left - S.S2.dp
-                    val useAfter = after >= before
-                    val space = maxOf(after, before)
-                    if (space >= P.TOUCH.dp) Label(task.title, Tokens.Type.META_PHONE, r.ink,
-                        Modifier.align(Alignment.CenterStart).offset(x = if (useAfter) right + S.S2.dp else 0.dp)
-                            .widthIn(max = space).background(r.pane).padding(horizontal = S.S1.dp))
+                val outside = if (cover) !titleInside else !railOpen && width < S.S8.dp
+                if (outside && space >= P.TOUCH.dp) {
+                    Box(Modifier.align(Alignment.CenterStart).offset(x = if (useAfter) right + S.S2.dp else 0.dp)
+                        .width(space).fillMaxHeight().then(if (cover) Modifier.combinedClickable(enabled = enabled,
+                            role = Role.Button, onLongClickLabel = "Schedule", onLongClick = menu, onClick = select) else Modifier),
+                        contentAlignment = if (useAfter) Alignment.CenterStart else Alignment.CenterEnd) {
+                        Column(Modifier.background(r.pane, RoundedCornerShape(Tokens.Radius.SM.dp)).padding(horizontal = S.S1.dp),
+                            horizontalAlignment = if (useAfter) Alignment.Start else Alignment.End) {
+                            Row(horizontalArrangement = Arrangement.spacedBy(S.S1.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Label(task.title, if (cover) Tokens.Type.BUTTON else Tokens.Type.META_PHONE, if (overdue) ink else r.ink,
+                                    Modifier.weight(1f, fill = false), decoration = TextDecoration.LineThrough.takeIf { done })
+                                if (overdueLabel != null && space >= metaWidth + P.TOUCH.dp)
+                                    Label("· $overdueLabel", Tokens.Type.META_PHONE, ink)
+                            }
+                            if (cover && chip != null) TimelineListPill(chip)
+                        }
+                    }
                 }
             }
 
@@ -545,6 +742,20 @@ private fun Lane(
                     })
             }
         }
+    }
+}
+
+@Composable
+private fun OverdueDiamond(ink: Color, width: Dp) {
+    if (width > 0.dp) Canvas(Modifier.size(minOf(S.S2.dp, width))) {
+        val diamond = androidx.compose.ui.graphics.Path().apply {
+            moveTo(center.x, 0f)
+            lineTo(size.width, center.y)
+            lineTo(center.x, size.height)
+            lineTo(0f, center.y)
+            close()
+        }
+        drawPath(diamond, ink)
     }
 }
 
@@ -606,6 +817,65 @@ private fun UnscheduledTray(tasks: List<TimelineTask>, enabled: Boolean, events:
 }
 
 @Composable
+internal fun TimelineSquareIcon(icon: String, label: String, selected: Boolean, onClick: () -> Unit) {
+    val r = LocalDesign.current.room
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Box(Modifier.size(P.TOUCH.dp).clickable(role = Role.Button, onClick = onClick)
+        .clearAndSetSemantics { contentDescription = label }, contentAlignment = Alignment.Center) {
+        Box(Modifier.size(Tokens.Metrics.Board.HEADER_HEIGHT.dp)
+            .then(if (selected) Modifier.background(r.raised, shape).border(E.HAIRLINE.dp, r.lineStrong, shape) else Modifier),
+            contentAlignment = Alignment.Center) {
+            Icon(icon, if (selected) r.ink else r.ink2)
+        }
+    }
+}
+
+@Composable
+private fun CoverControls(zoom: TimelineZoom, changeZoom: (TimelineZoom) -> Unit, today: () -> Unit,
+    unscheduled: Int?, tray: Boolean, enabled: Boolean, add: (() -> Unit)?, toggleTray: () -> Unit,
+) {
+    val r = LocalDesign.current.room
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Row(Modifier.fillMaxWidth().background(r.canvas).hairline(r.line, top = true).padding(horizontal = S.S1.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        TimelineButton("Today", enabled = enabled, onClick = today)
+        Row(Modifier.height(P.TOUCH.dp).drawWithContent {
+            val inset = S.S1.dp.toPx()
+            val radius = Tokens.Radius.MD.dp.toPx()
+            drawRoundRect(r.wash, topLeft = Offset(0f, inset), size = Size(size.width, size.height - 2 * inset),
+                cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius))
+            drawContent()
+        }.selectableGroup(), verticalAlignment = Alignment.CenterVertically) {
+            listOf(TimelineZoom.WEEK to "1W", TimelineZoom.TWO_WEEKS to "2W", TimelineZoom.MONTH to "M").forEach { (scale, short) ->
+                Box(Modifier.size(P.TOUCH.dp).selectable(scale == zoom, enabled, role = Role.Tab) { changeZoom(scale) }
+                    .semantics { contentDescription = "Timeline zoom: ${scale.label}" }, contentAlignment = Alignment.Center) {
+                    Box(Modifier.size(Tokens.Metrics.Board.HEADER_HEIGHT.dp)
+                        .then(if (scale == zoom) Modifier.background(r.raised, shape).border(E.HAIRLINE.dp, r.lineStrong, shape) else Modifier),
+                        contentAlignment = Alignment.Center) {
+                        Label(short, Tokens.Type.BUTTON_SMALL, if (enabled) r.ink else r.ink3)
+                    }
+                }
+            }
+        }
+        if (unscheduled == null) Spacer(Modifier.weight(1f))
+        else BoxWithConstraints(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
+            val full = "Unscheduled $unscheduled"
+            val fit = maxWidth >= P.CHIP_MAX.dp && LocalDensity.current.fontScale < 1.3f
+            TimelineButton(if (fit) full else "Unsched $unscheduled", enabled, description = "Unscheduled: $unscheduled",
+                selected = tray, icon = "calendar-range", onClick = toggleTray)
+        }
+        if (add != null) {
+            Box(Modifier.size(P.TOUCH.dp).clickable(enabled = enabled, role = Role.Button, onClick = add)
+                .semantics { contentDescription = "Add task" }, contentAlignment = Alignment.Center) {
+                Box(Modifier.size(S.S10.dp).background(if (enabled) r.accentFill else r.wash, shape), contentAlignment = Alignment.Center) {
+                    Icon("plus", if (enabled) r.onAccent else r.ink3)
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun TimelineControls(zoom: TimelineZoom, month: String, changeZoom: (TimelineZoom) -> Unit, previous: () -> Unit, today: () -> Unit,
     next: () -> Unit, unscheduled: Int?, tray: Boolean, enabled: Boolean, toggleTray: () -> Unit,
 ) {
@@ -643,7 +913,7 @@ private fun TimelineControls(zoom: TimelineZoom, month: String, changeZoom: (Tim
 
 @Composable
 private fun TimelineButton(text: String, enabled: Boolean = true, description: String? = null,
-    selected: Boolean? = null, onClick: () -> Unit,
+    selected: Boolean? = null, icon: String? = null, onClick: () -> Unit,
 ) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
@@ -652,9 +922,13 @@ private fun TimelineButton(text: String, enabled: Boolean = true, description: S
             else Modifier.selectable(selected, enabled, role = Role.Button, onClick = onClick))
         .semantics { if (description != null) contentDescription = description }.padding(horizontal = S.S1.dp),
         contentAlignment = Alignment.Center) {
-        Label(text, Tokens.Type.BUTTON_SMALL, if (enabled) r.accentStrong else r.ink3,
-            Modifier.background(if (selected == true) r.tint else r.pane, shape).border(E.HAIRLINE.dp, r.lineStrong, shape)
-                .padding(horizontal = S.S2.dp, vertical = S.S1.dp))
+        Row(Modifier.background(if (selected == true) r.tint else r.pane, shape).border(E.HAIRLINE.dp, r.lineStrong, shape)
+            .padding(horizontal = S.S2.dp, vertical = S.S1.dp), verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+            val ink = if (enabled) r.accentStrong else r.ink3
+            icon?.let { Icon(it, ink, size = C.ICON_SMALL.dp) }
+            Label(text, Tokens.Type.BUTTON_SMALL, ink)
+        }
     }
 }
 
