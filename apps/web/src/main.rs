@@ -54,6 +54,8 @@ async fn start() {
             fixtures::agent_rows_state()
         } else if query.contains("fixture=trash") {
             fixtures::trash_state()
+        } else if query.contains("fixture=task-activity") {
+            fixtures::task_activity_state()
         } else if query.contains("fixture=detail-wide") {
             fixtures::wide_detail_state()
         } else {

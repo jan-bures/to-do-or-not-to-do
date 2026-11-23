@@ -1053,32 +1053,7 @@ pub struct Detail {
     /// The agent that created it.
     pub agent: Option<AgentMark>,
     /// What happened to it, newest first.
-    pub activity: Vec<Activity>,
-}
-
-/// One line of a task's activity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Activity {
-    /// The agent's mark, or `None` for the owner (a neutral `Y` mark) and the system.
-    pub mark: Option<AgentMark>,
-    /// `You`, `Codex`, `Email`.
-    pub who: String,
-    /// `created this`.
-    pub what: String,
-    /// `today 09:12`.
-    pub when: String,
-}
-
-/// How an actor is named in the interface.
-#[must_use]
-pub fn actor_name(actor: &Actor) -> String {
-    match actor {
-        Actor::Owner { .. } => "You".to_owned(),
-        Actor::Agent { agent_id } => agent_display(agent_id.as_str()),
-        Actor::Importer => "Import".to_owned(),
-        Actor::EmailIngest => "Email".to_owned(),
-        Actor::System => "System".to_owned(),
-    }
+    pub activity: Vec<todo_client::task_activity::Line>,
 }
 
 /// An agent's display name (`claude` → `Claude`, `pi` → `Pi`).
@@ -1235,31 +1210,8 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
         my_day: t.my_day == Some(today),
         priority: t.priority,
         agent: agent_mark(&t.created.by),
-        activity: activity(t, now),
+        activity: todo_client::task_activity::lines(state, id, now.at),
     })
-}
-
-fn activity(t: &Task, now: &Now) -> Vec<Activity> {
-    let item = |by: &Actor, what: &str, at: Timestamp| Activity {
-        mark: agent_mark(by),
-        who: actor_name(by),
-        what: what.to_owned(),
-        when: when(at, now),
-    };
-    let mut v = Vec::new();
-    if let Some(done) = t.completed_at {
-        v.push(item(&t.updated.by, "completed this", done));
-    }
-    if t.updated.at > t.created.at && Some(t.updated.at) != t.completed_at {
-        v.push(item(&t.updated.by, "edited this", t.updated.at));
-    }
-    let created = if t.created.by == Actor::EmailIngest {
-        "created this from an email"
-    } else {
-        "created this"
-    };
-    v.push(item(&t.created.by, created, t.created.at));
-    v
 }
 
 #[cfg(test)]
@@ -1833,7 +1785,7 @@ mod tests {
         assert!(d.stamps.starts_with("Created 14 Nov"), "{}", d.stamps);
         assert!(matches!(d.sources.first(), Some(Source::Email { .. })));
         assert!(d.my_day);
-        assert_eq!(d.activity.last().unwrap().what, "created this");
+        assert_eq!(d.activity.last().unwrap().action, "created this");
         assert_eq!(d.activity.first().unwrap().who, "You");
         let codex = s
             .tasks

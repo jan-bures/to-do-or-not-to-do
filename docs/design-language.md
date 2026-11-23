@@ -301,6 +301,10 @@ every client: **My Day** (sun), **Important** (star), **Close** (×). Android an
 (⋯) right after the star. On Android's cover screen Back replaces Close. The breadcrumb takes what's left and ends
 in an ellipsis; the actions never move, however long the list's name.
 
+**Task detail activity** sits below Attachments on each client. A quiet heading and hairline introduce a flat list:
+actor mark at the leading edge, actor and action beside it, and the relative time in mono at the trailing edge.
+The mark repeats the actor already named in text. This is a read-only summary, not a second event feed.
+
 **Undo never covers a row.**
 
 - On the desktop, the bottom of the list reserves a 56 px inset. "Completed 3" sits on the left and the toast on

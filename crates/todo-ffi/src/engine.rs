@@ -653,7 +653,7 @@ impl TodoEngine {
         self.recovered
     }
 
-    /// An offline engine on invented data (`world`, `finished` or `blank`) dated relative to `now`, for
+    /// An offline engine on invented data dated relative to `now`, for
     /// the screenshot gallery and previews. It never touches the network.
     #[uniffi::constructor]
     pub fn fixture(name: String, now: LocalNow) -> Result<Arc<Self>, FfiError> {

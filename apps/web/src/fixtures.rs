@@ -330,6 +330,49 @@ pub fn fallback_state() -> State {
     b.state
 }
 
+/// Task detail with a later owner edit after a different agent completed it.
+#[cfg(all(target_arch = "wasm32", feature = "fixtures"))]
+pub fn task_activity_state() -> State {
+    use todo_core::{AccessLevel, Grants};
+    let owner = Actor::owner(DEVICE).unwrap_or(Actor::System);
+    let mut b = Builder {
+        state: State::new(),
+        at: at("2026-11-19T09:34:58Z"),
+        owner: owner.clone(),
+    };
+    b.run(todo_client::intent::create_list(list(1), None, "Design"));
+    let codex = Actor::agent("codex").unwrap_or(Actor::System);
+    let pi = Actor::agent("pi").unwrap_or(Actor::System);
+    for id in [codex.agent_id(), pi.agent_id()].into_iter().flatten() {
+        b.state.grants.insert(
+            id.clone(),
+            Grants {
+                default: AccessLevel::Plan,
+                ..Grants::default()
+            },
+        );
+    }
+    b.owner = codex;
+    b.run(Command::CreateTask(Box::new(NewTask::new(
+        task(1),
+        list(1),
+        "Review the colour proofs",
+    ))));
+    b.owner = pi;
+    b.at("2026-11-21T08:04:59Z");
+    b.run(Command::CompleteTask { id: task(1) });
+    b.owner = owner;
+    b.at("2026-11-21T09:22:59Z");
+    b.run(Command::UpdateTask {
+        id: task(1),
+        patch: TaskPatch {
+            notes: Some("The warm option is approved.".into()),
+            ..TaskPatch::default()
+        },
+    });
+    b.state
+}
+
 /// The gallery's state: two collections, a few loose lists, a My Day with 12 tasks (3 done).
 #[must_use]
 #[allow(clippy::too_many_lines)]

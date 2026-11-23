@@ -29,6 +29,23 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`task activity on desktop and phone (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      for (const [layout, viewport] of [["desktop", DESKTOP], ["phone", PHONE]]) {
+        await page.setViewportSize(viewport);
+        await open(page, "/app/completed?fixture=task-activity");
+        await page.getByRole("button", { name: "Review the colour proofs", exact: true }).click();
+        const summary = page.getByRole("region", { name: "Activity", exact: true });
+        await expect(summary.locator(".act-text")).toHaveText([
+          "You edited this", "Pi completed this", "Codex created this",
+        ]);
+        await expect(summary.locator(".act-when")).toHaveText(["12 min ago", "1 hr ago", "2 days ago"]);
+        await summary.scrollIntoViewIfNeeded();
+        await shot(page, `task-activity-${layout}-${scheme}`);
+      }
+      await w.check();
+    });
+
     test(`trash populated and empty (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

@@ -49,7 +49,9 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
@@ -60,6 +62,7 @@ import app.todoornot.core.FieldEdit
 import app.todoornot.core.StepRow
 import app.todoornot.core.SourceLink
 import app.todoornot.core.StepCount
+import app.todoornot.core.TaskActivityLine
 import app.todoornot.core.TaskDetail
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
@@ -178,12 +181,49 @@ fun DetailPane(
                 }
             }
             Attachments(state, actions)
+            TaskActivity(detail.activity)
             // On its own, the toast strip sits over the end of the pane: room to scroll clear of it.
             Spacer(Modifier.height(S.S8.dp + if (standalone && toast != null) P.TOAST_STRIP.dp else 0.dp))
         }
         if (standalone) {
             Box(Modifier.align(Alignment.BottomCenter).imePadding().navigationBarsPadding()) { ToastStrip(toast, actions) }
         }
+        }
+    }
+}
+
+@Composable
+private fun TaskActivity(lines: List<TaskActivityLine>) {
+    val r = LocalDesign.current.room
+    Label(
+        "Activity", Tokens.Type.CAPS_LABEL, r.ink3,
+        Modifier.padding(top = S.S6.dp, bottom = S.S2.dp).semantics { heading() },
+    )
+    Column(Modifier.fillMaxWidth().hairline(r.line, top = true)) {
+        lines.forEach { line ->
+            Row(
+                Modifier.fillMaxWidth().heightIn(min = Tokens.Metrics.Desktop.PROP_ROW.dp).padding(vertical = S.S1.dp),
+                horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val decoration = Modifier.clearAndSetSemantics { }
+                val agent = line.agent
+                val icon = line.icon
+                if (agent != null) {
+                    AgentBadge(agent, decoration)
+                } else {
+                    Box(
+                        decoration.size(C.AGENT_MARK.dp).background(r.raised, CircleShape)
+                            .border(Tokens.Elevation.HAIRLINE.dp, r.lineStrong, CircleShape),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (icon == null) Label("Y", Tokens.Type.AGENT_LETTER, r.ink2)
+                        else Icon(icon, r.ink2, size = C.ICON_SMALL.dp)
+                    }
+                }
+                Label("${line.who} ${line.action}", Tokens.Type.STEP, r.ink2, Modifier.weight(1f), maxLines = Int.MAX_VALUE)
+                Label(line.relative, Tokens.Type.TAG, r.ink3)
+            }
         }
     }
 }

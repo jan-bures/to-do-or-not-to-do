@@ -21,17 +21,20 @@ pub enum Fixture {
     Finished,
     /// Several tombstones with and without live parents.
     Trash,
+    /// Task detail with three activity lines and distinct actors.
+    TaskActivity,
     /// Nothing at all: the first start after pairing.
     Blank,
 }
 
 impl Fixture {
-    /// By name: `world`, `finished` or `blank`.
+    /// Finds a gallery fixture by name.
     pub fn by_name(name: &str) -> Option<Self> {
         match name {
             "world" => Some(Self::World),
             "finished" => Some(Self::Finished),
             "trash" => Some(Self::Trash),
+            "task-activity" => Some(Self::TaskActivity),
             "blank" => Some(Self::Blank),
             _ => None,
         }
@@ -228,11 +231,60 @@ impl<'a> Builder<'a> {
     }
 }
 
+fn task_activity(mut b: Builder<'_>) -> State {
+    use todo_core::command::{NewTask, TaskPatch};
+    use todo_core::{AccessLevel, Command, Grants, apply, decide};
+
+    let list = b.list(None, "Design", "azure");
+    let (at, seed) = b.seed("task");
+    let id = TaskId::derive(at, &seed);
+    let codex = Actor::agent("codex").unwrap_or(Actor::System);
+    let pi = Actor::agent("pi").unwrap_or(Actor::System);
+    for agent in [codex.agent_id(), pi.agent_id()].into_iter().flatten() {
+        b.state.grants.insert(
+            agent.clone(),
+            Grants {
+                default: AccessLevel::Plan,
+                ..Grants::default()
+            },
+        );
+    }
+    for (minutes_ago, by, cmd) in [
+        (
+            2 * 24 * 60,
+            codex,
+            Command::CreateTask(Box::new(NewTask::new(id, list, "Review the colour proofs"))),
+        ),
+        (90, pi, Command::CompleteTask { id }),
+        (
+            12,
+            b.owner.clone(),
+            Command::UpdateTask {
+                id,
+                patch: TaskPatch {
+                    notes: Some("The warm option is approved.".into()),
+                    ..TaskPatch::default()
+                },
+            },
+        ),
+    ] {
+        if let Ok(events) = decide(&b.state, &by, &cmd, b.stamp(minutes_ago, &by).at) {
+            for event in &events {
+                let _ = apply(&mut b.state, event);
+            }
+        }
+    }
+    b.state
+}
+
 /// Builds a fixture world as of `now`.
 pub fn build(fixture: Fixture, now: &Now) -> State {
     let mut b = Builder::new(now);
     if fixture == Fixture::Blank {
         return b.state;
+    }
+    if fixture == Fixture::TaskActivity {
+        return task_activity(b);
     }
     let finished = fixture == Fixture::Finished;
     let my = |done: bool| Spec {

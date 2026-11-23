@@ -58,6 +58,7 @@ pub mod session;
 pub mod sse;
 pub mod storage;
 pub mod sync_label;
+pub mod task_activity;
 pub mod trash;
 
 #[cfg(feature = "native")]

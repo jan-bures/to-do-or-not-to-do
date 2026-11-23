@@ -451,6 +451,11 @@ more than 30 seconds, the app says the files uploaded but haven't appeared here 
 use plain wording without quoting the server. Reopening the detail clears an old alert. Click a file
 to download it. **Remove** hides the attachment at once, and **Undo** restores it.
 
+Below Attachments, **Activity** shows creation, the latest edit and the current completion, newest
+first, from the same `todo_client::task_activity` view model as desktop and Android. The names, actions and
+relative times match across clients. A later edit doesn't change the completion's actor; if that actor
+wasn't recorded, the line says **Unknown actor**. This is an offline summary, not the full event feed.
+
 Finished My Day shows the done count and **all clear** beside the dusk scene. It keeps quick-add and a
 **Completed n** disclosure, and links to Planned via **Plan <weekday>** even when tomorrow has no tasks.
 Click a hand-over task's title, or use **J/K**, to open its detail. Its checkbox or **Space** on a selected
@@ -497,11 +502,11 @@ The status bar shows shortcuts only when their actions are available.
   the link field and removal, the phone Not synced list, an active query filter, the finished
   day with a hand-over selection and with Completed closed and expanded, a finished day with no tasks tomorrow,
   an empty list, Trash (populated and empty, desktop and phone), Activity (unfiltered, agent-filtered,
-  empty and refused undo), the desktop and phone quick-add date chip, the storage-error and read-only alerts
-  (desktop and phone), the medium modal, and the phone's list, detail and drawer. Settings menus are
-  captured on desktop (`sidebar-settings-{light,dark}.png`) and phone (`phone-settings-{light,dark}.png`).
-  The PNGs land in `apps/web/e2e/gallery/`, including `sidebar-{light,dark}.png` and
-  `sidebar-narrow-{light,dark}.png` crops;
+  empty and refused undo), task detail activity on desktop and phone, the desktop and phone quick-add
+  date chip, the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
+  list, detail and drawer. Settings menus are captured on desktop (`sidebar-settings-{light,dark}.png`)
+  and phone (`phone-settings-{light,dark}.png`). The PNGs land in `apps/web/e2e/gallery/`, including
+  `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)
   after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or

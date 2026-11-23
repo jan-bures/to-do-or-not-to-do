@@ -152,7 +152,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Attachments: upload | `POST /tasks/{id}/attachments` (`S/api/attachments.rs`), bearer or owner session with CSRF and matching origin | wired: **Add file** opens the Windows multi-select picker, or drop files from Explorer onto the open task. Uploads are direct, with busy and error feedback (`D/ui/shell/attachments.rs`, `D/ui/shell/detail.rs`, `D/session.rs`) | wired: **Add file** or drop onto task detail (`W/app/attachments.rs`) | wired: **Add file** via system picker, size-limited direct upload |
 | Attachments: remove | `Delete` | wired: each file's **Remove** button uses tracked Undo and queues offline (`D/ui/shell/attachments.rs`, `D/ui/shell/undo.rs`) | wired: **Remove** with Undo (`W/app/attachments.rs`) | wired: **Remove** with tracked Undo, including offline |
 | Created and edited stamps | stamps | shown `D/model/derive.rs:654` | shown `W/app.rs:1625` | shown `A/ui/Detail.kt:115` |
-| Per-task activity (who created, edited, completed it) | stamps | missing (the subtitle only) | shown `W/app.rs:1863` (from stamps, not the event log) | missing (the subtitle only) |
+| Per-task activity (who created, edited, completed it) | stamps and local completion provenance; shared names, actions, relative times and ordering (`T/task_activity.rs`) | shown below attachments (`D/ui/shell/detail.rs`) | shown below attachments (`W/app.rs`, `DetailActivity`) | shown below attachments (`A/ui/Detail.kt`, `F/view.rs`) |
 | Merge two tasks | `MergeTasks` `C/command.rs:248` | missing | missing | missing |
 | Close the detail | n/a | wired `D/ui/shell/detail.rs:752`, Esc | wired `W/app.rs:1699`, Esc | wired `A/ui/Detail.kt:81`, `:99`, Back |
 

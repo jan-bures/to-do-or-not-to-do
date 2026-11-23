@@ -185,6 +185,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "tag-picker" | "tag-create" | "tag-edit" | "tag-colour" | "tag-rename" => Some(my_day()),
         // Links: the task's Links… page, and a link being typed into the detail pane's field.
         "task-links" | "add-link" => Some(with_web_link()),
+        "task-activity" => Some(task_activity()),
         "attachments-list" => Some(my_day()),
         "attachments-empty" | "attachments-uploading" | "attachments-error" => {
             let mut f = my_day();
@@ -890,6 +891,42 @@ fn fixture(b: Builder, ui: UiState, now: &str) -> Fixture {
         failed: Vec::new(),
         activity: activity_items(),
     }
+}
+
+fn task_activity() -> Fixture {
+    let mut b = Builder::new();
+    let collection = b.collection("Studio", "azure");
+    let list = b.list(collection, "Design", "azure");
+    let selected = b.task(T {
+        by: Some("codex"),
+        created: "2026-11-19T09:35:00Z",
+        ..t(list, "Review the colour proofs")
+    });
+    b.run(
+        &agent("pi"),
+        "2026-11-21T08:05:00Z",
+        Command::CompleteTask { id: selected },
+    );
+    b.run(
+        &owner(),
+        "2026-11-21T09:23:00Z",
+        Command::UpdateTask {
+            id: selected,
+            patch: TaskPatch {
+                notes: Some("The warm option is approved.".into()),
+                ..TaskPatch::default()
+            },
+        },
+    );
+    fixture(
+        b,
+        UiState {
+            room: RoomKey::Smart(Smart::Completed),
+            task: Some(selected),
+            ..UiState::default()
+        },
+        "2026-11-21T09:35:00Z",
+    )
 }
 
 /// Three changes the server refused, about tasks in the sample data: an edit to a task deleted
@@ -1857,6 +1894,24 @@ mod tests {
             }
         }
         assert!(by_name("inbox").is_none());
+    }
+
+    #[test]
+    fn detail_activity_shows_each_actors_own_change() {
+        let shell = task_activity().shell();
+        let detail = shell.detail.expect("selected task");
+        assert_eq!(
+            detail
+                .activity
+                .iter()
+                .map(|line| (line.who.as_str(), line.action, line.when.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("You", "edited this", "12 min ago"),
+                ("Pi", "completed this", "1 hr ago"),
+                ("Codex", "created this", "2 days ago"),
+            ],
+        );
     }
 
     #[test]

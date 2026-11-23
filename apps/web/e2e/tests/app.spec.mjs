@@ -37,12 +37,12 @@ test.describe("rooms spanning the autumn clock change", () => {
     await w.check();
   });
 
-  test("task detail dates the completion using the offset at the time it happened", async ({ page }) => {
+  test("task detail shows elapsed time for completion across the clock change", async ({ page }) => {
     await page.clock.setFixedTime(new Date("2026-10-25T12:00:00Z"));
     await open(page, "/app/completed?fixture=dst");
     await row(page, "After midnight").getByRole("button", { name: "After midnight", exact: true }).click();
     const completed = page.locator("ul.activity li").filter({ hasText: "completed this" });
-    await expect(completed.locator(".act-when")).toHaveText("today 00:30");
+    await expect(completed.locator(".act-when")).toHaveText("13 hr ago");
   });
 
   for (const filter of ["", "updated_by:agent"]) {

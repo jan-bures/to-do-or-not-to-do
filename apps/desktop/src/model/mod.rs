@@ -663,6 +663,8 @@ pub struct Detail {
     pub list: ListRef,
     pub title: SharedString,
     pub subtitle: SharedString,
+    /// Retained task activity, newest first.
+    pub activity: Vec<todo_client::task_activity::Line>,
     pub done: bool,
     pub my_day: bool,
     pub important: bool,

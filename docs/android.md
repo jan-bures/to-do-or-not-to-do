@@ -91,6 +91,11 @@ What the first version does:
   delete the destination only if the provider reports it is empty. A completed Save is kept. Add file
   waits for a new task to sync; once the server accepts an upload, cancelling the sync wait does not
   cancel the upload. **Remove** works offline and offers **Undo**.
+- **Task activity.** Below Attachments, **Activity** shows who created, last edited or completed the
+  task, newest first. `todo-client` supplies the same labels and relative times as desktop and web
+  through UniFFI; Compose uses the drawer's agent marks. A later edit doesn't replace the completer,
+  and unknown historical completers aren't guessed. Unlike the drawer's Activity feed, this summary
+  works offline and offers no Undo.
 - **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
   behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
 - **Reminders.** The **Reminder** row is always in the detail pane: "Today, 18:00", or "–" with none.
@@ -390,7 +395,8 @@ builds `arm64-v8a` and `x86_64`.
 The unit tests load a host build of `todo_ffi` from `target/debug`, which Gradle builds first. The
 gallery draws the real screens from invented fixture data (`TodoEngine.fixture`) through the real Rust view
 model, on the cover screen (412 × 920 dp) and the inner screen (900 × 1000 dp), light and dark. It
-includes populated and empty Trash, the collapsed header, a short window and 1.3× text. Look at it after every UI change; the
+includes populated and empty Trash, task detail activity (`GalleryTest.task_activity`), the collapsed
+header, a short window and 1.3× text. Look at it after every UI change; the
 images are in `app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a device or emulator with the software keyboard enabled,

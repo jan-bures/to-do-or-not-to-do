@@ -288,6 +288,16 @@ impl State {
             && self.reminders == other.reminders
     }
 
+    /// Actor who set the task's current completion time, if the replica knows it.
+    /// A later edit does not change it, and undo/redo restores the original field provenance.
+    /// Imports can have a completion time at creation without recording who completed the task.
+    #[must_use]
+    pub fn task_completion_actor(&self, id: TaskId) -> Option<&Actor> {
+        self.tasks.get(&id)?.completed_at?;
+        let event = self.journal.token(&(id.into(), FieldKey::CompletedAt))?;
+        self.journal.applied.get(&event).map(|entry| &entry.actor)
+    }
+
     /// A copy of the entity, if it exists (deleted or not).
     #[must_use]
     pub fn entity(&self, id: EntityId) -> Option<Entity> {

@@ -257,6 +257,18 @@ class GalleryTest {
     }
 
     @Test
+    fun task_activity() {
+        val engine = fixtureEngine("task-activity")
+        val room = RoomKey.Smart(SmartList.COMPLETED)
+        val s = state(engine, room, select = engine.taskId(room, "Review the colour proofs"))
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            main("task_activity_cover_$theme", COVER, s, dark)
+            main("task_activity_inner_$theme", INNER, s, dark)
+        }
+    }
+
+    @Test
     fun toggle_states() {
         val e = fixtureEngine()
         val admin = e.list("Admin")
@@ -267,7 +279,7 @@ class GalleryTest {
             e.setImportant(id, isOn)
             val s = state(e, admin, select = id)
             // An event submitted to the engine can have the host's real time. Keep the caption fixed.
-            return s.copy(detail = requireNotNull(s.detail).copy(subtitle = original.subtitle))
+            return s.copy(detail = requireNotNull(s.detail).copy(subtitle = original.subtitle, activity = original.activity))
         }
         val off = capture(false)
         val on = capture(true)
@@ -578,6 +590,14 @@ class GalleryTest {
         return Triple(e, admin, e.taskId(admin, "Renew passport appointment"))
     }
 
+    private fun freshCarService(engine: TodoEngine, room: RoomKey): UiState {
+        val id = engine.addTask(room, "Book the car service", FIXTURE_NOW)
+        val s = state(engine, room, select = id)
+        val detail = requireNotNull(s.detail)
+        // An engine write uses the host's clock. Show the new task at the gallery's fixed instant.
+        return s.copy(detail = detail.copy(subtitle = "Created 21 Nov", activity = detail.activity.map { it.copy(relative = "Just now") }))
+    }
+
     /** The due date picker over the task, on its date, drawn as for a repeating task: the note says what Clear does. */
     @Test
     fun due_date_picker() {
@@ -593,8 +613,7 @@ class GalleryTest {
         }
         // An undated task opens on today's month, with nothing to clear.
         val (e, admin, _) = admin()
-        val undated = e.addTask(admin, "Book the car service", FIXTURE_NOW)
-        val s = state(e, admin, select = undated)
+        val s = freshCarService(e, admin)
         overlaid("due_date_picker_undated_light", COVER, s, dark = false) {
             DialogBackdrop { DueDateCard(null, s.today, repeats = false, onSave = {}, onCancel = {}, markToday = false) }
         }
@@ -616,8 +635,7 @@ class GalleryTest {
             val suffix = if (dark) "dark" else "light"
             val (e, admin, id) = admin()
             main("reminder_row_set_$suffix", COVER, state(e, admin, select = id), dark)
-            val fresh = e.addTask(admin, "Book the car service", FIXTURE_NOW)
-            main("reminder_row_empty_$suffix", COVER, state(e, admin, select = fresh), dark)
+            main("reminder_row_empty_$suffix", COVER, freshCarService(e, admin), dark)
         }
     }
 
@@ -640,8 +658,7 @@ class GalleryTest {
             }
         }
         val (e, admin, _) = admin()
-        val fresh = e.addTask(admin, "Book the car service", FIXTURE_NOW)
-        val s = state(e, admin, select = fresh)
+        val s = freshCarService(e, admin)
         overlaid("reminder_picker_new_light", COVER, s, dark = false) {
             DialogBackdrop { ReminderCard(null, null, FIXTURE_NOW.epochMs, zone, onSave = {}, onCancel = {}, markToday = false) }
         }
@@ -801,7 +818,8 @@ class GalleryTest {
             val target = ColorTarget.Tag(tag.id)
             e.setSwatch(target, "fern")
             val read = state(e, list, select = id)
-            val detail = read.detail!!.copy(subtitle = "Created 21 Nov")
+            val current = requireNotNull(read.detail)
+            val detail = current.copy(subtitle = "Created 21 Nov", activity = current.activity.map { it.copy(relative = "Just now") })
             val s = read.copy(detail = detail)
             main("rows_$suffix", COVER, s, dark)
             val change = e.removeLink(detail.sources.single().id)!!

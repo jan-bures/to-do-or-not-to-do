@@ -102,6 +102,7 @@ pub const FIXTURES: &[&str] = &[
     "attachments-uploading",
     "attachments-error",
     "attachments-list",
+    "task-activity",
     "collapsed-collection",
     "long-sidebar",
     "short-sidebar",

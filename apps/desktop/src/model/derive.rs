@@ -701,6 +701,7 @@ fn detail(state: &State, ix: &Index, id: TaskId, now: &Now) -> Option<Detail> {
         list: ix.list(task.list),
         title: task.title.clone().into(),
         subtitle: subtitle.into(),
+        activity: todo_client::task_activity::lines(state, id, now.at),
         done: task.is_done(),
         my_day: task.my_day == Some(today),
         important: task.priority == Priority::High,

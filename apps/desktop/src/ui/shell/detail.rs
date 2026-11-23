@@ -18,6 +18,7 @@ use todo_core::ids::{AttachmentId, TaskId};
 use super::menu::MenuKind;
 use super::sidebar::InlineTarget;
 use super::{Notice, ShellView, quick_add_colors};
+use crate::model::activity::Mark;
 use crate::model::draft::Draft;
 use crate::model::files;
 use crate::model::hints::Stop;
@@ -1258,6 +1259,39 @@ impl ShellView {
                     .children(links)
                     .child(add_link)
                     .child(self.attachment_section(d, live, window, cx))
+                    .child(section("Activity"))
+                    .child(
+                        div()
+                            .mx(px(desktop::DETAIL_PAD_X))
+                            .border_t_1()
+                            .border_color(p.line)
+                            .children(d.activity.iter().map(|line| {
+                                div()
+                                    .min_h(px(desktop::PROP_ROW))
+                                    .py(px(space::S1))
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S3))
+                                    .child(self.change_mark(
+                                        line.actor.as_ref().map_or(Mark::Other, Mark::of),
+                                    ))
+                                    .child(
+                                        div()
+                                            .flex_1()
+                                            .min_w_0()
+                                            .style(ty::STEP)
+                                            .text_color(p.ink_2)
+                                            .child(format!("{} {}", line.who, line.action)),
+                                    )
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .style(ty::TAG)
+                                            .text_color(p.ink_3)
+                                            .child(line.when.clone()),
+                                    )
+                            })),
+                    )
                     .child(div().h(px(space::S6))),
             )
     }

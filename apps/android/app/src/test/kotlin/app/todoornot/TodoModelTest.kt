@@ -174,6 +174,23 @@ class TodoModelTest {
     }
 
     @Test
+    fun task_activity_survives_a_later_edit_and_reopening_removes_completion() {
+        val engine = fixtureEngine("task-activity")
+        val completed = RoomKey.Smart(SmartList.COMPLETED)
+        val id = engine.taskId(completed, "Review the colour proofs")
+        val lines = requireNotNull(engine.task(id, FIXTURE_NOW)).activity
+        assertEquals(listOf("You", "Pi", "Codex"), lines.map { it.who })
+        assertEquals(listOf("edited this", "completed this", "created this"), lines.map { it.action })
+        assertEquals(listOf("12 min ago", "1 hr ago", "2 days ago"), lines.map { it.relative })
+        assertEquals(listOf(null, "π", "X"), lines.map { it.agent?.letter })
+        engine.setDone(id, false)
+        assertEquals(
+            listOf("edited this", "created this"),
+            requireNotNull(engine.task(id, FIXTURE_NOW)).activity.map { it.action },
+        )
+    }
+
+    @Test
     fun the_date_chip_uses_submit_syntax() {
         assertEquals("Sun 22 Nov", quickAddDate("Buy seeds zítra !!", FIXTURE_NOW))
         assertNull(quickAddDate("Buy seeds \\tomorrow", FIXTURE_NOW))

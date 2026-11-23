@@ -2666,18 +2666,26 @@ a.source:hover {
   list-style: none;
   margin: 0;
   padding: 0;
+  border-top: var(--hairline) solid var(--color-line);
 }
 
 .activity li {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  height: var(--desktop-prop-row);
+  min-block-size: var(--desktop-prop-row);
+  padding-block: var(--space-1);
+}
+
+.activity .mark .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
 }
 
 .act-text {
   flex: 1;
   min-width: 0;
+  overflow-wrap: anywhere;
   font: var(--text-step);
   color: var(--color-ink-2);
 }
@@ -2688,6 +2696,7 @@ a.source:hover {
 }
 
 .act-when {
+  flex: none;
   font: var(--text-tag);
   color: var(--color-ink-3);
 }

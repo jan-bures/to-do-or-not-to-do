@@ -549,7 +549,7 @@ impl ShellView {
 
     /// Who made the change: the agent's letter mark, a neutral `Y` for the owner, a mail or clock
     /// icon for email and the system.
-    fn change_mark(&self, mark: Mark) -> Div {
+    pub(super) fn change_mark(&self, mark: Mark) -> Div {
         let p = self.palette;
         let size = component::AGENT_MARK;
         let circle = |ink: Hsla| {

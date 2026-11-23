@@ -30,7 +30,7 @@ use todo_client::room_header::Summary;
 use todo_client::{CommandId, Connection, SubmitError, TrackedUndo, intent};
 use todo_core::ids::{CollectionId, ListId, StepId, TaskId};
 use todo_core::model::{Priority, Stamp};
-use todo_core::{Command, State};
+use todo_core::{Actor, Command, State};
 use todo_design::landscape::{HEIGHT_COVER, HEIGHT_DESKTOP, Landscape};
 use todo_design::{Glyph, Icon, motion};
 
@@ -2490,7 +2490,7 @@ fn DetailBody(
             </section>
             <links::Links task=id detail=d/>
             <attachments::Section task=id detail=d uploads=uploads/>
-            {move || d.get().map(|d| view! { <DetailActivity d=d/> })}
+            {move || d.with(|detail| detail.as_ref().map(|d| d.activity.clone())).map(|lines| view! { <DetailActivity lines=lines/> })}
         </div>
     }
 }
@@ -2839,29 +2839,28 @@ fn PriorityEditor(id: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
 }
 
 #[component]
-fn DetailActivity(d: Detail) -> impl IntoView {
+fn DetailActivity(lines: Vec<todo_client::task_activity::Line>) -> impl IntoView {
     view! {
-    <section class="d-section">
-        <h3 class="caps d-caps">"Activity"</h3>
-        <ul class="activity">
-            {d
-                .activity
-                .iter()
-                .map(|a| {
+        <section class="d-section" aria-labelledby="task-activity-heading">
+            <h3 class="caps d-caps" id="task-activity-heading">"Activity"</h3>
+            <ul class="activity" role="list">
+                {lines.into_iter().map(|line| {
+                    let badge = match line.actor.as_ref() {
+                        Some(actor @ Actor::Agent { .. }) => model::agent_mark(actor).map(|m| mark(&m)).into_any(),
+                        Some(Actor::Owner { .. }) => you_mark().into_any(),
+                        Some(Actor::EmailIngest) => view! { <span class="mark">{icon(Icon::Mail)}</span> }.into_any(),
+                        _ => view! { <span class="mark">{icon(Icon::Clock)}</span> }.into_any(),
+                    };
                     view! {
                         <li>
-                            {match &a.mark {
-                                Some(m) => mark(m).into_any(),
-                                None => you_mark().into_any(),
-                            }}
-                            <span class="act-text"><b>{a.who.clone()}</b>" "{a.what.clone()}</span>
-                            <span class="act-when">{a.when.clone()}</span>
+                            <span aria-hidden="true">{badge}</span>
+                            <span class="act-text"><b>{line.who}</b>" "{line.action}</span>
+                            <span class="act-when">{line.when}</span>
                         </li>
                     }
-                })
-                .collect_view()}
-        </ul>
-    </section>
+                }).collect_view()}
+            </ul>
+        </section>
     }
 }
 

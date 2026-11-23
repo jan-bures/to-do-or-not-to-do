@@ -552,6 +552,21 @@ fn browser_url(raw: &str) -> Option<String> {
     (matches!(url.scheme(), "http" | "https") && url.has_host()).then(|| url.to_string())
 }
 
+/// A task's retained creation, latest edit or current completion.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct TaskActivityLine {
+    /// An agent's letter and colours, when the actor is an agent.
+    pub agent: Option<AgentMark>,
+    /// For other actors, a clock or mail icon, or `None` for the owner's `Y`.
+    pub icon: Option<String>,
+    /// Display name (never a device ID).
+    pub who: String,
+    /// Action, for example `created this`.
+    pub action: String,
+    /// Relative time, for example `2 hr ago`.
+    pub relative: String,
+}
+
 /// Everything the detail pane shows.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct TaskDetail {
@@ -583,6 +598,8 @@ pub struct TaskDetail {
     pub breadcrumb: Vec<Chip>,
     /// "Created 12 Nov / Edited today 08:50".
     pub subtitle: String,
+    /// Retained task activity, newest first.
+    pub activity: Vec<TaskActivityLine>,
     /// Steps in order.
     pub steps: Vec<StepRow>,
     /// Properties.
@@ -1259,6 +1276,20 @@ pub fn detail(state: &State, id: &str, now: &Now) -> Option<TaskDetail> {
         }),
         breadcrumb,
         subtitle,
+        activity: todo_client::task_activity::lines(state, task.id, now.at)
+            .into_iter()
+            .map(|line| TaskActivityLine {
+                agent: line.actor.as_ref().and_then(lists::agent),
+                icon: match line.actor {
+                    Some(Actor::Owner { .. } | Actor::Agent { .. }) => None,
+                    Some(Actor::EmailIngest) => Some("mail".into()),
+                    _ => Some("clock".into()),
+                },
+                who: line.who,
+                action: line.action.into(),
+                relative: line.when,
+            })
+            .collect(),
         steps: steps
             .iter()
             .map(|s| StepRow {
