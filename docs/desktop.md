@@ -433,8 +433,8 @@ and any unapproved proposal.
    again replaces the individual choices for its current lists. Without either choice a list is
    **Hidden**, including when it moves out of a shared collection. Inheritance can reach **All models**
    only if you explicitly set it on the collection. **Private only** and **All models** both allow
-   the configured private provider; no cloud provider is available. Select **Enable assistant on
-   this device**, then **Done** to save. No tests or inference run in the background. **Forget server** clears the key and removes the protected
+   the configured private provider. Select **Enable assistant on this device**, then **Done** to
+   save. No tests or inference run in the background. **Forget server** clears the key and removes the protected
    profile and any orphaned files from an interrupted settings save.
 
 The panel shows the configured destination: **This device**, **Tailscale**, **Your server** (confirmed
@@ -455,6 +455,38 @@ Review the exact changes, optionally pick a subset of a batch, then **Approve**.
 sync has caught up; an outdated review needs a new proposal. Confirmed changes display the `A`
 mark and appear in **Activity** under **In-app assistant**. **Undo** on the chat receipt or in Activity
 reverses the whole approved group. Chat drafts and API keys never enter the To-do sync log.
+
+#### ChatGPT account (Windows)
+
+No owner-supplied client ID, API key, or client secret is needed for this
+[open-source, locally hosted flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
+Choose **ChatGPT account** in AI settings, then **Continue with ChatGPT**. OpenAI registers the app
+as an agent for the account and workspace that the owner selects in the system browser. The app
+saves the issued client ID before exchanging the code and reuses it on later sign-ins. The stable
+host ID for this pairing is sent as `urn:uuid:<uuid>`.
+This does not sign the owner into To-do or give To-do access to ChatGPT conversations.
+
+Choose a model from the signed-in account's catalog and explicitly enable the assistant in settings.
+The first send asks for permission and names the **All models** lists. The choice is saved for that
+account registration. **Hidden** and **Private only** lists, task notes, and attachments are never
+included. Text you type and the permitted task summaries the assistant reads go directly to OpenAI.
+Responses use `store: false`; this is not a zero-retention promise. The app does not send chat data
+or credentials through the To-do server, and never switches providers automatically.
+
+ChatGPT plan usage is available only to eligible accounts. Requests can use plan allowance or
+available credits, not a To-do subscription or API key. Use **Manage usage** to review limits;
+turn off credit use in ChatGPT settings if you want included-only usage. The app cannot enforce
+that setting. An OpenAI usage failure stops the reply; the app will not retry it automatically.
+
+The `assistant-chatgpt.bin` record is separate from the private server profile. Both are owner-only,
+DPAPI-protected files in the pairing directory. The app renews a token only as needed, saves rotating
+credentials together, and stops using them at sign-out. **Sign out** attempts remote revocation and
+then clears local tokens but retains the account and client mapping for reuse. Unpairing removes the
+local record. If remote revocation is not confirmed, disconnect the app in ChatGPT settings.
+
+The **Continue with ChatGPT** button uses the official logo published in OpenAI's
+[sign-in button guidelines](https://developers.openai.com/siwc/website). The mark is not the To-do
+application identity and does not imply OpenAI endorsement.
 
 ### Workflow lists, Board and Timeline
 

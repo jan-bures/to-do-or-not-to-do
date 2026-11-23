@@ -763,7 +763,9 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
                 .ok_or(AssistantError::NoProvider)?;
             match caps.billing {
                 BillingClass::Unknown => return Err(AssistantError::Billing),
-                BillingClass::Metered | BillingClass::Included if !selection.allow_billed => {
+                BillingClass::Metered | BillingClass::Included | BillingClass::Subscription
+                    if !selection.allow_billed =>
+                {
                     return Err(AssistantError::Billing);
                 }
                 _ => {}

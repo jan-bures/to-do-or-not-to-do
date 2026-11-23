@@ -1,6 +1,7 @@
 //! One locally configured inference destination per pairing. No transcript or proposal on disk.
 
 use crate::{
+    chatgpt::DesktopProvider,
     config::DataDir,
     platform::{dpapi, tailnet::WindowsTailnet},
 };
@@ -25,6 +26,8 @@ pub struct Profile {
     pub model: String,
     pub enabled: bool,
     #[serde(default)]
+    pub cloud: bool,
+    #[serde(default)]
     pub attested: bool,
     #[serde(flatten)]
     pub access: AccessRules,
@@ -46,8 +49,8 @@ mod secret {
 }
 
 impl Profile {
-    pub fn selection(&self) -> Option<Selection<LocalProvider>> {
-        if !self.enabled || !valid_model(&self.model) {
+    pub fn selection(&self) -> Option<Selection<DesktopProvider>> {
+        if self.cloud || !self.enabled || !valid_model(&self.model) {
             return None;
         }
         let mut provider = self.provider().ok()?;
@@ -55,7 +58,7 @@ impl Profile {
             provider = provider.with_support(self.model.clone(), support);
         }
         Some(Selection {
-            provider: Arc::new(provider),
+            provider: Arc::new(DesktopProvider::Private(provider)),
             model: self.model.clone(),
             access: self.access.clone(),
             allow_billed: false,
@@ -151,8 +154,11 @@ impl Profile {
 }
 
 fn is_temporary(name: &std::ffi::OsStr) -> bool {
-    name.to_str()
-        .is_some_and(|name| name.starts_with("assistant-") && name.ends_with(".tmp"))
+    name.to_str().is_some_and(|name| {
+        name.starts_with("assistant-")
+            && !name.starts_with("assistant-chatgpt-")
+            && name.ends_with(".tmp")
+    })
 }
 
 #[cfg(test)]

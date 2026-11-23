@@ -1,5 +1,7 @@
 //! Desktop assistant presentation. Cards use trusted simulated effects, never model-authored UI.
 
+mod cloud;
+
 use super::*;
 use crate::theme::Agent;
 use gpui::Role;
@@ -510,6 +512,8 @@ impl ShellView {
             .child(text(ty::DETAIL_TITLE, p.ink, if blocked { "Connection blocked" } else if ready { "What can I help plan?" } else { "Connect a model" }))
             .child(text(ty::NOTES, p.ink_2, if blocked { NOT_PRIVATE } else if ready {
                 "Ask about your tasks, or describe changes to make. Every edit or new task waits for your approval first."
+            } else if self.ai.profile.cloud {
+                "Sign in to ChatGPT and choose a model in AI settings. Your chat won't be sent until you approve cloud sharing."
             } else { "Connect your own model server to ask about tasks and prepare changes. Nothing is sent until you choose to connect or send a message." }));
         if ready {
             result =
@@ -557,11 +561,23 @@ impl ShellView {
                 box_panel(&p)
                     .p(px(space::S3))
                     .gap(px(space::S2))
-                    .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
+                    .child(text(
+                        ty::NAV_COLLECTION,
+                        p.ink,
+                        if self.ai.profile.cloud {
+                            "ChatGPT account"
+                        } else {
+                            "Your own server"
+                        },
+                    ))
                     .child(text(
                         ty::META,
                         p.ink_3,
-                        "OpenAI-compatible · no cloud fallback",
+                        if self.ai.profile.cloud {
+                            "Cloud · ChatGPT plan"
+                        } else {
+                            "OpenAI-compatible · no cloud fallback"
+                        },
                     ))
                     .child(div().flex().child(self.ai_button(
                         "assistant-connect",
@@ -583,8 +599,9 @@ impl ShellView {
         let ready = !blocked && view.composer != Composer::ChooseModel;
         let body = self.ai.composer.read(cx);
         let focused = body.focus_handle.is_focused(window);
-        let can_send =
-            streaming || (ready && !body.content.trim().is_empty() && self.retry_seconds() == 0);
+        let paused = self.ai.profile.cloud && self.ai.cloud.usage_paused;
+        let can_send = streaming
+            || (ready && !paused && !body.content.trim().is_empty() && self.retry_seconds() == 0);
         let placeholder = match view.composer {
             _ if blocked => "Confirm your server in AI settings",
             Composer::ChooseModel => "Choose a model to start",
@@ -632,11 +649,11 @@ impl ShellView {
                         },
                     )),
                 can_send,
-                |this, _, cx| {
+                |this, window, cx| {
                     if matches!(this.ai.view().composer, Composer::Streaming { .. }) {
                         this.ai.controller.cancel();
                     } else {
-                        this.send_ai_input(cx);
+                        this.send_ai_input(window, cx);
                     }
                 },
                 cx,
@@ -655,7 +672,13 @@ impl ShellView {
                 .keys()
                 .filter(|&&id| {
                     state.is_live(id.into())
-                        && self.ai.profile.access.list(&state, id) == ListAccess::Hidden
+                        && !self.ai.profile.access.list(&state, id).allows(
+                            if self.ai.profile.cloud {
+                                todo_client::assistant::provider::DataClass::Cloud
+                            } else {
+                                todo_client::assistant::provider::DataClass::Local
+                            },
+                        )
                 })
                 .count()
         };
@@ -767,6 +790,21 @@ impl ShellView {
                     .child(privacy)
                     .child(visibility),
             )
+            .when(self.ai.profile.cloud && view.model.is_some(), |footer| {
+                footer.child(
+                    div()
+                        .flex()
+                        .justify_between()
+                        .items_center()
+                        .gap(px(space::S2))
+                        .child(text(ty::META, p.ink_2, "Using ChatGPT plan"))
+                        .child(self.ai_manage_usage(
+                            "assistant-chatgpt-composer-usage",
+                            Tone::Quiet,
+                            cx,
+                        )),
+                )
+            })
     }
 
     fn ai_turn(&self, turn: &TurnView, index: usize, last: bool, cx: &mut Context<Self>) -> Div {
@@ -815,7 +853,15 @@ impl ShellView {
             if error == AssistantError::Cancelled {
                 return output.child(text(ty::META, p.ink_3, "Reply stopped"));
             }
+            let usage_limit = self.ai.profile.cloud
+                && matches!(
+                    error,
+                    AssistantError::Provider(ProviderError::RateLimited { .. })
+                );
             let message = match error {
+                AssistantError::Provider(error) if self.ai.profile.cloud => {
+                    super::cloud::cloud_problem(error)
+                }
                 AssistantError::Provider(error) => problem(error),
                 error => error.to_string(),
             };
@@ -846,21 +892,41 @@ impl ShellView {
                             div()
                                 .flex()
                                 .gap(px(space::S2))
-                                .child(self.ai_button(
-                                    "assistant-retry",
-                                    if seconds > 0 {
-                                        format!("Retry in {seconds}s")
-                                    } else {
-                                        "Retry".into()
-                                    },
-                                    Tone::Outline,
-                                    seconds == 0 && self.ai.view().composer == Composer::Ready,
-                                    move |this, w, cx| {
-                                        this.focus_ai(w, cx);
-                                        this.send_ai(prompt.clone(), cx);
-                                    },
-                                    cx,
-                                ))
+                                .when(usage_limit, |row| {
+                                    row.child(self.ai_manage_usage(
+                                        "assistant-chatgpt-limit-usage",
+                                        Tone::Primary,
+                                        cx,
+                                    ))
+                                    .child(self.ai_button(
+                                        "assistant-chatgpt-resume",
+                                        "Resume",
+                                        Tone::Outline,
+                                        self.ai.cloud.usage_paused,
+                                        |this, _, cx| {
+                                            this.ai.cloud.usage_paused = false;
+                                            cx.notify();
+                                        },
+                                        cx,
+                                    ))
+                                })
+                                .when(!usage_limit, |row| {
+                                    row.child(self.ai_button(
+                                        "assistant-retry",
+                                        if seconds > 0 {
+                                            format!("Retry in {seconds}s")
+                                        } else {
+                                            "Retry".into()
+                                        },
+                                        Tone::Outline,
+                                        seconds == 0 && self.ai.view().composer == Composer::Ready,
+                                        move |this, w, cx| {
+                                            this.focus_ai(w, cx);
+                                            this.send_ai(prompt.clone(), cx);
+                                        },
+                                        cx,
+                                    ))
+                                })
                                 .child(self.ai_button(
                                     "assistant-error-settings",
                                     "Settings",
@@ -1682,7 +1748,13 @@ impl ShellView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
+        if self.ai.cloud.consent.is_some() {
+            return Some(self.ai_chatgpt_consent(cx));
+        }
         let setup = self.ai.settings.as_ref()?;
+        if setup.draft.cloud && self.ai.cloud.welcome_pending() {
+            return Some(self.ai_chatgpt_welcome(window, cx));
+        }
         let p = self.palette;
         let running = matches!(setup.check, Check::Running(_));
         let endpoint = setup.draft.endpoint();
@@ -1989,7 +2061,11 @@ impl ShellView {
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                 if super::super::navigation_tab(e) {
                     if e.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
-                    if !this.ai.dialog.contains_focused(window, cx) { window.focus(&this.ai.url.read(cx).focus_handle.clone(), cx); }
+                    if !this.ai.dialog.contains_focused(window, cx) {
+                        if this.ai.settings.as_ref().is_some_and(|setup| setup.draft.cloud) {
+                            window.focus(&this.ai.focus_handle("assistant-settings-close", cx), cx);
+                        } else { window.focus(&this.ai.url.read(cx).focus_handle.clone(), cx); }
+                    }
                     cx.stop_propagation(); cx.notify();
                 } else if !e.is_held && !e.keystroke.modifiers.modified() && e.keystroke.key == "escape" { this.escape_ai(window, cx); cx.stop_propagation(); }
             }))
@@ -1997,15 +2073,20 @@ impl ShellView {
                 .child(kit::agent_mark(self.theme, Agent::Assistant, component::ICON_BUTTON)).child(text(ty::DETAIL_TITLE, p.ink, "AI Assistant").flex_1())
                 .child(self.ai_icon("assistant-settings-close", Icon::X, "Close AI settings without saving", true, |this, w, cx| this.close_ai_settings(w, cx), cx)))
             .child(div().id("assistant-settings-scroll").min_h_0().overflow_y_scroll().px(px(space::S5)).py(px(space::S4)).flex().flex_col().gap(px(space::S3))
-                .child(kit::label(&p, "Model provider").flex_none()).child(provider)
+                .child(kit::label(&p, "Model provider").flex_none())
+                .child(self.ai_provider_choices(setup.draft.cloud, !running, cx))
+                .child(if setup.draft.cloud { self.ai_chatgpt_settings(setup, cx) } else { provider })
                 .child(div().flex_none().flex().items_start().gap(px(space::S2)).p(px(space::S3)).rounded(px(radius::LG)).bg(p.canvas)
-                    .child(kit::icon(Icon::CloudOff, component::ICON_SMALL, p.ink_3))
-                    .child(text(ty::META, p.ink_2, "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights.")))
+                    .child(kit::icon(if setup.draft.cloud { Icon::CircleAlert } else { Icon::CloudOff }, component::ICON_SMALL, p.ink_3))
+                    .child(text(ty::META, p.ink_2, if setup.draft.cloud {
+                        "No automatic fallback. ChatGPT receives prompts and allowed summaries from All models lists only."
+                    } else { "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights." })))
                 .child(kit::label(&p, "Lists the assistant can see").flex_none())
                 .child(text(ty::META, p.ink_3, "Select a row to change its access. Lists inherit their collection’s choice unless set individually. Without a choice, lists are hidden on this device.").flex_none())
                 .child(list_controls))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))
-                .child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx))
+                .when(setup.draft.cloud, |footer| footer.justify_end())
+                .when(!setup.draft.cloud, |footer| footer.child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx)))
                 .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
         Some(
             div()
@@ -2022,7 +2103,7 @@ impl ShellView {
         )
     }
 
-    fn ai_access_state(&self) -> Arc<State> {
+    pub(super) fn ai_access_state(&self) -> Arc<State> {
         match self.store.session() {
             None => self.store.view(),
             Some(session) => session

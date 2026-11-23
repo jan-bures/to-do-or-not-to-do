@@ -24,6 +24,26 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     ShowWindow, SystemParametersInfoW, USER_DEFAULT_SCREEN_DPI, WM_CLOSE, WM_PAINT, WS_EX_TOPMOST,
 };
 
+/// Open an authorization URL without logging it (it may contain OAuth state or an ID hint).
+pub fn open_authorization(url: &str) -> bool {
+    use windows::{
+        Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWDEFAULT},
+        core::{HSTRING, w},
+    };
+    // The shell API borrows the NUL-terminated URL for the duration of this call only.
+    let result = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url),
+            None,
+            None,
+            SW_SHOWDEFAULT,
+        )
+    };
+    result.0 as isize > 32
+}
+
 /// The native handle of a GPUI window, as an integer (0 if unavailable).
 pub fn hwnd_of(window: &Window) -> isize {
     match HasWindowHandle::window_handle(window).map(|h| h.as_raw()) {

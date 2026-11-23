@@ -10,6 +10,8 @@ use todo_design::{Glyph, Icon};
 
 const ICONS: &str = "icons/";
 const GLYPHS: &str = "glyphs/";
+#[cfg(windows)]
+pub const CHATGPT_LOGO: &str = "brand/chatgpt.svg";
 
 /// The asset path of an icon.
 pub fn icon_path(icon: Icon) -> SharedString {
@@ -22,6 +24,10 @@ pub fn glyph_path(glyph: Glyph) -> SharedString {
 }
 
 fn svg(path: &str) -> Option<&'static str> {
+    #[cfg(windows)]
+    if path == CHATGPT_LOGO {
+        return Some(include_str!("../resources/chatgpt.svg"));
+    }
     let key = |prefix: &str| path.strip_prefix(prefix)?.strip_suffix(".svg");
     if let Some(k) = key(ICONS) {
         Icon::from_key(k).map(Icon::svg)

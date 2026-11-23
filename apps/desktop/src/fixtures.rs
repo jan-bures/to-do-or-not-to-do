@@ -111,7 +111,10 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "ai-settings-testing"
         | "ai-settings-unreachable"
         | "ai-error"
-        | "ai-blocked" => {
+        | "ai-blocked"
+        | "ai-chatgpt-signed-out"
+        | "ai-chatgpt-signed-in"
+        | "ai-chatgpt-consent" => {
             let mut f = my_day();
             f.ui.task = None;
             if let Some(task) = f

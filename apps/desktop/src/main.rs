@@ -18,6 +18,8 @@ mod app;
 #[cfg(windows)]
 mod assistant_profile;
 #[cfg(windows)]
+mod chatgpt;
+#[cfg(windows)]
 mod config;
 #[cfg(windows)]
 mod platform;

@@ -20,6 +20,7 @@ pub enum DataClass {
 pub enum BillingClass {
     NoPerTokenCharge,
     Included,
+    Subscription,
     Metered,
     Unknown,
 }

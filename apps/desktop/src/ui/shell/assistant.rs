@@ -1,12 +1,18 @@
 //! GPUI glue for the native assistant. Network work is started from explicit gestures only.
 
+mod cloud;
 mod fixtures;
 #[cfg(test)]
 mod tests;
 mod views;
 
 use super::*;
-use crate::{assistant_profile::Profile, session, ui::text_area::TextArea};
+use crate::{
+    assistant_profile::Profile,
+    chatgpt::{self, DesktopProvider},
+    session,
+    ui::text_area::TextArea,
+};
 use futures::future::{AbortHandle, Abortable};
 use std::collections::{BTreeMap, BTreeSet};
 use todo_client::{
@@ -133,7 +139,8 @@ pub(super) struct Ai {
     model: Entity<TextInput>,
     key: Entity<TextInput>,
     profile: Profile,
-    controller: Controller<LocalProvider, TokioClock, OsEntropy>,
+    controller: Controller<DesktopProvider, TokioClock, OsEntropy>,
+    cloud: cloud::Cloud,
     settings: Option<Setup>,
     close_to: Option<FocusHandle>,
     panel: FocusHandle,
@@ -173,7 +180,7 @@ impl Ai {
             &composer,
             window,
             |this, _, event, window, cx| match event {
-                InputEvent::Submit => this.send_ai_input(cx),
+                InputEvent::Submit => this.send_ai_input(window, cx),
                 InputEvent::Cancel => this.escape_ai(window, cx),
                 InputEvent::Changed => cx.notify(),
             },
@@ -210,7 +217,8 @@ impl Ai {
             ),
         };
         let controller = Controller::new(TokioClock, OsEntropy);
-        controller.configure(profile.selection());
+        let cloud = cloud::Cloud::load(store);
+        controller.configure(cloud.selection(&profile));
         if let Some(session) = store.session() {
             controller.update_snapshot(session.client().assistant_snapshot());
         }
@@ -225,6 +233,7 @@ impl Ai {
             key,
             profile,
             controller,
+            cloud,
             settings: None,
             close_to: None,
             panel: cx.focus_handle(),
@@ -249,7 +258,8 @@ impl Ai {
     }
 
     fn same_destination(&self, draft: &Profile) -> bool {
-        draft.url == self.profile.url
+        draft.cloud == self.profile.cloud
+            && draft.url == self.profile.url
             && draft.key == self.profile.key
             && draft.attested == self.profile.attested
     }
@@ -265,12 +275,16 @@ impl Ai {
     }
 
     fn blocked(&self) -> bool {
-        self.destination() == Some(Destination::NotPrivate)
+        !self.profile.cloud && self.destination() == Some(Destination::NotPrivate)
     }
 
     fn route_label(&self) -> &'static str {
-        self.destination()
-            .map_or("Assistant off", Destination::label)
+        if self.profile.cloud {
+            "Cloud · ChatGPT"
+        } else {
+            self.destination()
+                .map_or("Assistant off", Destination::label)
+        }
     }
 
     fn view(&self) -> AssistantView {
@@ -280,7 +294,7 @@ impl Ai {
     }
 
     pub(super) fn modal(&self) -> bool {
-        self.settings.is_some()
+        self.settings.is_some() || self.cloud.consent.is_some()
     }
 
     pub(super) fn focus_in(&self, window: &Window, cx: &App) -> bool {
@@ -443,6 +457,7 @@ impl ShellView {
     pub(crate) fn stop_assistant(&mut self, cx: &mut Context<Self>) {
         self.ai.stopped = true;
         self.ai.controller.sign_out();
+        self.ai.cloud.close();
         self.ai.profile = Profile::default();
         self.ai.open = false;
         self.settle_detail();
@@ -517,7 +532,9 @@ impl ShellView {
     }
 
     pub(super) fn escape_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(setup) = self.ai.settings.as_mut() {
+        if self.ai.cloud.consent.take().is_some() {
+            self.focus_ai(window, cx);
+        } else if let Some(setup) = self.ai.settings.as_mut() {
             if setup.pick_model {
                 setup.pick_model = false;
                 cx.notify();
@@ -539,15 +556,20 @@ impl ShellView {
         cx.notify();
     }
 
-    fn send_ai_input(&mut self, cx: &mut Context<Self>) {
+    fn send_ai_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let text = self.ai.composer.read(cx).content.to_string();
         self.send_ai(text, cx);
+        if self.ai.cloud.consent.is_some() {
+            let focus = self.ai.focus_handle("assistant-chatgpt-consent-cancel", cx);
+            window.focus(&focus, cx);
+        }
     }
 
     fn send_ai(&mut self, text: String, cx: &mut Context<Self>) {
         if text.trim().is_empty()
             || self.ai.blocked()
             || self.ai.modal()
+            || (self.ai.profile.cloud && self.ai.cloud.usage_paused)
             || self.ai.rate_until.is_some_and(|end| end > Instant::now())
         {
             return;
@@ -562,6 +584,9 @@ impl ShellView {
             view.composer,
             Composer::ChooseModel | Composer::Streaming { .. }
         ) {
+            return;
+        }
+        if self.require_cloud_consent(&text, cx) {
             return;
         }
         if self.ai.review.zero
@@ -674,7 +699,11 @@ impl ShellView {
                     .update(cx, |a, cx| a.set_text(turn.prompt.clone(), cx));
             }
             if let ProviderError::RateLimited { retry_after } = error {
-                self.ai_rate_timer(retry_after, cx);
+                if self.ai.profile.cloud {
+                    self.ai.cloud.usage_paused = true;
+                } else {
+                    self.ai_rate_timer(retry_after, cx);
+                }
             }
         } else if turn
             .proposal
@@ -925,6 +954,7 @@ impl ShellView {
                 url: p.url.clone(),
                 model: p.model.clone(),
                 enabled: p.enabled,
+                cloud: p.cloud,
                 attested: p.attested,
                 access: p.access.clone(),
                 support: p.support,
@@ -937,7 +967,11 @@ impl ShellView {
             revision: Uuid::new_v4(),
         });
         self.ai.close_to = window.focused(cx);
-        window.focus(&self.ai.url.read(cx).focus_handle.clone(), cx);
+        if p.cloud {
+            window.focus(&self.ai.dialog, cx);
+        } else {
+            window.focus(&self.ai.url.read(cx).focus_handle.clone(), cx);
+        }
         cx.notify();
     }
 
@@ -1116,7 +1150,7 @@ impl ShellView {
         let (Some(setup), Some(session)) = (self.ai.settings.as_mut(), self.store.session()) else {
             return;
         };
-        if !setup.draft.url.is_empty() || setup.draft.enabled {
+        if !setup.draft.cloud && (!setup.draft.url.is_empty() || setup.draft.enabled) {
             if let Err(error) = setup.draft.normalize() {
                 setup.check = Check::Failed(error.to_string());
                 cx.notify();
@@ -1136,16 +1170,19 @@ impl ShellView {
         let next = std::mem::take(&mut setup.draft);
         let old = &self.ai.profile;
         let changing = old.enabled != next.enabled
+            || old.cloud != next.cloud
             || old.url != next.url
             || old.model != next.model
             || old.key != next.key
             || old.attested != next.attested
             || old.support != next.support;
-        let endpoint_changed =
-            old.url != next.url || old.key != next.key || old.attested != next.attested;
+        let endpoint_changed = old.cloud != next.cloud
+            || old.url != next.url
+            || old.key != next.key
+            || old.attested != next.attested;
         let generation = self.ai.controller.view().generation;
         if changing {
-            self.ai.controller.configure(next.selection());
+            self.ai.controller.configure(self.ai.cloud.selection(&next));
         } else if old.access != next.access {
             self.ai.controller.set_scope(next.access.clone());
         }

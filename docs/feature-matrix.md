@@ -179,7 +179,8 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 
 | Feature | Core / server | Desktop | Web | Android |
 |---|---|---|---|---|
-| Ask AI with a private OpenAI-compatible endpoint | Shared in-memory controller, scoped read tools and native transport (`T/assistant`) | wired: Ctrl+J, cancellable chat, explicit server/model tests, device-local DPAPI profile, opt-in per list; no cloud fallback (`D/ui/shell/assistant.rs`) | planned | planned |
+| Ask AI with a private OpenAI-compatible endpoint | Shared in-memory controller, scoped read tools and native transport (`T/assistant`) | wired: Ctrl+J, cancelable chat, explicit server/model tests, device-local DPAPI profile, opt-in per list or collection; no automatic fallback (`D/ui/shell/assistant.rs`) | planned | planned |
+| Ask AI with ChatGPT plan usage | Same scoped controller and approval pipeline; only All models lists can reach Cloud | Windows provider: dynamic Sign in with ChatGPT, DPAPI tokens, account-specific models, and first-send consent (`D/chatgpt.rs`) | not supported by the native OAuth flow | deferred |
 | Review, approve and undo assistant proposals | Owner-only atomic approval and grouped undo, reserved `assistant` attribution | wired: exact effects, batch subset review, receipts and grouped Undo; Activity shows confirmed approvals | Activity only; no chat or approval UI | no chat or approval UI |
 
 ### Server-side only (admin pages)

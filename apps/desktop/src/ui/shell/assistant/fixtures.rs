@@ -242,12 +242,17 @@ impl ShellView {
         }
         self.ai.connection = match name {
             "ai-error" | "ai-settings-unreachable" => ConnectionHealth::Unreachable,
-            "ai-blocked" => ConnectionHealth::Unknown,
+            "ai-blocked" | "ai-chatgpt-signed-out" => ConnectionHealth::Unknown,
             _ => ConnectionHealth::Connected,
         };
         if matches!(
             name,
-            "ai-settings" | "ai-settings-testing" | "ai-settings-unreachable"
+            "ai-settings"
+                | "ai-settings-testing"
+                | "ai-settings-unreachable"
+                | "ai-chatgpt-signed-out"
+                | "ai-chatgpt-signed-in"
+                | "ai-chatgpt-consent"
         ) {
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
             if let Some(collection) = state.lists[&errands.id].collection {
@@ -266,6 +271,45 @@ impl ShellView {
                     .profile
                     .access
                     .set_collection(&state, collection, ListAccess::AllModels);
+            }
+            if name.starts_with("ai-chatgpt-") {
+                self.ai.profile.cloud = true;
+                self.ai.cloud.fixture_enabled = true;
+                let signed_in = name != "ai-chatgpt-signed-out";
+                if signed_in {
+                    self.ai.cloud.fixture = Some(chatgpt::AccountView {
+                        id: "oaiapp_fixture".into(),
+                        label: "you@example.com".into(),
+                        model: Some("gpt-sample".into()),
+                        signed_in: true,
+                        plan_allowed: true,
+                        consent: false,
+                        welcomed: true,
+                    });
+                }
+                if let Some(view) = &mut self.ai.fixture {
+                    if !signed_in {
+                        view.composer = Composer::ChooseModel;
+                        view.model = None;
+                    } else if let Some(model) = &mut view.model {
+                        model.model = "gpt-sample".into();
+                        model.capabilities.data_class =
+                            todo_client::assistant::provider::DataClass::Cloud;
+                        model.capabilities.billing =
+                            todo_client::assistant::provider::BillingClass::Subscription;
+                    }
+                }
+                if name == "ai-chatgpt-consent" {
+                    self.ai.cloud.consent = Some(super::cloud::Consent {
+                        account: "oaiapp_fixture".into(),
+                        prompt: "Summarize this week".into(),
+                        lists: self.shareable_chatgpt_lists(),
+                    });
+                } else {
+                    self.open_ai_settings(window, cx);
+                }
+                cx.notify();
+                return;
             }
             self.open_ai_settings(window, cx);
             if let Some(setup) = self.ai.settings.as_mut() {

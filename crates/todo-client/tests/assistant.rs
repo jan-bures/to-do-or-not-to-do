@@ -985,16 +985,18 @@ fn capability_flags_control_buffering_cloud_visibility_and_billing() {
     block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
     assert!(provider.requests()[0].tools.is_empty());
 
-    let (chat, provider) = fixture(
-        Capabilities {
-            billing: BillingClass::Metered,
-            ..CAPABILITIES
-        },
-        [],
-    );
-    assert_eq!(
-        chat.start(intent(&chat, 1)).err(),
-        Some(AssistantError::Billing)
-    );
-    assert!(provider.requests().is_empty());
+    for billing in [BillingClass::Metered, BillingClass::Subscription] {
+        let (chat, provider) = fixture(
+            Capabilities {
+                billing,
+                ..CAPABILITIES
+            },
+            [],
+        );
+        assert_eq!(
+            chat.start(intent(&chat, 1)).err(),
+            Some(AssistantError::Billing)
+        );
+        assert!(provider.requests().is_empty());
+    }
 }
