@@ -10,6 +10,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { DATA, PORT } from "../live-env.mjs";
 import { openDeviceSettings } from "../tests/helpers.mjs";
+import { mockNotifications } from "../tests/reminder-helpers.mjs";
 
 test.describe.configure({ mode: "serial" });
 
@@ -923,6 +924,45 @@ test("reminder edits and undo sync across tabs, and a stale picker cannot overwr
   expect(problems.flat()).toEqual([]);
   await b.close();
   await a.close();
+});
+
+test("an alert follows the reminder time synced from another browser", async ({ browser }) => {
+  const author = await openApp();
+  // Playwright's virtual clock is shared by a context. Keep the author on the real clock.
+  const reading = await browser.newContext({
+    baseURL, viewport: { width: 1440, height: 900 }, storageState: await context.storageState(),
+  });
+  const reader = await reading.newPage();
+  const problems = [author, reader].map(watch);
+  await mockNotifications(reader, "granted");
+  const title = "Bring a spare lamp";
+  const now = "2034-06-01T09:00:00Z";
+  await reader.clock.setFixedTime(new Date(now));
+  await reader.goto("/app");
+  await add(author, title);
+  const task = (await row(author, title).locator(".row-title").getAttribute("id")).replace(/^row-/, "");
+  await listLink(reader, "All").click();
+  await taskButton(reader, title).click();
+
+  const id = "0193b2c0-0000-7000-8000-000000000047";
+  const submit = (command) => author.evaluate(async (command) => {
+    const csrf = document.querySelector('meta[name="csrf-token"]').content;
+    return (await fetch("/api/v1/commands", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-CSRF-Token": csrf },
+      body: JSON.stringify({ command_id: crypto.randomUUID(), command }),
+    })).status;
+  }, command);
+  expect(await submit({ cmd: "add_reminder", id, task, at: "2034-06-02T09:00:00Z" })).toBe(200);
+  const reminder = reader.getByRole("button", { name: "Reminder", exact: true });
+  await expect(reminder).toContainText("Tomorrow");
+  const shown = () => reader.evaluate(() => window.reminderMock.notifications.map(({ title }) => title));
+  expect(await shown()).toEqual([]);
+  expect(await submit({ cmd: "update_reminder", id, at: now })).toBe(200);
+  await expect.poll(shown).toEqual([title]);
+  expect(problems.flat()).toEqual([]);
+  await reading.close();
+  await author.close();
 });
 
 test("a repeated local time starts at the earlier instant, but an unchanged later instant stays put", async () => {

@@ -26,7 +26,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::{Deserialize, Serialize};
-use todo_client::intent::reminder::{Alarm, alarms};
+use todo_client::intent::reminder::{Alarm, COMPLETE_LABEL, SNOOZE_LABEL, alarms};
+pub use todo_client::intent::reminder::{MISSED_WINDOW_MS, SNOOZE_MS};
 use todo_core::State;
 use todo_core::ids::{ReminderId, TaskId};
 use todo_core::time::Timestamp;
@@ -36,10 +37,6 @@ use super::{Now, labels};
 /// How late a reminder may be found and still show as itself. Later than that, it was missed: it goes
 /// into the summary toast instead.
 pub const GRACE_MS: i64 = 5 * 60 * 1000;
-/// How far back a missed reminder is still mentioned, once.
-pub const MISSED_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
-/// What Snooze puts a reminder off by.
-pub const SNOOZE_MS: i64 = 10 * 60 * 1000;
 /// How long to wait before trying again after Windows couldn't show a toast: longer after each failure
 /// in a row, then the last.
 pub const RETRY_MS: [i64; 3] = [30 * 1000, 2 * 60 * 1000, 10 * 60 * 1000];
@@ -375,8 +372,8 @@ pub fn reminder_toast(state: &State, alarm: &Alarm, occurrence: Occurrence, now:
         launch: Activation::Open(occurrence),
         actions: vec![
             ("Open", Activation::Open(occurrence)),
-            ("Snooze 10 min", Activation::Snooze(occurrence)),
-            ("Complete", Activation::Complete(occurrence)),
+            (SNOOZE_LABEL, Activation::Snooze(occurrence)),
+            (COMPLETE_LABEL, Activation::Complete(occurrence)),
         ],
         quiet: false,
     }
@@ -422,11 +419,7 @@ pub fn missed_toast(state: &State, missed: &[Alarm], token: u64, now: &Now) -> O
 /// The identity captured when an individual toast was built, separate from its activation arguments
 /// (which only contain millisecond time). Also checked under the queue lock for Complete.
 pub fn still_as_shown(state: &State, alarm: Alarm) -> bool {
-    state.reminders.get(&alarm.reminder).is_some_and(|r| {
-        r.task == alarm.task && r.at == alarm.at && state.is_live(alarm.reminder.into())
-    }) && state.tasks.get(&alarm.task).is_some_and(|t| {
-        !t.is_done() && t.merged_into.is_none() && state.is_live(alarm.task.into())
-    })
+    alarm.is_current(state)
 }
 
 /// What a pass did: whether the schedule changed (and should be saved), and when to look again.

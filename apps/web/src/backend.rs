@@ -115,6 +115,8 @@ pub fn csrf() -> Option<String> {
 pub struct Sync {
     /// Online, syncing or offline.
     pub connection: Connection,
+    /// The initial backlog is in, so reminders won't use a stale cached schedule.
+    pub reminders_ready: bool,
     /// Changes not yet confirmed by the server.
     pub pending: usize,
     /// Changes the server refused.
@@ -137,6 +139,7 @@ impl Default for Sync {
     fn default() -> Self {
         Self {
             connection: Connection::Syncing,
+            reminders_ready: false,
             pending: 0,
             failed: 0,
             signed_out: false,
@@ -473,6 +476,7 @@ pub fn status() -> Sync {
             let s = c.status();
             Sync {
                 connection: s.connection,
+                reminders_ready: c.readiness() == todo_client::Readiness::CaughtUp,
                 pending: s.pending,
                 failed: s.failed,
                 signed_out: s.revoked,
@@ -488,6 +492,7 @@ pub fn status() -> Sync {
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => Sync {
             connection: Connection::Online,
+            reminders_ready: true,
             offline_demo: true,
             failed: l.failures.len(),
             local_error: l

@@ -24,6 +24,15 @@ pub const REMINDER_CHANGED: &str =
 /// Shown when the chosen time has passed.
 pub const REMINDER_PAST: &str = "Pick a time that hasn’t passed.";
 
+/// Action labels for reminder alerts.
+pub const COMPLETE_LABEL: &str = "Complete";
+/// Action label for putting off a reminder.
+pub const SNOOZE_LABEL: &str = "Snooze 10 min";
+/// How long the snooze action puts a reminder off.
+pub const SNOOZE_MS: i64 = 10 * 60 * 1000;
+/// The oldest missed alarm still eligible for delivery.
+pub const MISSED_WINDOW_MS: i64 = 24 * 60 * 60 * 1000;
+
 /// Confirms a reminder was set, with a time label formatted in the client's local time.
 pub fn reminder_set_text(time: &str) -> String {
     format!("Reminder set for {time}")
@@ -131,6 +140,85 @@ pub struct Alarm {
     pub at: Timestamp,
 }
 
+/// Identifies an occurrence even after a reload or after undo restores the same reminder and time.
+/// The time is not rounded: an edit may change only a fractional second.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct AlertKey {
+    pub reminder: ReminderId,
+    pub at: Timestamp,
+}
+
+impl Alarm {
+    pub fn key(self) -> AlertKey {
+        AlertKey {
+            reminder: self.reminder,
+            at: self.at,
+        }
+    }
+
+    /// Actions on an old alert must not change a different occurrence or a closed task.
+    pub fn is_current(self, state: &State) -> bool {
+        check_seen(
+            state,
+            self.task,
+            Some(Seen {
+                id: self.reminder,
+                at: self.at,
+            }),
+        )
+        .is_ok()
+            && open_for_alerts(state, self.task)
+    }
+}
+
+/// Reschedule exactly the alert the owner saw to ten minutes from now. This updates its
+/// synced reminder; platforms that snooze locally can use the same duration instead.
+pub fn snooze_command(state: &State, alarm: Alarm, now: Timestamp) -> Option<Command> {
+    if !alarm.is_current(state) {
+        return None;
+    }
+    let at = now
+        .checked_add(std::time::Duration::from_millis(SNOOZE_MS.unsigned_abs()))
+        .ok()?;
+    (at != alarm.at).then_some(Command::UpdateReminder {
+        id: alarm.reminder,
+        at,
+    })
+}
+
+/// The cutoff for eligible alerts, clamped at the earliest representable instant.
+pub fn alert_cutoff(now: Timestamp) -> Timestamp {
+    now.checked_sub(std::time::Duration::from_millis(
+        MISSED_WINDOW_MS.unsigned_abs(),
+    ))
+    .unwrap_or(Timestamp::MIN)
+}
+
+/// The due, not yet delivered alarms in delivery order, and the next scheduled wake-up.
+pub fn alert_plan(
+    state: &State,
+    now: Timestamp,
+    delivered: impl Fn(AlertKey) -> bool,
+) -> (Vec<Alarm>, Option<Timestamp>) {
+    let mut due = Vec::new();
+    for alarm in alarms(state, alert_cutoff(now)) {
+        if !delivered(alarm.key()) {
+            if alarm.at > now {
+                return (due, Some(alarm.at));
+            }
+            due.push(alarm);
+        }
+    }
+    (due, None)
+}
+
+fn open_for_alerts(state: &State, task: TaskId) -> bool {
+    state
+        .tasks
+        .get(&task)
+        .is_some_and(|t| !t.is_done() && t.merged_into.is_none())
+}
+
 /// Every reminder to alert for, from `since` on, earliest first: live reminders on live, open tasks (not
 /// completed, deleted, merged away, or in a deleted list). A reminder missing here has been removed, or
 /// its task completed or deleted, here or elsewhere: its alarm goes.
@@ -139,12 +227,7 @@ pub fn alarms(state: &State, since: Timestamp) -> Vec<Alarm> {
         .reminders
         .values()
         .filter(|r| r.at >= since && state.is_live(r.id.into()))
-        .filter(|r| {
-            state
-                .tasks
-                .get(&r.task)
-                .is_some_and(|t| !t.is_done() && t.merged_into.is_none())
-        })
+        .filter(|r| open_for_alerts(state, r.task))
         .map(|r| Alarm {
             reminder: r.id,
             task: r.task,
@@ -159,6 +242,7 @@ pub fn alarms(state: &State, since: Timestamp) -> Vec<Alarm> {
 mod tests {
     use super::*;
     use crate::intent::{create_list, delete};
+    use proptest::prelude::*;
     use todo_core::actor::Actor;
     use todo_core::command::NewTask;
     use todo_core::ids::ListId;
@@ -344,6 +428,78 @@ mod tests {
             set_reminder(&w.state, unknown, None, at, Uuid::nil),
             Err(Stale::Task)
         );
+    }
+
+    #[test]
+    fn plan_ignores_old_and_delivered_alarms_and_schedules_the_first_future_one() {
+        let mut w = World::new();
+        let (_, task) = w.task("Call the dentist");
+        let now = ts("2026-11-22T10:00:00Z");
+        w.add(task, "2026-11-21T09:59:59.999999999Z");
+        let missed = w.add(task, "2026-11-21T10:00:00Z");
+        let delivered = w.add(task, "2026-11-22T09:59:59.999999999Z");
+        let now_id = w.add(task, "2026-11-22T10:00:00Z");
+        let next = ts("2026-11-22T10:00:00.000000001Z");
+        w.add(task, "2026-11-22T10:00:00.000000001Z");
+        let (due, wake) = alert_plan(&w.state, now, |a| a.reminder == delivered);
+        assert_eq!(
+            due.iter().map(|a| a.reminder).collect::<Vec<_>>(),
+            [missed, now_id]
+        );
+        assert_eq!(wake, Some(next));
+    }
+
+    #[test]
+    fn snooze_moves_only_its_current_occurrence_and_can_be_undone() {
+        let mut w = World::new();
+        let (_, task) = w.task("Call the dentist");
+        let at = ts("2026-11-21T10:00:00Z");
+        let reminder = w.add(task, "2026-11-21T10:00:00Z");
+        let other = w.add(task, "2026-11-22T09:00:00Z");
+        let alarm = Alarm { reminder, task, at };
+        let cmd = snooze_command(&w.state, alarm, at).expect("snooze");
+        let actor = Actor::owner("test").expect("actor");
+        let events = decide(&w.state, &actor, &cmd, at).expect("snooze applies");
+        let [event] = events.as_slice() else {
+            panic!("one reminder update");
+        };
+        apply(&mut w.state, event).expect("apply snooze");
+        let snoozed = alarms(&w.state, at)[0];
+        assert_ne!(alarm.key(), snoozed.key());
+        assert_eq!(snoozed.at, ts("2026-11-21T10:10:00Z"));
+        assert_eq!(alarms(&w.state, at)[1].reminder, other);
+        assert_eq!(snooze_command(&w.state, alarm, at), None);
+        for undo in todo_core::undo::undo(&w.state, event, &actor, at).expect("undo applies") {
+            apply(&mut w.state, &undo).expect("apply undo");
+        }
+        assert_eq!(alarms(&w.state, at)[0].key(), alarm.key());
+        w.run(Command::CompleteTask { id: task });
+        assert_eq!(snooze_command(&w.state, alarm, at), None);
+    }
+
+    proptest! {
+        #[test]
+        fn alert_key_tracks_the_reminder_and_full_instant(
+            id in any::<u128>(),
+            task in any::<u128>(),
+            millis in 0_i64..2_000_000_000_000,
+            nanos in 1_u64..1_000_000,
+        ) {
+            let at = Timestamp::from_millisecond(millis).unwrap();
+            let alarm = Alarm {
+                reminder: ReminderId::from_uuid(Uuid::from_u128(id)),
+                task: TaskId::from_uuid(Uuid::from_u128(task)),
+                at,
+            };
+            let moved = Alarm {
+                at: at.checked_add(std::time::Duration::from_nanos(nanos)).unwrap(),
+                ..alarm
+            };
+            let other = Alarm { reminder: ReminderId::from_uuid(Uuid::from_u128(id ^ 1)), ..alarm };
+            prop_assert_eq!(moved.at.as_millisecond(), alarm.at.as_millisecond());
+            prop_assert_ne!(moved.key(), alarm.key());
+            prop_assert_ne!(other.key(), alarm.key());
+        }
     }
 
     #[test]

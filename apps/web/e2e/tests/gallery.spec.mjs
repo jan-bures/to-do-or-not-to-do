@@ -3,6 +3,7 @@
 // e2e/gallery/ (CI uploads them); compare them with the approved mockups.
 import { expect, test } from "@playwright/test";
 import { chooseNew, dragOver, open, openDeviceSettings, openRows, pickup, watch } from "./helpers.mjs";
+import { beforeReminder, mockNotifications, reminderToast, REMINDER_TASK } from "./reminder-helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
 const MEDIUM = { width: 1024, height: 768 };
@@ -26,6 +27,38 @@ for (const scheme of ["light", "dark"]) {
       await sidebar.getByRole("button", { name: "New", exact: true }).press("Enter");
       await expect(sidebar.getByRole("menuitem", { name: "List", exact: true })).toBeFocused();
       await sidebar.screenshot({ path: `gallery/sidebar-new-menu-${scheme}.png`, animations: "disabled" });
+      await w.check();
+    });
+
+    for (const [permission, name, status] of [
+      ["default", "not-enabled", "Not enabled"],
+      ["granted", "allowed", "Allowed"],
+      ["denied", "blocked", "Blocked"],
+      ["unsupported", "unsupported", "Not supported"],
+    ]) {
+      test(`reminder notifications ${name} in Settings (${scheme})`, async ({ page }) => {
+        const w = watch(page);
+        await mockNotifications(page, permission);
+        await page.setViewportSize(DESKTOP);
+        await open(page);
+        await page.getByRole("button", { name: "Settings", exact: true }).click();
+        await expect(page.locator("#reminder-notification-description")).toContainText(status);
+        await page.locator(".sidebar").screenshot({ path: `gallery/reminder-settings-${name}-${scheme}.png`, animations: "disabled" });
+        await w.check();
+      });
+    }
+
+    test(`reminder fallback toast (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await mockNotifications(page, "denied");
+      await page.setViewportSize(DESKTOP);
+      await beforeReminder(page);
+      await page.clock.runFor(10000);
+      await expect(reminderToast(page)).toContainText(REMINDER_TASK);
+      await shot(page, `reminder-toast-${scheme}`);
+      await page.setViewportSize(PHONE);
+      await page.clock.runFor(32);
+      await shot(page, `reminder-toast-phone-${scheme}`);
       await w.check();
     });
 

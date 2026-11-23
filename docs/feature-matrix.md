@@ -53,7 +53,7 @@ Every write goes through `POST /api/v1/commands` (`S/api/mod.rs:140`), carrying 
 | Home-screen task widget | shares room derivation and the syncing outbox (`F/engine.rs`) | n/a | n/a | wired: resizable Glance widget with a per-widget smart list, list, or collection; task detail, quick add, complete and importance (`A/widget/`) |
 | Drop an email (`.eml`) to create a task | client parses, sends `CreateTask` and, when identifiable, `AddLink` (`T/intent/email.rs`) | wired: drop files onto the list, one task per email with Undo (`D/ui/shell/email_drop.rs`) | wired: drop files onto the task list, same parsing and Undo (`W/app/email_drop.rs`) | n/a |
 | Share text into the app | `CreateTask` | n/a | n/a | wired: `A/MainActivity.kt:30` (`ACTION_SEND`) pre-fills the composer |
-| Reminder notifications | reminders stored (`C/command.rs:340`); no push. What to alert for: `T/intent/reminder.rs` `alarms` | wired: Windows toasts while the app runs, also hidden in the tray, planned again after every change to the data, with a timer for the next one; Open (shows the task), Snooze 10 min (this computer only) and Complete; a reminder more than five minutes stale never fires on its own but goes into one summary toast, and older than a day isn't mentioned; shown once, also across restarts (`D/model/reminders.rs`, `D/ui/shell/reminders.rs`, `D/platform/toast.rs`) | editing only; no in-page or background alerts | wired: local alarms from the last synced state (no push; a brief sync when one goes off), inexact with an exact one beside it when allowed, rescheduled after every sync change, a reboot and a clock or time-zone change; a notification on the Reminders channel with Complete (the app's own command, which syncs) and Snooze 10 min; missed reminders from the last 24 hours shown once (`A/reminders/ReminderPlan.kt`, `A/reminders/Reminders.kt`, `A/reminders/AndroidAlarms.kt`, `F/engine.rs::reminder_alarms`) |
+| Reminder notifications | reminders stored (`C/command.rs:340`); no push. What to alert for: `T/intent/reminder.rs` `alarms` | wired: Windows toasts while the app runs, also hidden in the tray, planned again after every change to the data, with a timer for the next one; Open (shows the task), Snooze 10 min (this computer only) and Complete; a reminder more than five minutes stale never fires on its own but goes into one summary toast, and older than a day isn't mentioned; shown once, also across restarts (`D/model/reminders.rs`, `D/ui/shell/reminders.rs`, `D/platform/toast.rs`) | wired: one same-origin tab alerts while the app is open, once per reminder time across reloads; Settings controls browser permission, and the system alert opens the task. If unavailable, the in-app toast offers Complete and Snooze 10 min; web snooze moves the synced reminder (`W/app/reminder_alerts.rs`, `apps/web/static/reminder-browser.js`) | wired: local alarms from the last synced state (no push; a brief sync when one goes off), inexact with an exact one beside it when allowed, rescheduled after every sync change, a reboot and a clock or time-zone change; a notification on the Reminders channel with Complete (the app's own command, which syncs) and Snooze 10 min; missed reminders from the last 24 hours shown once (`A/reminders/ReminderPlan.kt`, `A/reminders/Reminders.kt`, `A/reminders/AndroidAlarms.kt`, `F/engine.rs::reminder_alarms`) |
 | Address-bar routes for rooms and tasks | n/a | n/a | wired `W/app.rs:153`, `W/app.rs:161` | n/a |
 
 ### Pairing, account and sync
@@ -213,7 +213,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 2.1 | **Done on desktop, Android and web.** Delete a task or move it to another list from Task actions, with Undo. Desktop and web also offer a row context menu, Delete and a keyboard-accessible "Move to…" picker. | M |
 | 2.2 | **Done.** Manage collections: new, delete, recolour; move a list between collections; recolour a list. | M |
 | 2.3 | **Done.** Activity feed with per-event undo and an agent filter. The desktop, web and Android rooms are wired; all three share the pages, undos and wording in `todo-client` (`T/activity.rs`). | L |
-| 2.4 | **Done.** Reminders: edit them, and fire Windows toasts while the app runs in the tray. | L |
+| 2.4 | **Done.** Reminders: edit them and fire Windows toasts in the tray, Android local notifications, and browser notifications or in-app toasts while a web tab is open. | L |
 | 2.5 | **Done.** Repeat presets, custom interval/unit/weekly days, clear and tracked undo. | M |
 | 2.6 | **Done.** Tags: create, rename, recolour, delete with confirmation and undo, add to and remove from a task. | M–L |
 | 2.7 | **Done.** Add and remove web links; upload attachments with the file picker or a drop onto task detail, and remove attachments with Undo. | — |
@@ -238,7 +238,7 @@ Sizes: **S** is under half a day, **M** is one to two days, **L** is more than t
 | 3.9 | **Done.** Not synced list with Dismiss and Dismiss all for the shown entries. | S |
 | 3.10 | **Done.** Remember folded collections across reloads in `localStorage`. | S |
 | 3.11 | **Done.** Upload attachments from the picker or by dropping files onto the task detail. The upload route accepts the owner's session with CSRF and a matching origin; removal offers Undo. | M |
-| 3.12 | **Done:** task delete and move (2.1), collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing (2.4); Activity (2.3) and attachments are also wired. Merging tasks (2.12) is wired. Still missing: reminder alerts (2.4). | — |
+| 3.12 | **Done:** task delete and move (2.1), collections and list organization (2.2), repeat rules (2.5), tags (2.6), web links (2.7), and reminder editing and alerts (2.4); Activity (2.3), attachments and task merges (2.12) are also wired. | — |
 
 ### 4. What Android lacks relative to the desktop
 
@@ -281,8 +281,8 @@ maps its own room key to the shared task intent. This resolves the creation drif
   ignoring case, as the domain requires.
 - `intent::reminder` picks the reminder a task's Reminder row shows and edits (the first from the local
   today, else the latest), builds the commands that set, move or remove it, and lists what a client
-  should alert for (`alarms`). Android, the web and the desktop use it for editing; Android and the desktop
-  also use it to alert (local alarms, Windows toasts).
+  should alert for (`alarms`). All three clients use it for editing and alerts. It also provides the web's
+  delivery plan, occurrence key and snooze command.
 - All three parse the same trailing date and priority, preview both as chips, and use the same draft to
   reconcile typed syntax with choices from the calendar or priority picker.
 

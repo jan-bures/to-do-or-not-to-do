@@ -11,6 +11,7 @@ mod links;
 mod pickers;
 mod quick_add;
 mod reminder;
+mod reminder_alerts;
 mod repeat;
 mod room_actions;
 mod tags;
@@ -118,6 +119,7 @@ pub struct Ctx {
     bulk_due: NodeRef<html::Dialog>,
     lingering: RwSignal<Vec<Linger>>,
     toast: RwSignal<Option<Toast>>,
+    reminder_alerts: reminder_alerts::Alerts,
     toast_seq: RwSignal<u64>,
     undo: RwSignal<Option<Undo>>,
     waiting_undo: RwSignal<BTreeMap<u64, WaitingUndo>>,
@@ -626,6 +628,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         bulk_due: NodeRef::new(),
         lingering,
         toast: RwSignal::new(None),
+        reminder_alerts: reminder_alerts::Alerts::new(),
         toast_seq: RwSignal::new(0),
         undo: RwSignal::new(None),
         waiting_undo: RwSignal::new(BTreeMap::new()),
@@ -671,6 +674,10 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     c.refresh();
     if let Some(n) = notice {
         c.show_toast(n, false);
+    }
+    if live || (cfg!(feature = "fixtures") && platform::query().contains("fixture=reminder-alerts"))
+    {
+        reminder_alerts::start(c);
     }
 
     // Theme and room hue live on <html>, where tokens.css looks for them.
@@ -1558,9 +1565,20 @@ fn SettingsMenu() -> impl IntoView {
     let menu = FooterMenu::new(
         "open-settings",
         if csrf.is_some() {
-            &["open-admin", "sync-now", "device-settings", "sign-out"]
+            &[
+                "open-admin",
+                "sync-now",
+                "reminder-notification-setting",
+                "device-settings",
+                "sign-out",
+            ]
         } else {
-            &["open-admin", "sync-now", "device-settings"]
+            &[
+                "open-admin",
+                "sync-now",
+                "reminder-notification-setting",
+                "device-settings",
+            ]
         },
     );
     let origin = window().location().origin().unwrap_or_default();
@@ -1568,6 +1586,11 @@ fn SettingsMenu() -> impl IntoView {
         s.connection == Connection::Syncing || s.read_only || s.signed_out || s.offline_demo
     };
     let field = NodeRef::<html::Input>::new();
+    Effect::new(move |_| {
+        if menu.open.get() {
+            c.reminder_alerts.refresh_permission();
+        }
+    });
     view! {
         <div class="footer-menu" on:focusout=move |ev| menu.focus_out(ev) on:keydown=move |ev| menu.key(ev)>
             <button type="button" id=menu.trigger class="icon-button" title="Settings" aria-label="Settings"
@@ -1605,6 +1628,7 @@ fn SettingsMenu() -> impl IntoView {
                             }
                         }
                     >{icon(Icon::RefreshCw)}{move || if c.sync.with(|s| s.connection == Connection::Syncing) { "Syncing…" } else { "Sync now" }}</button>
+                    <reminder_alerts::Setting/>
                     <button type="button" id="device-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
                         on:click=move |_| { menu.close(); c.device_settings_open.set(true); }
                     >{icon(Icon::Link)}"Devices…"</button>
@@ -2187,11 +2211,23 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
 #[component]
 fn ToastView() -> impl IntoView {
     let c = ctx();
-    let toast = Memo::new(move |_| {
-        let has_alert = c
-            .sync
-            .with(|s| s.holding_upgrade || s.read_only || s.local_error.is_some());
-        if has_alert { None } else { c.toast.get() }
+    let has_alert = Memo::new(move |_| {
+        c.sync
+            .with(|s| s.holding_upgrade || s.read_only || s.local_error.is_some())
+    });
+    let toast = Memo::new(move |_| if has_alert.get() { None } else { c.toast.get() });
+    let reminder = Memo::new(move |_| {
+        if has_alert.get() || toast.with(Option::is_some) {
+            return None;
+        }
+        let alarm = c.reminder_alerts.first()?;
+        if !reminder_alerts::running(c) {
+            return None;
+        }
+        c.state.with(|s| {
+            let task = s.tasks.get(&alarm.task)?;
+            alarm.is_current(s).then(|| (alarm, task.title.clone()))
+        })
     });
     let dismiss = move || {
         if c.detail_modal.get_untracked() {
@@ -2202,7 +2238,9 @@ fn ToastView() -> impl IntoView {
     view! {
         // Keep the live region mounted before the toast arrives. Alerts announce themselves.
         <span class="toast-announcement" role="status" aria-live="polite" aria-atomic="true">
-            {move || toast.with(|t| t.as_ref().map(|t| t.text.clone()))}
+            {move || toast.with(|t| t.as_ref().map(|t| t.text.clone())).or_else(|| {
+                reminder.with(|r| r.as_ref().map(|(_, title)| format!("Reminder: {title}")))
+            })}
         </span>
         {move || {
             // Another tab waits to upgrade until this one's changes are stored.
@@ -2246,6 +2284,9 @@ fn ToastView() -> impl IntoView {
                     }
                     .into_any(),
                 );
+            }
+            if let Some((alarm, title)) = reminder.get() {
+                return Some(view! { <reminder_alerts::ReminderToast alarm title/> }.into_any());
             }
             toast.get().map(|t| {
                     let undo = t.undo;

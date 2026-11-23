@@ -656,6 +656,27 @@ a {
   text-transform: var(--text-caps-label-transform);
 }
 
+.settings-reminders {
+  padding-block: var(--space-1) var(--space-2);
+  margin-block: var(--space-1);
+  border-block: var(--hairline) solid var(--color-line);
+}
+
+.settings-reminders button {
+  text-align: start;
+}
+
+.settings-reminders button[aria-disabled="true"] {
+  color: var(--color-ink);
+}
+
+.settings-reminders p {
+  margin: 0;
+  padding-inline: calc(var(--space-2) * 2 + var(--component-icon-small)) var(--space-2);
+  color: var(--color-ink-3);
+  font: var(--text-nav-sub);
+}
+
 .settings-origin {
   color: var(--color-ink);
   font: var(--text-due);
@@ -2290,6 +2311,32 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   white-space: nowrap;
 }
 
+.toast-reminder {
+  gap: var(--space-2);
+  padding-inline: var(--space-3) var(--space-1);
+}
+
+.toast-reminder-title {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  gap: var(--space-2);
+}
+
+.toast-reminder-title .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+  color: var(--color-toast-ink-2);
+}
+
+.toast-reminder :is(.toast-undo, .toast-close) {
+  flex: none;
+}
+
+.toast-reminder :is(.toast-reminder-title, .toast-undo):hover {
+  text-decoration: underline;
+}
+
 .toast-undo .icon {
   width: var(--component-icon-small);
   height: var(--component-icon-small);
@@ -3449,6 +3496,28 @@ a.source:hover {
   .toast {
     height: var(--phone-toast);
     flex: 1;
+  }
+
+  .list-foot:has(.toast-reminder):has(.completed-toggle) {
+    flex-wrap: wrap;
+    gap: 0;
+    padding-block-end: var(--space-1);
+  }
+
+  .list-foot:has(.completed-toggle) .toast-reminder {
+    flex-basis: 100%;
+  }
+
+  .toast.toast-reminder {
+    height: var(--phone-touch);
+  }
+
+  .toast-reminder button {
+    min-height: var(--phone-touch);
+  }
+
+  .toast-reminder .toast-close {
+    width: var(--phone-touch);
   }
 
   .toast-error .toast-long {

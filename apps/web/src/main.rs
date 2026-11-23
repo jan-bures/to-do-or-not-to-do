@@ -11,6 +11,7 @@ mod changes;
 mod fixtures;
 mod landscape;
 mod model;
+mod reminder_alerts;
 mod reminder_time;
 
 #[cfg(target_arch = "wasm32")]
@@ -37,7 +38,10 @@ async fn start() {
         // Invented data, nothing sent anywhere. Only the clock tests use the browser's clock.
         let query = platform::query();
         let dst = query.contains("fixture=dst");
-        let now = if dst || query.contains("fixture=browser-clock") {
+        let now = if dst
+            || query.contains("fixture=browser-clock")
+            || query.contains("fixture=reminder-alerts")
+        {
             platform::now()
         } else {
             fixtures::now()

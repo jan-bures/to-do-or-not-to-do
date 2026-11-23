@@ -72,6 +72,7 @@ browsers that accept gzip.
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
 | `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
+| `src/app/reminder_alerts.rs`, `static/reminder-browser.js` | Reminder scheduling, permission settings, native and in-app delivery, and cross-tab claims. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/app/email_drop.rs` | The task list's `.eml` drop target and browser file reads. Parsing and commands are shared with desktop. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
@@ -466,7 +467,21 @@ browser's time zone; a skipped time at a clock change is refused, and a newly ch
 the earlier occurrence. **Remove reminder** clears the shown reminder only. If a task has several, the
 shared intent shows the first from local today onward, or the latest if all are older. If the reminder
 changes elsewhere while the picker is open, close and reopen it before editing. Adding, changing and
-removing a reminder all offer Undo. The web app does not deliver reminder alerts.
+removing a reminder all offer Undo.
+
+**Reminder alerts** work while the app has an open tab. To allow system alerts, choose **Settings → Enable reminder notifications**;
+only that action opens the browser's permission prompt. Settings shows whether permission is allowed, blocked or
+unsupported. If it is blocked, allow notifications for this site in the browser's site settings. A system alert
+contains only the task title; click it to focus the tab and open the task in its current list. If system alerts
+are not available or not enabled, a visible tab uses the app's toast strip instead. The toast offers **Complete**
+and **Snooze 10 min**. Both offer Undo; snoozing from the web moves that reminder on all synced devices.
+
+The app takes its schedule from the shared `alarms` list once the initial sync catches up and rechecks it
+when the replica changes or the tab wakes. It ignores alarms more than 24 hours old. Same-origin tabs claim each
+reminder ID and scheduled instant in a single IndexedDB transaction. A `BroadcastChannel` tells other tabs about
+recent claims; the durable record prevents a duplicate after a reload even if the broadcast was missed. The
+claims store contains no task content. Browsers can delay a background tab's timers, and no alert is delivered
+while all app tabs are closed. There is no Web Push.
 
 **Repeat** (or **R**) offers Daily, Weekdays, Weekly, Monthly and Yearly, plus **Custom…** for an
 interval, unit and days of the week. Use the arrows to browse the presets and Enter or Space to choose.
@@ -532,7 +547,9 @@ The status bar shows shortcuts only when their actions are available.
   edit titles, steps and toggles, use the keyboard and the address bar, follow the system theme, and fail on
   any console error or CSP violation. Task action tests cover context and detail menus, keyboard and filter
   navigation, focus after deletion and moves, reduced motion and Undo. Reminder tests cover keyboard
-  navigation and focus return, custom time validation, cancelling a draft, and Undo. The docked splitter
+  navigation and focus return, custom time validation, cancelling a draft, and Undo. With mocked notifications
+  and clock, alert tests cover explicit permission, title-only delivery and task navigation, dedupe across tabs
+  and reload, rescheduling and removal, and fallback actions. The docked splitter
   tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
   and viewport changes, and wide-detail text and list layout. Settings tests use the keyboard to open
   the same-origin admin pages from the desktop sidebar and phone drawer. Set `FIXTURE_PORT` to change the port
@@ -551,7 +568,10 @@ The status bar shows shortcuts only when their actions are available.
   empty and refused undo), task detail activity on desktop and phone, the desktop and phone quick-add
   chips, calendar and priority pickers, the storage-error and read-only alerts (desktop and phone), the medium modal, and the phone's
   list, detail and drawer. Settings menus are captured on desktop (`sidebar-settings-{light,dark}.png`)
-  and phone (`phone-settings-{light,dark}.png`). The PNGs land in `apps/web/e2e/gallery/`, including
+  and phone (`phone-settings-{light,dark}.png`). Reminder permission states are in
+  `reminder-settings-{not-enabled,allowed,blocked,unsupported}-{light,dark}.png` and fallback toasts in
+  `reminder-toast-{light,dark}.png` and `reminder-toast-phone-{light,dark}.png`.
+  The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery`. Compare them with the approved mockups (kept outside this repository)
   after every UI change.
