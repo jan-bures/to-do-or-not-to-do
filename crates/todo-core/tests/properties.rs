@@ -536,6 +536,41 @@ proptest! {
         }
     }
 
+    #[test]
+    fn bulk_reorder_preserves_the_block_and_undoes_as_one_group(
+        selected in prop::collection::vec(any::<bool>(), 3..20),
+        gap in any::<usize>(),
+        after in any::<bool>(),
+    ) {
+        let mut w = World::new();
+        let list = w.list(None, "Inbox");
+        let mut picked = Vec::new();
+        let mut rest = Vec::new();
+        for (i, selected) in selected.into_iter().enumerate() {
+            let id = w.ids.task();
+            w.run(Command::CreateTask(Box::new(NewTask::new(id, list, format!("Task {i}")))));
+            if selected { picked.push(id); } else { rest.push(id); }
+        }
+        prop_assume!(picked.len() >= 2 && !rest.is_empty());
+        let i = gap % rest.len();
+        let placement = if after { Placement::After(rest[i].into()) } else { Placement::Before(rest[i].into()) };
+        let before = w.state.clone();
+        let events = w.run(Command::BulkTasks {
+            tasks: picked.clone(), action: BulkTaskAction::Reorder { list, placement },
+        });
+        rest.splice(i + usize::from(after)..i + usize::from(after), picked);
+        let mut result: Vec<_> = w.state.tasks.values().collect();
+        result.sort_by(|a, b| a.position.cmp(&b.position));
+        prop_assert_eq!(result.iter().map(|task| task.id).collect::<Vec<_>>(), rest);
+        let mut replay = before.clone();
+        for event in &events { apply(&mut replay, event).unwrap(); }
+        prop_assert_eq!(&replay, &w.state);
+        if !events.is_empty() {
+            w.undo_group(&events).unwrap();
+            prop_assert!(before.data_eq(&w.state));
+        }
+    }
+
     /// (a) Replaying the log (also after a JSON round trip) on a fresh state gives an identical state.
     #[test]
     fn replay_rebuilds_identical_state(ops in ops()) {

@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
@@ -37,6 +38,7 @@ import app.todoornot.core.FfiException
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
+import app.todoornot.core.TaskDrop
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.quickAddMonth
 import app.todoornot.design.LocalDesign
@@ -89,6 +91,8 @@ import app.todoornot.ui.ReminderAccessCard
 import app.todoornot.ui.ReminderCard
 import app.todoornot.reminders.ReminderNeed
 import app.todoornot.ui.MainScreen
+import app.todoornot.ui.DragFrame
+import app.todoornot.ui.LocalTaskDragFrame
 import app.todoornot.ui.NavRow
 import app.todoornot.ui.PairingActions
 import app.todoornot.ui.PairingScreen
@@ -793,6 +797,32 @@ class GalleryTest {
             s.room.tasks.take(3).forEach { m.toggleBulk(it.id, s.generation) }
             check(m.ui.value.bulkIds.size == 3)
             main("multi_select_$theme", COVER, m.ui.value, dark)
+        }
+    }
+
+    @Test
+    fun task_drag() {
+        val (engine, room, _) = admin()
+        engine.addTask(room, "Check the workshop agenda", FIXTURE_NOW)
+        engine.addTask(room, "Print the room signs", FIXTURE_NOW)
+        val m = TodoModel(engine, scope, Dispatchers.Unconfined, now = { FIXTURE_NOW }, start = room, listen = {})
+        val start = m.ui.value
+        start.room.tasks.take(2).forEach { m.toggleBulk(it.id, start.generation) }
+        val selected = m.ui.value
+        val first = start.room.tasks.first()
+        val last = start.room.tasks.last()
+        val destination = engine.list("Errands") as RoomKey.List
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val frames = listOf(
+                "drag_reorder" to DragFrame(first.title, selected.bulkIds, TaskDrop.Slot(last.id, true), 180f, 445f),
+                "drag_destination" to DragFrame(first.title, selected.bulkIds, TaskDrop.List(destination.id), 170f, 680f),
+            )
+            for ((label, frame) in frames) shot("${label}_$theme", COVER) {
+                CompositionLocalProvider(LocalTaskDragFrame provides frame) {
+                    MainScreen(selected, Actions.None, dark, wide = false, drawerOpen = frame.target is TaskDrop.List)
+                }
+            }
         }
     }
 

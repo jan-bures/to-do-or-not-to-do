@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,6 +60,8 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import app.todoornot.Cleartext
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import app.todoornot.core.AgentSummary
 import app.todoornot.core.NavItem
 import app.todoornot.core.RoomKey
@@ -126,7 +129,11 @@ fun RoomDrawer(
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        Column(Modifier.weight(1f).verticalScroll(rememberScrollState()).padding(horizontal = S.S3.dp, vertical = S.S3.dp)) {
+        val drag = LocalTaskDrag.current
+        val scroll = rememberScrollState()
+        Column(Modifier.weight(1f).onGloballyPositioned { coords ->
+            drag?.drawer = DragInput.ScrollPane(coords.boundsInRoot()) { scroll.dispatchRawDelta(it) }
+        }.verticalScroll(scroll).padding(horizontal = S.S3.dp, vertical = S.S3.dp)) {
             val smart = state.home.smart
             val activityAt = activityAt(smart)
             smart.forEachIndexed { i, item ->
@@ -495,6 +502,7 @@ private fun DrawerRow(
     modifier: Modifier = Modifier,
     onLongPress: (() -> Unit)? = null,
     longClickLabel: String? = null,
+    drop: Boolean = false,
     content: @Composable RowScope.() -> Unit,
 ) {
     val r = LocalDesign.current.room
@@ -509,7 +517,8 @@ private fun DrawerRow(
                 .fillMaxWidth()
                 .height(P.NAV_ROW.dp)
                 .clip(RoundedCornerShape(Tokens.Radius.MD.dp))
-                .background(if (on) r.wash else r.canvas)
+                .background(if (drop) r.selectionWash else if (on) r.wash else r.canvas)
+                .then(if (drop) Modifier.border(Tokens.Elevation.HAIRLINE.dp, r.accentStrong, RoundedCornerShape(Tokens.Radius.MD.dp)) else Modifier)
                 .then(if (on) Modifier.selectionBar(r.accentStrong) else Modifier)
                 .then(press)
                 .padding(start = if (indent) S.S8.dp else S.S2.dp, end = S.S3.dp),
@@ -532,9 +541,12 @@ internal fun NavRow(
     val d = LocalDesign.current
     val r = d.room
     val l = d.list(item.hue)
+    val (probe, drop) = item.key.taskDrop()?.let { taskDragNav(it) } ?: (Modifier to false)
     DrawerRow(
         on = on,
         indent = indent,
+        modifier = probe,
+        drop = drop,
         onClick = { onOpen(item.key) },
         onLongPress = onLongPress,
         longClickLabel = if (onLongPress != null) "Options for ${item.name}" else null,

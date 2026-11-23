@@ -1680,6 +1680,100 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   background: var(--color-hover);
 }
 
+.task-drag-grip {
+  position: absolute;
+  inset-inline-start: var(--space-1);
+  inset-block: 0;
+  display: grid;
+  place-items: center;
+  width: var(--space-5);
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  color: var(--color-ink-3);
+}
+
+.task-drag-grip:active { cursor: grabbing; }
+.task-drag-grip svg, .task-drag-lift svg { width: var(--component-icon); height: var(--component-icon); }
+.task-dragging > :not(.task-drag-grip, .task-insertion-line) {
+  opacity: calc(1 - var(--drop-wash-alpha));
+}
+
+.task-insertion-line { display: none; }
+.row:is(.task-drop-before, .task-drop-after) .task-insertion-line {
+  display: block;
+  position: absolute;
+  inset-inline: var(--space-2);
+  height: var(--selection-bar);
+  border-radius: var(--radius-button);
+  background: var(--color-accent-strong);
+  pointer-events: none;
+}
+.row.task-drop-before .task-insertion-line { inset-block-start: 0; }
+.row.task-drop-after .task-insertion-line { inset-block-end: 0; }
+.nav-item.task-drop-target {
+  background: var(--color-selection-wash);
+  outline: var(--hairline) solid var(--color-accent-strong);
+  outline-offset: calc(-1 * var(--hairline));
+}
+
+.task-drag-lift:not([hidden]) {
+  position: fixed;
+  inset: 0 auto auto 0;
+  z-index: 20;
+  pointer-events: none;
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  max-width: min(var(--desktop-detail), calc(100vw - var(--space-4)));
+  transform: translate3d(
+    clamp(var(--task-drag-min-x, var(--space-2)), calc(var(--task-drag-x) + var(--space-3)), calc(100vw - 100% - var(--space-2))),
+    clamp(var(--space-2), calc(var(--task-drag-y) + var(--task-drag-offset-y, -50%)), calc(100vh - 100% - var(--space-2))), 0);
+
+  padding: var(--space-2) var(--space-3);
+  border: var(--hairline) solid var(--color-line-strong);
+  border-radius: var(--radius-button);
+  box-shadow: var(--shadow-overlay);
+  background: var(--color-pane);
+  color: var(--color-ink);
+  font: var(--text-task-title);
+  animation: task-lift var(--duration-hover) var(--ease-standard);
+}
+.app:has(.task-drop-target) ~ .task-drag-lift { --task-drag-min-x: calc(var(--desktop-sidebar) + var(--space-2)); }
+@media (max-width: 759px) {
+  .app:has(.task-drop-target) ~ .task-drag-lift {
+    --task-drag-min-x: var(--space-2);
+    --task-drag-offset-y: var(--space-6);
+  }
+}
+.task-drag-title { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.task-drag-count {
+  flex: none;
+  padding-inline: var(--space-2);
+  border-radius: var(--radius-button);
+  background: var(--color-selection-wash);
+  color: var(--color-ink);
+  font: var(--text-count);
+}
+@keyframes task-lift { from { opacity: 0; } }
+
+/* At the smallest cover widths, don't reserve the full date column beside two touch targets.
+   Keep the date itself visible; give its unused space back to chips, steps and the mail mark. */
+@media (max-width: 359px) {
+  .with-due:has(> .task-drag-grip) .meta .due-slot { width: auto; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .task-drag-lift.task-drag-touch:not([hidden]) {
+    scale: var(--drag-touch-scale);
+    animation-name: task-lift-touch;
+  }
+  @keyframes task-lift-touch { from { opacity: 0; scale: 1; } }
+}
+@media (prefers-reduced-motion: reduce) {
+  .task-drag-lift { outline: var(--hairline) solid var(--color-accent); }
+}
+
+
 .row.selected,
 .handover-task.selected {
   background: var(--color-wash);
@@ -3292,6 +3386,12 @@ a.source:hover {
     font: var(--text-meta-phone);
     /* Use the otherwise empty second line under agent and priority, without covering the star. */
     margin-inline-end: calc(-1 * (var(--meta-under-agent, 0px) + var(--meta-under-priority, 0px)));
+  }
+
+  .row:has(> .task-drag-grip) { padding-inline-end: calc(var(--phone-row-pad-right) + var(--phone-touch)); }
+  .task-drag-grip {
+    inset-inline: auto 0;
+    width: var(--phone-touch);
   }
 
   .row-important {

@@ -14,6 +14,7 @@ mod popout;
 mod quick_pickers;
 mod reminders;
 mod sidebar;
+mod task_drag;
 mod trash;
 mod undo;
 
@@ -254,6 +255,8 @@ pub struct ShellView {
     quick_focus: quick_pickers::Controls,
     list_focus: FocusHandle,
     multi: todo_client::selection::Selection,
+    task_drag: Option<task_drag::Gesture>,
+    task_settle: Option<task_drag::Settle>,
     bulk_focus: [FocusHandle; 7],
     rows: UniformListScrollHandle,
     trash_selected: Option<todo_core::ids::EntityId>,
@@ -452,6 +455,8 @@ impl ShellView {
             list_focus: cx.focus_handle(),
             rows: UniformListScrollHandle::new(),
             multi: todo_client::selection::Selection::default(),
+            task_drag: None,
+            task_settle: None,
             bulk_focus: std::array::from_fn(|_| cx.focus_handle()),
             trash_selected: None,
             handover_scroll: ScrollHandle::new(),
@@ -1062,6 +1067,10 @@ impl ShellView {
     /// collection's context menu opens at its sidebar row, as a right-click leaves it. The others hang
     /// from their buttons or rows.
     pub fn preview_menu(&mut self, fixture: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if matches!(fixture, "drag-reorder" | "drag-destination") {
+            self.preview_task_drag(fixture, window, cx);
+            return;
+        }
         if fixture == "multi-select" {
             self.change_selection(
                 |selection, rows, _| {
@@ -1680,6 +1689,7 @@ impl ShellView {
     }
 
     pub fn select_room(&mut self, room: RoomKey, cx: &mut Context<Self>) {
+        self.cancel_task_drag(cx);
         if !self.commit_edits(cx) && self.ui.room != room {
             self.keep_unsaved(cx);
             return;
@@ -1756,17 +1766,6 @@ impl ShellView {
             }
         }
         self.refresh(cx);
-    }
-
-    /// Moves the selected task up or down its list (only where the order is the list's own).
-    fn move_task(&mut self, by: i32, cx: &mut Context<Self>) {
-        let (Some(id), RoomKey::List(_)) = (self.ui.task, self.ui.room) else {
-            return;
-        };
-        if let Some(cmd) = commands::nudge(&self.store.view(), id.into(), by) {
-            self.submit(vec![cmd]);
-        }
-        self.select_task(Some(id), cx);
     }
 
     fn toggle_task_glyph(&mut self, id: TaskId, icon: Icon, cx: &mut Context<Self>) {
@@ -2909,6 +2908,9 @@ impl ShellView {
                         }
                     }),
                 )
+                .when(!self.ui.compact || matches!(room, RoomKey::List(_)), |el| {
+                    el.child(self.drag_handle(id, room, task.title.clone(), cx))
+                })
                 // Where it is, so a menu opened from the keyboard can hang under it.
                 .child(self.row_bounds_probe(id))
             });
@@ -2935,6 +2937,32 @@ impl ShellView {
         row.when(!selected && room.is_some(), |row| {
             row.hover(move |s| s.bg(hover))
                 .when(menu_target, |row| row.bg(hover))
+        })
+        .when_some(room.and_then(|_| self.task_settle_alpha(id)), |row, a| {
+            let base = if bulk_selected {
+                p.selection_wash
+            } else if selected {
+                p.wash
+            } else {
+                p.pane
+            };
+            row.bg(theme::mix(base, p.wash, a))
+        })
+        .when(room.is_some() && self.row_lifted(id), |row| {
+            row.opacity(1. - elevation::DROP_WASH_ALPHA)
+        })
+        .when_some(room.and_then(|_| self.drag_slot(id)), |row, after| {
+            row.child(
+                div()
+                    .absolute()
+                    .left(px(space::S2))
+                    .right(px(space::S2))
+                    .when(after, |line| line.bottom_0())
+                    .when(!after, |line| line.top_0())
+                    .h(px(elevation::SELECTION_BAR))
+                    .rounded(px(radius::BUTTON))
+                    .bg(p.accent_strong),
+            )
         })
     }
 
@@ -3313,6 +3341,9 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
+                        if this.cancel_task_drag(cx) {
+                            return;
+                        }
                         if this.multi.cursor().is_some() {
                             this.select_task(None, cx);
                         } else if this.ui.compact {
@@ -3350,8 +3381,12 @@ impl ShellView {
                     .on_action(cx.listener(|this, _: &PickPriority, window, cx| {
                         this.pick_priority(window, cx);
                     }))
-                    .on_action(cx.listener(|this, _: &MoveTaskUp, _, cx| this.move_task(-1, cx)))
-                    .on_action(cx.listener(|this, _: &MoveTaskDown, _, cx| this.move_task(1, cx)))
+                    .on_action(
+                        cx.listener(|this, _: &MoveTaskUp, _, cx| this.nudge_task_drag(false, cx)),
+                    )
+                    .on_action(
+                        cx.listener(|this, _: &MoveTaskDown, _, cx| this.nudge_task_drag(true, cx)),
+                    )
                     .on_action(cx.listener(|this, _: &MoveTaskTo, window, cx| {
                         this.open_task_menu(TaskPage::Move, window, cx);
                     }))
@@ -4156,6 +4191,8 @@ impl Render for ShellView {
         self.activity_read_ahead(cx);
         self.drive_motion(window, cx);
         self.drive_email_drop(window, cx);
+        self.drive_task_drag(window);
+        self.row_bounds.borrow_mut().clear();
         self.task_toggles
             .retain(|_, a| self.frame.saturating_sub(a.start) < a.span);
         if !self.task_toggles.is_empty() {
@@ -4290,6 +4327,8 @@ impl Render for ShellView {
                 shell.child(div().absolute().inset_0().occlude().cursor_col_resize())
             })
             .child(self.press_counter(cx))
+            .child(self.drag_events(cx))
+            .children(self.drag_preview(window))
             .children(self.confirmation_scrim())
             .children(self.pairing_overlay())
             // Context menus open at the pointer; the others hang from their buttons.

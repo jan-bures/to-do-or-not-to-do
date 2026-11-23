@@ -289,7 +289,8 @@ places from the right edge, and empty ones to the left of every filled one are l
 room. On a dated row the due date comes first, in a 100 dp slot, so the list chips of dated rows start at the
 same x. On Android an undated row has no slot: its chips start flush with the title, because a blank 100 dp gap
 reads as missing content. On the web, if any visible row has a date, undated rows also reserve the slot so the
-chips stay aligned; if none does, chips start flush with the title. Web phone chips cap at 120 px
+chips stay aligned; if none does, chips start flush with the title. On web below 360 px, dates use their
+natural width so the task grip, Important control and metadata can still fit. Web phone chips cap at 120 px
 (`phone::CHIP_MAX`) and trailing tags can end with an ellipsis. A cover screen fits nine full rows above the
 composer. A row is at least 64 dp and grows with the font scale, so its metadata line is never clipped.
 
@@ -790,17 +791,17 @@ Completing a task is the one choreographed moment in the app.
 
 #### 13. Drag-reordering (and keyboard nudge)
 
-- **Trigger:** Dragging a task row or sidebar list to a new position, or pressing `Alt+Up` / `Alt+Down`.
+- **Trigger:** Grabbing a task's grip, or pressing `Alt+Up` / `Alt+Down` in an open manual list.
 - **What moves & properties:**
   - **Pickup (`HOVER` 90 ms, `STANDARD`):** Dragged row adopts `shadow-overlay` (plus `1 px` `line-strong`
-    border in dark mode) and opaque `pane` fill; on touch only, scales subtly (`1.0 → 1.01`). Never scale desktop
-    text during drag so subpixel rendering stays sharp.
-  - **Dragging:** The dragged item follows the pointer or finger **1:1 with zero easing and zero lag**, locked to
-    the vertical axis of its list.
-  - **Sibling displacement (`ROW_ENTER` 180 ms, `STANDARD`):** Whenever the dragged item crosses a slot midpoint,
-    displaced siblings glide smoothly to their new slot.
-  - **Drop settle (`ROW_ENTER` 180 ms, `STANDARD`):** Released item glides into the target slot and sheds
-    `shadow-overlay`.
+    border in dark mode) and opaque `pane` fill; on touch only, scales subtly (`1.0 → DRAG_TOUCH_SCALE`). Never
+    scale desktop text during drag so subpixel rendering stays sharp. A selected group gets one count badge.
+  - **Dragging:** The preview follows the pointer or finger **1:1 with zero easing and zero lag**. An
+    `accent-strong` insertion line tracks row midpoints in a manual list. Keep the rows in place until release
+    so a pointer stationary over a slot doesn't change which row it hits. Only a valid sidebar or drawer target
+    gets the `selection-wash` fill and an `accent-strong` outline. Keep its label clear of the lifted preview.
+  - **Drop settle (`ROW_ENTER` 180 ms, `STANDARD`):** The lift clears; where layout allows, displaced siblings
+    and the picked rows glide to their committed positions. Never animate remote reordering this way.
   - **Keyboard nudge (`Alt+Up` / `Alt+Down`):** Swapped rows exchange positions over `ROW_ENTER` (`180 ms`,
     `STANDARD`), retargeting immediately on rapid presses.
 - **Stagger:** None.

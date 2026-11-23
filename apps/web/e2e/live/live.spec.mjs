@@ -1873,7 +1873,7 @@ test("a tab with changes it couldn't save keeps an upgrade waiting until they're
   await newer.goto("/health");
   await newer.evaluate(() => {
     window.__upgrade = "waiting";
-    const open = indexedDB.open("todo-replica", 5);
+    const open = indexedDB.open("todo-replica", 6);
     open.onblocked = () => {
       window.__blocked = true;
     };
@@ -1943,7 +1943,7 @@ test("once a newer version takes the database over, the tab takes no edits and s
   const opened = await newer.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const open = indexedDB.open("todo-replica", 5);
+        const open = indexedDB.open("todo-replica", 6);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
           open.result.close();
@@ -2006,12 +2006,12 @@ test("a tab lets go of the database when a newer version needs it, and reloads",
   const newer = await context.newPage();
   await newer.goto("/health");
   const reloaded = app.waitForEvent("load", { timeout: 15_000 });
-  // A newer build opens version 5: the app writes what it has, closes its connection (so the
+  // A newer build opens version 6: the app writes what it has, closes its connection (so the
   // upgrade goes ahead), and reloads to get the newer build.
   const opened = await newer.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const open = indexedDB.open("todo-replica", 5);
+        const open = indexedDB.open("todo-replica", 6);
         open.onerror = () => reject(open.error);
         open.onsuccess = () => {
           open.result.close();

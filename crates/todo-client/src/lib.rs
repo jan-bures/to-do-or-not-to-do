@@ -60,6 +60,7 @@ pub mod sse;
 pub mod storage;
 pub mod sync_label;
 pub mod task_activity;
+pub mod task_drag;
 pub mod trash;
 
 #[cfg(feature = "native")]

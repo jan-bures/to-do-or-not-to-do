@@ -285,6 +285,11 @@ impl ShellView {
             .when(on, |el| {
                 el.text_color(p.ink).font_weight(FontWeight::SEMIBOLD)
             })
+            .when(self.drop_glow(key), |el| {
+                el.bg(p.selection_wash)
+                    .border_color(p.accent_strong)
+                    .text_color(p.ink)
+            })
     }
 
     fn clickable(
@@ -509,6 +514,7 @@ impl ShellView {
 
     pub(super) fn sidebar(&mut self, window: &Window, cx: &mut Context<Self>) -> Div {
         self.reveal_inline_after_layout(window, cx);
+        self.nav_bounds.borrow_mut().clear();
         let p = self.palette;
         let t = self.theme;
         let sb = &self.shell.sidebar;
@@ -558,7 +564,10 @@ impl ShellView {
                             .child(pip)
                     }));
                 self.clickable(
-                    self.nav_row(RoomKey::Smart(s), on, row),
+                    self.nav_row(RoomKey::Smart(s), on, row)
+                        .when(RoomKey::Smart(s) == RoomKey::default(), |row| {
+                            row.child(self.nav_bounds_probe(RoomKey::Smart(s)))
+                        }),
                     SharedString::from(format!("smart-{s:?}")),
                     on,
                     cx,

@@ -39,6 +39,7 @@ pub mod attachments;
 pub mod bulk;
 pub mod merge;
 pub mod organize;
+pub mod task_drag;
 pub mod trash;
 
 type Client = SyncClient<AppTransport, TokioClock>;

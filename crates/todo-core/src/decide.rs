@@ -1120,12 +1120,42 @@ pub fn decide(
     authorize(state, actor, command)?;
     let seed = format!("{actor:?}|{command:?}");
     let mut events = if let Command::BulkTasks { tasks, action } = command {
+        if let BulkTaskAction::Reorder { list, placement } = action {
+            // Never relocate a partial group if one of its tasks moved or completed meanwhile.
+            if tasks.iter().any(|id| {
+                !state.is_live((*id).into())
+                    || !state
+                        .tasks
+                        .get(id)
+                        .is_some_and(|t| t.list == *list && !t.is_done())
+            }) {
+                return Err(DomainError::invalid(
+                    "tasks",
+                    "reorder requires open tasks in one list",
+                ));
+            }
+            if matches!(placement, Placement::Before(EntityId::Task(id)) | Placement::After(EntityId::Task(id)) if tasks.contains(id))
+            {
+                return Err(DomainError::invalid(
+                    "placement",
+                    "cannot reorder relative to a selected task",
+                ));
+            }
+        }
         let seed = EventId::derive(now, seed.as_bytes());
         let mut next = state.clone();
         let mut events = Vec::new();
-        // Prepend in reverse so the affected tasks retain their relative room order.
+        // Insertion at the front or immediately after a fixed sibling reverses successive
+        // inserts. Walk the group backwards in those cases to preserve its input order.
         let mut tasks = tasks.iter();
-        while let Some(&id) = if matches!(action, BulkTaskAction::Move { .. }) {
+        while let Some(&id) = if matches!(
+            action,
+            BulkTaskAction::Move { .. }
+                | BulkTaskAction::Reorder {
+                    placement: Placement::First | Placement::After(_),
+                    ..
+                }
+        ) {
             tasks.next_back()
         } else {
             tasks.next()

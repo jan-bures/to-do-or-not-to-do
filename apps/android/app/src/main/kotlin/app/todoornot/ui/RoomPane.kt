@@ -33,6 +33,9 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.ui.layout.boundsInRoot
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.lazy.LazyListScope
 import androidx.compose.foundation.lazy.LazyItemScope
 import androidx.compose.foundation.lazy.items
@@ -309,7 +312,11 @@ private fun TaskList(state: UiState, actions: Actions) {
         }
     }
     val rows = withGhosts(room.tasks, ghosts, Section.ROWS)
-    LazyColumn(Modifier.fillMaxSize()) {
+    val list = rememberLazyListState()
+    val drag = LocalTaskDrag.current
+    LazyColumn(Modifier.fillMaxSize().onGloballyPositioned { coords ->
+        drag?.list = DragInput.ScrollPane(coords.boundsInRoot()) { list.dispatchRawDelta(it) }
+    }, state = list) {
         // Only when nothing at all is listed: a filter that matches only done tasks shows them under
         // Completed, without a "nothing matches" line above them. Nor while a ghost plays out.
         if (showsEmptyLine(room, ghosts)) {
@@ -368,13 +375,18 @@ private fun LazyItemScope.MovingRow(
     val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
     val done = checked ?: t.done
     val selecting = state.bulk != null
+    val manual = state.room.key is RoomKey.List
+    val dragHandle: (@Composable () -> Unit)? = if (t.id in state.bulkIds && !s.ghost && l?.gone != true) {
+        { DragGrip(t, manual) }
+    } else null
+    val dragRow = taskDragRow(t.id, manual && section == Section.ROWS && !done && !s.ghost)
     val toggle = { if (!s.ghost && l?.gone != true) actions.toggleBulk(t.id, state.generation) }
     TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
         onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
         onImportant = { if (!s.ghost) actions.setImportant(t.id, it) },
         onOpen = { if (selecting) toggle() else if (!s.ghost) actions.select(t.id) },
-        onActions = toggle, look = l, inert = s.ghost, selecting = selecting,
-        modifier = Modifier.animateItem(
+        onActions = toggle, look = l, inert = s.ghost, selecting = selecting, dragHandle = dragHandle,
+        modifier = dragRow.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,
             placementSpec = if (swap) tween(M.ROW_ENTER, easing = M.EASE_STANDARD.cubic()) else null,
             fadeOutSpec = null,

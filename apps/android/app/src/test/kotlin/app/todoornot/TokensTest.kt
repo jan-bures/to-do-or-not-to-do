@@ -106,6 +106,7 @@ class TokensTest {
             "dusk-night-at" to m.DUSK_NIGHT_AT,
             "dusk-handover-at" to m.DUSK_HANDOVER_AT, "dusk-handover-rise" to m.DUSK_HANDOVER_RISE,
             "stagger-max-items" to m.STAGGER_MAX_ITEMS,
+            "drag-touch-scale" to m.DRAG_TOUCH_SCALE,
         ).forEach { (k, v) -> assertEquals(k, cues.getDouble(k).toFloat(), v, 0f) }
         val easing = json.getJSONObject("motion").getJSONObject("easings").getJSONArray("sun")
         assertEquals(easing.getDouble(0).toFloat(), m.EASE_SUN.x1, 0f)

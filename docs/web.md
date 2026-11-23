@@ -262,7 +262,8 @@ save yet; other tabs will update once they’re saved." (That alert comes before
 then would drop those changes.) Once they are stored, it closes and reloads. Version 3 uses the same
 stores as version 2; the bump retires older senders before they can read and drop the `from_list`
 precondition on another tab's queued task move. Version 4 likewise leaves the stores unchanged but
-retires older senders before a tab can queue a bulk task command.
+retires older senders before a tab can queue a bulk task command. Version 5 does the same for the
+bulk reorder action.
 
 **Recovery never deletes unsent work.** The confirmed state is a cache of the server; the outbox is not.
 
@@ -374,8 +375,6 @@ current collection when applicable. The **Calendar** opens a Monday-first month 
 Page Up/Down by months, Enter chooses, and Esc closes the picker and returns to its button. The **Flag**
 offers the four priority levels. Picking a value removes the matching typed suffix, leaving the other one
 alone. Clearing a chip (or choosing **No date** or **None**) overrides the corresponding room default.
-**Alt+Up/Down** moves the selected task one place among its live
-siblings in its own list, even when the list is filtered. Aggregate rooms don't support manual reordering.
 
 Drop `.eml` files onto the task list to [create tasks from email](desktop.md#drop-an-email-onto-the-task-list).
 The area below quick-add highlights and names the destination while dragging, even if the browser
@@ -407,6 +406,19 @@ searchable list picker and keeps the moved tasks in their room order at the fron
 The due editor uses the usual date syntax and **Clear due** clears both the date and the repeat.
 The wide detail pane shows a count instead of editing a task. Each successful edit clears selection
 and shows one Undo for the whole batch (also **Ctrl+Z** outside text fields).
+
+Grab a row by its six-dot grip to drag it. Grabbing any selected row picks up the whole selection,
+in visible order. In an ordinary list, the insertion line shows where the open tasks will land:
+before the next remaining visible task or after the last one. This works with a filter; hidden tasks
+keep their order relative to each other. Smart lists and collections have no insertion line. Drop on
+another list in the sidebar to put tasks at its front, or on **My Day** to plan them for today without
+changing their lists. Only valid targets highlight. On a phone, drag to the left edge to open Lists.
+The task list and sidebar scroll near their top and bottom edges. Press **Esc** or release outside
+an available target to cancel. These pointer gestures don't affect file drops.
+
+**Alt+Up/Down** moves the cursor task or the selected block past the adjacent open visible row.
+**M** still opens the task's move picker. A drop or nudge offers one **Undo**, even for several tasks.
+The browser gallery captures `drag-reorder-{light,dark}.png` and `drag-destination-{light,dark}.png`.
 
 **Merge into…** searches other open tasks across lists by title, ignoring case and accents. Choose a task
 and confirm after reviewing both titles and their lists. The destination keeps its own title, list,

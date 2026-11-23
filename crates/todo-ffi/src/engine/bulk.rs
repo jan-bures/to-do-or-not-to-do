@@ -97,8 +97,8 @@ pub struct BulkTool {
     pub short_label: String,
 }
 
-impl From<Tool> for BulkTool {
-    fn from(tool: Tool) -> Self {
+impl BulkTool {
+    fn from_tool(tool: Tool) -> Option<Self> {
         let control = match tool {
             Tool::Move => BulkControl::Move,
             Tool::Due => BulkControl::Due,
@@ -114,17 +114,18 @@ impl From<Tool> for BulkTool {
                     BulkTaskAction::Move { list } => BulkEdit::Move {
                         list: list.to_string(),
                     },
+                    BulkTaskAction::Reorder { .. } => return None,
                     BulkTaskAction::Due { date } => BulkEdit::Due {
                         date: date.map(|d| d.to_string()),
                     },
                 },
             },
         };
-        Self {
+        Some(Self {
             control,
             label: tool.label().into(),
             short_label: tool.short_label().into(),
-        }
+        })
     }
 }
 
@@ -147,7 +148,7 @@ impl TodoEngine {
             tools: day(&today).ok().map_or_else(Vec::new, |day| {
                 selection::tools(&state, &ids, day)
                     .into_iter()
-                    .map(Into::into)
+                    .filter_map(BulkTool::from_tool)
                     .collect()
             }),
             has_due: tasks().any(|t| t.due.is_some()),

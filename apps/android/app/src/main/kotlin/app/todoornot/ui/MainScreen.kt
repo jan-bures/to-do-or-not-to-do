@@ -220,56 +220,61 @@ private fun Screen(
         val drawerVisible = drawer.currentValue == DrawerValue.Open || drawer.targetValue == DrawerValue.Open
         val drawerSurface = if (drawerVisible) state else state.copy(toast = null)
         val paneSurface = if (drawerVisible) state.copy(toast = null) else state
-        ModalNavigationDrawer(
-            drawerState = drawer,
-            scrimColor = r.toast.copy(alpha = 0.32f),
-            drawerContent = {
-                RoomDrawer(
-                    drawerSurface,
-                    server,
-                    actions,
-                    ::open,
-                    onNewList = { name ->
-                        actions.createList(name)
-                        scope.launch { drawer.close() }
-                    },
-                    onMenu = onRoomMenu,
-                    moving = moving,
-                    onNewCollection = { newCollection = true },
-                    onActivity = { agent -> actions.openActivity(agent); scope.launch { drawer.close() } },
-                )
-            },
-        ) {
-            val detail = state.detail
-            val feed = state.activity
-            BackHandler(enabled = drawer.isClosed && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
-            if (feed != null) {
-                BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
-                ActivityRoom(paneSurface, actions, menu)
-            } else if (state.room.key == RoomKey.Trash) {
-                BackHandler(enabled = drawer.isClosed) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
-                TrashRoom(paneSurface, actions, menu, wide)
-            } else if (wide) {
-                Row(Modifier.fillMaxSize().background(r.pane)) {
-                    RoomPane(
-                        paneSurface, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
-                        composerFocus = composerFocus,
-                        onRoomMenu = onRoomMenu,
+        val drag = remember(state.generation) { DragInput() }
+        val dragModifier = taskDragInput(drag, actions, state.generation, drawerVisible, menu, { scope.launch { drawer.close() } })
+        TaskDragSurface(drag, dragModifier) {
+            ModalNavigationDrawer(
+                drawerState = drawer,
+                gesturesEnabled = drag.picked == null,
+                scrimColor = r.toast.copy(alpha = 0.32f),
+                drawerContent = {
+                    RoomDrawer(
+                        drawerSurface,
+                        server,
+                        actions,
+                        ::open,
+                        onNewList = { name ->
+                            actions.createList(name)
+                            scope.launch { drawer.close() }
+                        },
+                        onMenu = onRoomMenu,
+                        moving = moving,
+                        onNewCollection = { newCollection = true },
+                        onActivity = { agent -> actions.openActivity(agent); scope.launch { drawer.close() } },
                     )
-                    Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
-                    if (detail != null) {
-                        DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
-                    } else {
-                        NoDetail(Modifier.weight(1f), selection = state.bulk?.label)
+                },
+            ) {
+                val detail = state.detail
+                val feed = state.activity
+                BackHandler(enabled = drawer.isClosed && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
+                if (feed != null) {
+                    BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
+                    ActivityRoom(paneSurface, actions, menu)
+                } else if (state.room.key == RoomKey.Trash) {
+                    BackHandler(enabled = drawer.isClosed) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
+                    TrashRoom(paneSurface, actions, menu, wide)
+                } else if (wide) {
+                    Row(Modifier.fillMaxSize().background(r.pane)) {
+                        RoomPane(
+                            paneSurface, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
+                            composerFocus = composerFocus,
+                            onRoomMenu = onRoomMenu,
+                        )
+                        Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
+                        if (detail != null) {
+                            DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
+                        } else {
+                            NoDetail(Modifier.weight(1f), selection = state.bulk?.label)
+                        }
                     }
-                }
-            } else {
-                Box(Modifier.fillMaxSize().background(r.pane)) {
-                    RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed,
-                        onRoomMenu = onRoomMenu, composerFocus = composerFocus)
-                    if (detail != null) {
-                        BackHandler { actions.select(null) }
-                        DetailPane(paneSurface, actions, standalone = true)
+                } else {
+                    Box(Modifier.fillMaxSize().background(r.pane)) {
+                        RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed,
+                            onRoomMenu = onRoomMenu, composerFocus = composerFocus)
+                        if (detail != null) {
+                            BackHandler { actions.select(null) }
+                            DetailPane(paneSurface, actions, standalone = true)
+                        }
                     }
                 }
             }

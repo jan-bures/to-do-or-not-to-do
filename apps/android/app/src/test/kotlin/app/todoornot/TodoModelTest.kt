@@ -1933,6 +1933,54 @@ class TodoModelTest {
     }
 
     @Test
+    fun task_drag_tracks_one_change_for_a_selection_and_rejects_a_stale_room() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        val (admin, _) = s.openAdmin()
+        m.add("Check the workshop agenda")
+        m.add("Print the room signs")
+        s.drain()
+        val before = m.ui.value.room.tasks.map { it.id }
+        val picked = before.take(2)
+        val generation = m.ui.value.generation
+        m.toggleBulk(picked[1], generation)
+        m.toggleBulk(picked[0], generation)
+        val drag = requireNotNull(m.startTaskDrag(picked[0], generation))
+        assertEquals(picked, drag.ids())
+        val slot = app.todoornot.core.TaskDrop.Slot(before.last(), true)
+        val pending = m.ui.value.status.pending
+        assertTrue(m.taskDropValid(drag, slot, generation))
+        m.dropTasks(drag, slot, generation)
+        s.drain()
+        assertEquals(before.drop(2) + picked, m.ui.value.room.tasks.map { it.id })
+        assertEquals(pending + 1u, m.ui.value.status.pending)
+        assertEquals(picked, m.ui.value.bulkIds)
+        val reordered = requireNotNull(m.ui.value.toast)
+        assertEquals("Reordered 2 tasks", reordered.text)
+        m.undo(reordered)
+        s.drain()
+        assertEquals(before, m.ui.value.room.tasks.map { it.id })
+        val errands = m.engine.list("Errands") as RoomKey.List
+        val dest = app.todoornot.core.TaskDrop.List(errands.id)
+        assertTrue(m.taskDropValid(drag, dest, generation))
+        m.dropTasks(drag, dest, generation)
+        s.drain()
+        assertEquals(picked, m.engine.room(errands, FIXTURE_NOW).tasks.take(2).map { it.id })
+        assertEquals(emptyList<String>(), m.ui.value.bulkIds)
+        val moved = requireNotNull(m.ui.value.toast)
+        assertEquals("Moved 2 tasks to Errands", moved.text)
+        m.undo(moved)
+        s.drain()
+        assertEquals(before, m.ui.value.room.tasks.map { it.id })
+        m.open(admin)
+        s.drain()
+        assertFalse(m.taskDropValid(drag, dest, generation))
+        m.dropTasks(drag, dest, generation)
+        s.drain()
+        assertEquals(pending, m.ui.value.status.pending)
+    }
+
+    @Test
     fun merge_filters_tasks_rechecks_the_confirmation_and_undoes_the_whole_change() {
         val s = Stepped(fixtureEngine()) { time }
         val m = s.model

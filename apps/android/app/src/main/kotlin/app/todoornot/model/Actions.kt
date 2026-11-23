@@ -5,6 +5,8 @@ import app.todoornot.core.DestinationGroup
 import app.todoornot.core.MergeCandidate
 import app.todoornot.core.ReminderRef
 import app.todoornot.core.RoomKey
+import app.todoornot.core.TaskDrag
+import app.todoornot.core.TaskDrop
 
 /** What the main screen can ask for. [TodoModel] does the work; the screenshot gallery passes [None]. */
 interface Actions {
@@ -30,6 +32,9 @@ interface Actions {
     suspend fun mergeQuestion(id: String, target: String): String? = null
     fun mergeTasks(id: String, target: String, asked: String, onResult: (String?) -> Unit) = Unit
     fun reorderTask(list: String, id: String, neighbour: String, by: Int)
+    fun startTaskDrag(id: String, generation: Long): TaskDrag? = null
+    fun taskDropValid(drag: TaskDrag, target: TaskDrop, generation: Long): Boolean = false
+    fun dropTasks(drag: TaskDrag, target: TaskDrop, generation: Long) = Unit
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft
     fun setNotes(id: String, notes: String, onResult: (String?) -> Unit)

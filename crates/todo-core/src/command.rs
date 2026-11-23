@@ -52,6 +52,8 @@ pub enum BulkTaskAction {
     },
     /// Move to the front of another list.
     Move { list: ListId },
+    /// Place open tasks from a single list together, in the supplied order.
+    Reorder { list: ListId, placement: Placement },
     /// Set due, or clear both due and repeat.
     Due {
         #[cfg_attr(feature = "openapi", schema(value_type = Option<String>, format = Date))]
@@ -93,6 +95,12 @@ impl BulkTaskAction {
                 from_list: Some(task.list),
                 placement: Placement::First,
             },
+            Self::Reorder { list, placement } if list == task.list && !task.is_done() => {
+                Command::Reorder {
+                    id: id.into(),
+                    placement,
+                }
+            }
             Self::Due { date } if date != task.due => Command::UpdateTask {
                 id,
                 patch: TaskPatch {

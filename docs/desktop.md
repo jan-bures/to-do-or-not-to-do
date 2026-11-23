@@ -327,6 +327,21 @@ Due editor accepts the task editor's usual date syntax; Enter saves, a blank cle
 and Esc cancels. The detail pane shows a count instead of a task editor. Each change clears the selection
 and offers one Undo (also **Ctrl+Z**), including any next occurrences created by completing repeats.
 
+### Drag tasks
+
+Grab a row by the six-dot grip. A picked row lifts and follows the pointer; dragging a selected row
+lifts the whole selection, in visible order. The insertion line appears only among open tasks in a
+manual list. In a filtered list it means before the next remaining visible task, or after the last
+one; hidden rows keep their order relative to each other. A smart list or collection doesn't reorder.
+Drag near the top or bottom of the list or sidebar to scroll it. Drop on a sidebar list to move the
+picked tasks to its front, or on **My Day** to add them to today's plan without moving them. Only a
+valid destination highlights. Release away from a target or press **Esc** to cancel.
+
+**Alt+Up/Down** moves the cursor task or the selected block past the open visible row just outside it.
+A pop-out supports reorder in manual lists but has no destination sidebar. **M** still opens the list
+picker. Every drop or nudge is one tracked change with one **Undo** (also **Ctrl+Z**). Task drags are
+separate from dragging email or attachment files from Explorer.
+
 ### Merge two tasks
 
 Right-click a task row (or select it and press **Shift+F10**) and choose **Merge into…**. The picker
@@ -717,7 +732,8 @@ one, as a right-click leaves it; `move-to-picker` is the selected task's list pi
 collection with the keyboard on the task's own list; `sync-failures` is "3 couldn't sync" opened, with three
 refused changes in plain words. `merge-task-picker` shows the destination search and list locations;
 `merge-task-confirm` shows the merge confirmation with Cancel selected. `multi-select` shows three
-selected tasks, the bulk strip and the count in the detail pane. Activity: `activity` is the feed over the sample data,
+selected tasks, the bulk strip and the count in the detail pane. `drag-reorder` shows a lifted pair
+and its insertion line, and `drag-destination` shows the highlighted My Day target. Activity: `activity` is the feed over the sample data,
 `activity-agent` the same filtered to Claude (opened from the sidebar's agent row), `activity-empty`
 the feed with nothing in it, `activity-pending` a change being undone from the keyboard (selected,
 Enter, waiting to be sent) and `activity-refused` an undo the server refused, its reason under the

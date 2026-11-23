@@ -166,6 +166,7 @@
   --duration-stagger: 25ms;
   --duration-reduced-fade: 100ms;
   --toggle-fill-from-scale: 0.85;
+  --drag-touch-scale: 1.01;
   --ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --ease-enter: cubic-bezier(0, 0, 0.2, 1);
   --ease-exit: cubic-bezier(0.3, 0, 1, 1);

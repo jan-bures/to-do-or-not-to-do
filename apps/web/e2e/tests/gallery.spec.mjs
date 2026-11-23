@@ -2,7 +2,7 @@
 // from invented fixture data with a fixed clock (Saturday 21 November 2026, 10:35). The PNGs land in
 // e2e/gallery/ (CI uploads them); compare them with the approved mockups.
 import { expect, test } from "@playwright/test";
-import { chooseNew, open, openDeviceSettings, watch } from "./helpers.mjs";
+import { chooseNew, dragOver, open, openDeviceSettings, openRows, pickup, watch } from "./helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
 const MEDIUM = { width: 1024, height: 768 };
@@ -48,6 +48,28 @@ for (const scheme of ["light", "dark"]) {
       await shot(page, `email-drop-${scheme}`);
       await target.dispatchEvent("dragleave", { dataTransfer });
       await dataTransfer.dispose();
+      await w.check();
+    });
+
+    test(`task drag pickup and target (${scheme})`, async ({ page }) => {
+      const w = watch(page);
+      await page.setViewportSize(DESKTOP);
+      await open(page);
+      const sidebar = page.locator(".sidebar");
+      await sidebar.getByRole("link", { name: /^Team/ }).click();
+      const rows = openRows(page);
+      await rows.first().locator(".row-title").click({ modifiers: ["Control"] });
+      await rows.nth(1).locator(".row-title").click({ modifiers: ["Shift"] });
+      await pickup(page, rows.first());
+      await dragOver(page, rows.last(), 0.8);
+      await expect(rows.last().locator(".task-insertion-line")).toBeVisible();
+      await shot(page, `drag-reorder-${scheme}`);
+      const destination = sidebar.getByRole("link", { name: /^Planning/ });
+      await dragOver(page, destination);
+      await expect(destination).toHaveClass(/task-drop-target/);
+      await shot(page, `drag-destination-${scheme}`);
+      await page.keyboard.press("Escape");
+      await page.mouse.up();
       await w.check();
     });
 

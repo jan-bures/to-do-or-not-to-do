@@ -63,6 +63,15 @@ What the first version does:
   room order at the front of the destination. The unfolded detail pane shows the selected count.
   Each successful change clears selection and offers one **Undo** for all affected tasks, including
   any next occurrences created by completing repeats. The `multi_selection` gallery shows both themes.
+- **Drag tasks.** Long-press a row to select it, then drag a selected row by its six-dot grip. All
+  selected tasks lift together, with a count on the preview. In a manual list, drop on the insertion
+  line to reorder the open tasks. A filter still allows reorder relative to visible rows; hidden
+  tasks keep their relative order. Smart lists and collections don't show an insertion line. Drag
+  to the left edge to open Lists, then release over another list to prepend the tasks or over **My Day**
+  to add them to today's plan. The list and drawer scroll near their edges. Only valid destinations
+  highlight; letting go elsewhere cancels. A drop has one **Undo**. The detail menu still offers
+  **Move up**, **Move down**, **Move to…**, and the My Day action without a drag. The `task_drag`
+  gallery captures the lifted selection, insertion line and drawer highlight.
 - **Task actions.** Tap **⋯** in a task's detail header. The menu offers Complete or
   Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to…,
   Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words

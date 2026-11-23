@@ -161,6 +161,7 @@ impl Tool {
             Self::Apply(BulkTaskAction::MyDay { on: false, .. }) => "Remove from My Day",
             Self::Move | Self::Apply(BulkTaskAction::Move { .. }) => "Move to…",
             Self::Due | Self::Apply(BulkTaskAction::Due { .. }) => "Set due…",
+            Self::Apply(BulkTaskAction::Reorder { .. }) => "Reorder",
             Self::Apply(BulkTaskAction::Delete) => "Delete",
         }
     }
@@ -254,6 +255,7 @@ pub fn batch(
         BulkTaskAction::MyDay { on: true, .. } => format!("Added {count} to My Day"),
         BulkTaskAction::MyDay { on: false, .. } => format!("Removed {count} from My Day"),
         BulkTaskAction::Move { .. } => format!("Moved {count}"),
+        BulkTaskAction::Reorder { .. } => format!("Reordered {count}"),
         BulkTaskAction::Due { date: Some(_) } => format!("Set due date for {count}"),
         BulkTaskAction::Due { date: None } => format!("Cleared due date for {count}"),
         BulkTaskAction::Delete => format!("Deleted {count}"),

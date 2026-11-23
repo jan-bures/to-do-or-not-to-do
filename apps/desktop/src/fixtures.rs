@@ -111,6 +111,18 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             quick_add_text: Some("Water the plants zítra !!"),
             ..my_day()
         }),
+        "drag-reorder" | "drag-destination" => {
+            let (mut b, l) = sample();
+            b.task(t(l.planning, "Sketch the workshop agenda"));
+            Some(fixture(
+                b,
+                UiState {
+                    room: RoomKey::List(l.planning),
+                    ..UiState::default()
+                },
+                MORNING,
+            ))
+        }
         "popout-pinned" | "popout-unpinned" => Some(popout()),
         // Keep the same detail and task row in both captures, outside the My Day filter.
         "toggle-states-on" | "toggle-states-off" => {

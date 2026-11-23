@@ -50,6 +50,8 @@ Options:
 pub const FIXTURES: &[&str] = &[
     "my-day",
     "multi-select",
+    "drag-reorder",
+    "drag-destination",
     "toggle-states-on",
     "toggle-states-off",
     "work",

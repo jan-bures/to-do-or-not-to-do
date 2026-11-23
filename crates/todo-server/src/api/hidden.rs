@@ -131,8 +131,13 @@ pub fn referenced(cmd: &Command) -> Vec<EntityId> {
         }
         C::BulkTasks { tasks, action } => {
             v.extend(tasks.iter().copied().map(EntityId::Task));
-            if let todo_core::command::BulkTaskAction::Move { list } = action {
-                v.push(EntityId::List(*list));
+            match action {
+                todo_core::command::BulkTaskAction::Move { list } => v.push(EntityId::List(*list)),
+                todo_core::command::BulkTaskAction::Reorder { list, placement } => {
+                    v.push(EntityId::List(*list));
+                    place(placement, &mut v);
+                }
+                _ => {}
             }
         }
         C::MergeTasks { source, target } => {

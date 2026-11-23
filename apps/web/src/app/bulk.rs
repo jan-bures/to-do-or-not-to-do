@@ -209,6 +209,7 @@ fn tool_icon(tool: Tool) -> Icon {
         Tool::Move => Icon::List,
         Tool::Due => Icon::Calendar,
         Tool::Apply(BulkTaskAction::Delete) => Icon::TrashTwo,
+        Tool::Apply(BulkTaskAction::Reorder { .. }) => Icon::GripVertical,
         Tool::Apply(_) => unreachable!("picker tools don't carry a value"),
     }
 }

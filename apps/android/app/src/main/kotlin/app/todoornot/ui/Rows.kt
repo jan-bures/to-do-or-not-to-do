@@ -61,6 +61,7 @@ fun TaskRowView(
     inert: Boolean = false,
     selecting: Boolean = false,
     longClickLabel: String = "Select task",
+    dragHandle: (@Composable () -> Unit)? = null,
 ) {
     val r = LocalDesign.current.room
     val bulkSelected = selected && selecting
@@ -113,6 +114,7 @@ fun TaskRowView(
         }
         TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live && !selecting,
             label = "Important: ${task.title}", alignment = Alignment.TopCenter, onChange = onImportant)
+        dragHandle?.invoke()
     }
 }
 

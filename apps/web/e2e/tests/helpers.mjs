@@ -37,3 +37,21 @@ export async function open(page, path = "/app") {
   await page.locator(".room-title").first().waitFor();
   await page.evaluate(() => document.fonts.ready);
 }
+
+export const openRows = (page) => page.locator(".task-list-area .rows:not(.completed-rows) > .row");
+
+export async function pickup(page, row) {
+  const grip = row.locator(".task-drag-grip");
+  await grip.scrollIntoViewIfNeeded();
+  const { x, y, width, height } = await grip.boundingBox();
+  await page.mouse.move(x + width / 2, y + height / 2);
+  await page.mouse.down();
+  await page.mouse.move(x + width / 2, y + height / 2 + 8);
+  await expect(page.locator(".task-drag-lift")).toBeVisible();
+}
+
+export async function dragOver(page, target, fraction = 0.5) {
+  await target.scrollIntoViewIfNeeded();
+  const { x, y, width, height } = await target.boundingBox();
+  await page.mouse.move(x + width / 2, y + height * fraction, { steps: 5 });
+}

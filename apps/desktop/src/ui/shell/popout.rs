@@ -180,6 +180,10 @@ impl ShellView {
     fn compact_keys(&mut self, e: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let Some(compact) = &self.compact else { return };
         if e.keystroke.key == "escape" && !e.keystroke.modifiers.modified() {
+            if self.cancel_task_drag(cx) {
+                cx.stop_propagation();
+                return;
+            }
             if self.multi.cursor().is_some() {
                 self.select_task(None, cx);
                 window.focus(&self.list_focus, cx);
@@ -463,6 +467,8 @@ impl ShellView {
                     .child(bar)
                     .child(contents)
                     .child(self.press_counter(cx))
+                    .child(self.drag_events(cx))
+                    .children(self.drag_preview(window))
                     .children(self.confirmation_scrim())
                     .children(self.popover(
                         |k| matches!(k, super::MenuKind::Task { .. } | super::MenuKind::BulkMove),

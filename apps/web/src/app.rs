@@ -15,6 +15,7 @@ mod repeat;
 mod room_actions;
 mod tags;
 mod task_actions;
+mod task_drag;
 mod trash;
 
 use crate::backend::{self, Sync, UndoTarget};
@@ -127,6 +128,7 @@ pub struct Ctx {
     room_actions: room_actions::Controls,
     device_settings_open: RwSignal<bool>,
     task_actions: task_actions::Controls,
+    task_drag: RwSignal<Option<task_drag::Gesture>>,
     failures: RwSignal<Vec<Failure>>,
     dark: RwSignal<bool>,
     drawer: RwSignal<bool>,
@@ -347,6 +349,7 @@ impl Ctx {
     }
 
     fn reset_room_controls(self) {
+        self.cancel_task_drag();
         self.multi.update(todo_client::selection::Selection::clear);
         self.close_bulk_due(false);
         self.room_actions.close_menu(false);
@@ -639,6 +642,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         room_actions: room_actions::Controls::new(),
         device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
+        task_drag: RwSignal::new(None),
         failures: RwSignal::new(Vec::new()),
         dark: RwSignal::new(platform::prefers_dark()),
         drawer: RwSignal::new(false),
@@ -704,6 +708,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     });
 
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
+    let _drag_blur = window_event_listener(leptos::ev::blur, move |_| {
+        c.cancel_task_drag();
+    });
     let _folds = window_event_listener(leptos::ev::storage, move |ev| {
         if platform::is_fold_key(ev.key().as_deref())
             && let Some(ids) = platform::load_folded()
@@ -760,7 +767,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             <div class="scrim" aria-hidden="true" on:click=move |_| {
                 if c.drawer.get_untracked() { c.drawer.set(false); } else { c.select(None); }
             }></div>
-            <main class="main" inert=move || c.drawer.get() || c.detail_modal.get()>
+            <main class="main" inert=move || (c.drawer.get() && !c.drag_active()) || c.detail_modal.get()>
                 <AppBar/>
                 <RoomPane/>
                 <bulk::Bar/>
@@ -778,6 +785,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         </div>
         <room_actions::Overlays/>
         <task_actions::Overlays/>
+        <task_drag::Lift/>
         <bulk::DueDialog/>
     }
 }
@@ -868,6 +876,13 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     let key = ev.key().to_ascii_lowercase();
+    if untrack(|| c.drag_active()) {
+        if key == "escape" {
+            c.cancel_task_drag();
+            ev.prevent_default();
+        }
+        return;
+    }
     let drawer = c.drawer.get_untracked();
     let modal = c.detail_modal.get_untracked();
     if key == "tab" && (drawer || modal) {
@@ -945,27 +960,10 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         if !ev.shift_key()
             && !c.read_only()
             && matches!(key.as_str(), "arrowup" | "arrowdown")
-            && let (Some(id), room @ RoomId::List(_)) =
-                (c.selected.get_untracked(), c.room.get_untracked())
+            && c.room.with_untracked(|r| matches!(r, RoomId::List(_)))
         {
             ev.prevent_default();
-            let by = if key == "arrowup" { -1 } else { 1 };
-            if let Some(cmd) = c
-                .state
-                .with_untracked(|s| model::reorder_task(s, &room, id, by))
-            {
-                let positions = platform::row_positions();
-                if c.submit_undoable(cmd, "Task moved.".into(), None) {
-                    request_animation_frame(move || {
-                        if c.room.get_untracked() == room {
-                            platform::animate_reorder(positions);
-                            if !modal {
-                                platform::refocus_row(&format!("row-{id}"));
-                            }
-                        }
-                    });
-                }
-            }
+            c.nudge_task(key == "arrowdown", modal);
         }
         return;
     }
@@ -1178,6 +1176,7 @@ fn SidebarPane() -> impl IntoView {
             _ => false,
         };
         let href = room.path();
+        let destination = task_drag::destination(&room);
         let origin = room_actions::Subject::of(&room)
             .map(|s| room_actions::Origin(s, room_actions::Anchor::Link));
         let collection = match room {
@@ -1212,6 +1211,8 @@ fn SidebarPane() -> impl IntoView {
                 class="nav-item"
                 class:menu-anchor=move || origin.is_some_and(|o| c.room_actions.anchored(o))
                 class:sub=nested
+                data-task-destination=destination.map(task_drag::destination_attr)
+                class:task-drop-target=move || destination.is_some_and(|d| c.drop_target(task_drag::Target::Destination(d)))
                 class:active=active.clone()
                 class:contains-active=contains_active
                 aria-current=move || active().then_some("page")
@@ -2119,6 +2120,9 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
         <li
             class="row"
             class:done=row.done
+            class:task-dragging=move || c.dragging_row(id)
+            class:task-drop-before=move || c.drop_target(task_drag::Target::Slot(todo_client::task_drag::Slot { row: id, after: false }))
+            class:task-drop-after=move || c.drop_target(task_drag::Target::Slot(todo_client::task_drag::Slot { row: id, after: true }))
             class:completing=phase == Some(Phase::Hold)
             class:exiting=Phase::exiting(phase)
             inert=phase == Some(Phase::Depart)
@@ -2174,6 +2178,8 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
                 }>
                 {toggle_icon(Icon::Star, Icon::StarFilled)}
             </button>
+            {phase.is_none().then(|| view! { <task_drag::Handle id=id title=row.title/> })}
+            <span class="task-insertion-line" aria-hidden="true"></span>
         </li>
     }
 }

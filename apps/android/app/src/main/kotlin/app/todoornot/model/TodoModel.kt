@@ -32,6 +32,8 @@ import app.todoornot.core.SyncState
 import app.todoornot.core.SyncStatus
 import app.todoornot.core.SyncText
 import app.todoornot.core.TaskMove
+import app.todoornot.core.TaskDrag
+import app.todoornot.core.TaskDrop
 import app.todoornot.core.TaskDetail
 import app.todoornot.core.TodoEngine
 import app.todoornot.core.localNow
@@ -878,7 +880,10 @@ class TodoModel(
         if (toastRemaining(t) == 0L) { dismissToast(t); return }
         t.organize?.let { change ->
             show(null)
-            act { engine.undoOrganize(change) }
+            act {
+                engine.undoOrganize(change)
+                t.swap?.let { reorder = it.copy(serial = ++serial) }
+            }
             return
         }
         t.reminder?.let { change ->
@@ -989,6 +994,37 @@ class TodoModel(
                 reorder = swap
                 show(Toast(n, "Moved “${oneLine(title)}”", moved = target, swap = swap))
             }
+        }
+    }
+
+    private fun dragState(generation: Long): UiState? = _ui.value.takeIf {
+        it.generation == generation && this.generation == generation && !it.signedOut && it.activity == null
+    }
+
+    private fun openDragOrder(state: UiState) = state.room.tasks.filterNot { it.done }.map { it.id }
+
+    override fun startTaskDrag(id: String, generation: Long): TaskDrag? {
+        val state = dragState(generation) ?: return null
+        if (id !in bulkVisible(state)) return null
+        return engine.startTaskDrag(id, state.bulkIds)
+    }
+
+    override fun taskDropValid(drag: TaskDrag, target: TaskDrop, generation: Long): Boolean {
+        val state = dragState(generation) ?: return false
+        return engine.taskDropValid(drag, target, state.room.key, openDragOrder(state), state.today)
+    }
+
+    override fun dropTasks(drag: TaskDrag, target: TaskDrop, generation: Long) {
+        val revision = synchronized(publishing) { bulkRevision }
+        act {
+            val state = dragState(generation) ?: return@act
+            val open = openDragOrder(state)
+            val change = engine.dropTasks(drag, target, state.room.key, open, state.today) ?: return@act
+            val n = ++serial
+            val swap = if (target is TaskDrop.Slot) TaskSwap(n, state.room.key, open.toSet()) else null
+            if (swap != null) reorder = swap
+            else synchronized(publishing) { if (revision == bulkRevision) clearBulk() }
+            show(Toast(n, change.toastText(), organize = change, swap = swap))
         }
     }
 

@@ -26,7 +26,7 @@ use todo_client::room_header::{self, LocalTime, RoomHeader, SmartList};
 use todo_core::ids::{AttachmentId, CollectionId, LinkId, ListId, TaskId};
 use todo_core::model::{Collection, LinkKind, List, Priority, Stamp, Task};
 use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, Query, fold};
-use todo_core::{Actor, Command, State};
+use todo_core::{Actor, State};
 use todo_design::Glyph;
 use todo_design::hues::{self, SWATCHES};
 
@@ -573,15 +573,6 @@ fn date_label(d: Date, today: Date) -> String {
         1 => "Tomorrow".to_owned(),
         _ => short_date(d, today),
     }
-}
-
-/// Manual order is only editable from the task's own list, not from an aggregate room.
-pub fn reorder_task(state: &State, room: &RoomId, id: TaskId, by: i32) -> Option<Command> {
-    let RoomId::List(list) = room else {
-        return None;
-    };
-    (state.tasks.get(&id)?.list == *list).then_some(())?;
-    intent::nudge(state, id.into(), by)
 }
 
 pub fn due(d: Date, today: Date) -> Due {
@@ -1219,6 +1210,7 @@ mod tests {
     #![allow(clippy::unwrap_used)]
     use super::*;
     use crate::fixtures;
+    use todo_core::Command;
 
     fn now() -> Now {
         fixtures::now()
@@ -1377,32 +1369,6 @@ mod tests {
             assert_eq!(detail(&s, &n, id).unwrap().due.map(|d| d.0), date);
         }
         assert!(s.tasks[&id].recurrence.is_none());
-    }
-
-    #[test]
-    fn task_reorder_is_scoped_to_its_own_list() {
-        let mut s = fixtures::state();
-        let n = now();
-        let a = fixtures::task(3);
-        let b = fixtures::task(6);
-        let list = RoomId::List(s.tasks[&a].list);
-        assert!(reorder_task(&s, &RoomId::default(), a, 1).is_none());
-        assert!(reorder_task(&s, &RoomId::List(s.tasks[&fixtures::task(1)].list), a, 1).is_none());
-        assert!(reorder_task(&s, &list, a, -1).is_none());
-        let cmd = reorder_task(&s, &list, a, 1).unwrap();
-        let owner = Actor::owner("web").unwrap();
-        for event in todo_core::decide(&s, &owner, &cmd, n.at).unwrap() {
-            todo_core::apply(&mut s, &event).unwrap();
-        }
-        assert_eq!(
-            room(&s, &n, &list, "", &BTreeSet::new())
-                .rows
-                .iter()
-                .take(2)
-                .map(|r| r.id)
-                .collect::<Vec<_>>(),
-            [b, a]
-        );
     }
 
     #[test]

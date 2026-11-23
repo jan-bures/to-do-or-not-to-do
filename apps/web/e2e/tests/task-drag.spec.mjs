@@ -1,0 +1,110 @@
+import { expect, test } from "@playwright/test";
+import { dragOver, open, openRows, pickup, watch } from "./helpers.mjs";
+
+const nav = (page, label) => page.locator(".sidebar").getByRole("link", { name: label });
+
+test("task drag reorders a picked block and undoes it in one step", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await nav(page, /^Team/).click();
+  const rows = openRows(page);
+  const titles = rows.locator(".row-title");
+  const before = await titles.allTextContents();
+  expect(before.length).toBe(4);
+  await titles.first().click({ modifiers: ["Control"] });
+  await titles.nth(2).click({ modifiers: ["Control"] });
+  await pickup(page, rows.first());
+  await expect(page.locator(".task-drag-count")).toHaveText("2");
+  await dragOver(page, rows.last(), 0.8);
+  await expect(rows.last().locator(".task-insertion-line")).toBeVisible();
+  await expect(titles).toHaveText(before);
+  await page.mouse.up();
+  const reordered = [before[1], before[3], before[0], before[2]];
+  await expect(titles).toHaveText(reordered);
+  await expect(page.locator(".toast")).toContainText("Reordered 2 tasks");
+  await page.locator(".toast-undo").click();
+  await expect(titles).toHaveText(before);
+  await titles.nth(2).focus();
+  await page.keyboard.press("Alt+ArrowDown");
+  await expect(titles).toHaveText(reordered);
+  await w.check();
+});
+
+test("task drag moves to the front of a list or adds to My Day, never to a collection", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await nav(page, /^Team/).click();
+  const rows = openRows(page);
+  const titles = rows.locator(".row-title");
+  const before = await titles.allTextContents();
+  await titles.first().click({ modifiers: ["Control"] });
+  await titles.nth(1).click({ modifiers: ["Shift"] });
+  await pickup(page, rows.first());
+  await dragOver(page, nav(page, /^Work/));
+  await expect(page.locator(".task-drop-target")).toHaveCount(0);
+  await dragOver(page, nav(page, /^Team/));
+  await expect(page.locator(".task-drop-target")).toHaveCount(0);
+  await dragOver(page, nav(page, /^Planning/));
+  await expect(nav(page, /^Planning/)).toHaveClass(/task-drop-target/);
+  await page.mouse.up();
+  await expect(page.locator(".toast")).toContainText("Moved 2 tasks to Planning");
+  await expect(titles).toHaveText(before.slice(2));
+  await page.locator(".toast-undo").click();
+  await expect(titles).toHaveText(before);
+
+  await pickup(page, rows.last());
+  await dragOver(page, nav(page, /^My Day/));
+  await expect(nav(page, /^My Day/)).toHaveClass(/task-drop-target/);
+  await page.mouse.up();
+  await expect(page.locator(".toast")).toContainText("Added 1 task to My Day");
+  await expect(titles).toHaveText(before);
+  await page.locator(".toast-undo").click();
+  await nav(page, /^My Day/).click();
+  await expect(openRows(page).locator(".row-title").filter({ hasText: before[3] })).toHaveCount(0);
+  await w.check();
+});
+
+test("a held task drag scrolls the room at its viewport edge", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 1024, height: 440 });
+  await open(page);
+  await nav(page, /^Team/).click();
+  const rows = openRows(page);
+  await pickup(page, rows.first());
+  const viewport = page.locator(".room");
+  const before = await viewport.evaluate((el) => el.scrollTop);
+  const { x, y, width, height } = await viewport.boundingBox();
+  await page.mouse.move(x + width / 2, y + height - 4);
+  await expect.poll(() => viewport.evaluate((el) => el.scrollTop)).toBeGreaterThan(before);
+  await expect(page.locator(".task-drag-lift")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(page.locator(".toast-undo")).toHaveCount(0);
+  await w.check();
+});
+
+test("Escape cancels without writing and the phone drawer accepts a task drag", async ({ page }) => {
+  const w = watch(page);
+  await page.setViewportSize({ width: 412, height: 920 });
+  await open(page);
+  const rows = openRows(page);
+  const id = await rows.first().getAttribute("data-task-row");
+  const first = rows.filter({ has: page.locator(`#row-${id}`) });
+  await pickup(page, first);
+  await page.keyboard.press("Escape");
+  await page.mouse.up();
+  await expect(page.locator(".task-drag-lift")).toBeHidden();
+  await expect(page.locator(".toast-undo")).toHaveCount(0);
+  await pickup(page, first);
+  await page.mouse.move(8, 360, { steps: 5 });
+  const drawer = page.getByRole("dialog", { name: "Lists" });
+  await expect(drawer).toBeVisible();
+  await expect(drawer).toHaveCSS("transform", "none");
+  const team = nav(page, /^Team/);
+  await dragOver(page, team);
+  await expect(team).toHaveClass(/task-drop-target/);
+  await page.mouse.up();
+  await expect(page.locator(".toast")).toContainText("Moved 1 task to Team");
+  await expect(page.getByRole("dialog", { name: "Lists" })).toHaveCount(0);
+  await w.check();
+});

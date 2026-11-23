@@ -195,6 +195,8 @@ pub const OVERLAY_SHIFT: f32 = 4.0;
 pub const DIALOG_RISE: f32 = 6.0;
 /// How far a dialog card drops while leaving, in logical pixels.
 pub const DIALOG_DROP: f32 = 4.0;
+/// A lifted task on touch scales to this value over [`HOVER`]; pointer drags stay at 1.0.
+pub const DRAG_TOUCH_SCALE: f32 = 1.01;
 
 /// Named durations in milliseconds, for the exports.
 pub const DURATIONS: [(&str, u32); 24] = [
@@ -227,7 +229,7 @@ pub const DURATIONS: [(&str, u32); 24] = [
 /// The choreography's cues and shapes that aren't durations (a scale, shares of [`DUSK`], a distance in
 /// pixels and an item count), for the exports. Clients that can't link this crate (Android) read them from
 /// `tokens.json` (`motion.cues`).
-pub const CUES: [(&str, f32); 11] = [
+pub const CUES: [(&str, f32); 12] = [
     ("check-fill-from-scale", CHECK_FILL_FROM_SCALE),
     ("toggle-fill-from-scale", TOGGLE_FILL_FROM_SCALE),
     ("dusk-night-at", DUSK_NIGHT_AT),
@@ -239,6 +241,7 @@ pub const CUES: [(&str, f32); 11] = [
     ("overlay-shift", OVERLAY_SHIFT),
     ("dialog-rise", DIALOG_RISE),
     ("dialog-drop", DIALOG_DROP),
+    ("drag-touch-scale", DRAG_TOUCH_SCALE),
 ];
 
 /// The duration to use with reduced motion: movement, scale, rotation and stagger become instant (`0 ms`),

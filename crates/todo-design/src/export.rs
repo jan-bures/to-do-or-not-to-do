@@ -161,6 +161,10 @@ pub fn css() -> String {
         "toggle-fill-from-scale".into(),
         motion::TOGGLE_FILL_FROM_SCALE.to_string(),
     ));
+    root.push((
+        "drag-touch-scale".into(),
+        motion::DRAG_TOUCH_SCALE.to_string(),
+    ));
     for (k, e) in motion::EASINGS {
         root.push((format!("ease-{k}"), e.css()));
     }
