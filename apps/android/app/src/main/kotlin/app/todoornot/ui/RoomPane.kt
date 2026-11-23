@@ -126,7 +126,6 @@ private const val MIN_ROWS_TYPING = 4
 fun RoomPane(
     state: UiState,
     actions: Actions,
-    landscape: Dp,
     onMenu: () -> Unit,
     modifier: Modifier = Modifier,
     draft: String = "",
@@ -151,7 +150,7 @@ fun RoomPane(
         val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
         val nav = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
         val underBar = maxHeight - maxOf(keyboardHeight, nav) - statusBar - P.COMPACT_HEADER.dp - P.COMPOSER.dp - S.S2.dp
-        val bar = !keyboard || underBar >= P.ROW.dp * MIN_ROWS_TYPING
+        val bar = !(keyboard || short) || underBar >= P.ROW.dp * MIN_ROWS_TYPING
         val force = if (collapsed || keyboard || short) 1f else 0f
         val density = LocalDensity.current
         val reachLimit = with(density) { minOf(P.HEADER_REACH_EXPAND.dp, maxHeight * P.HEADER_REACH_FRACTION).toPx() }
@@ -159,7 +158,8 @@ fun RoomPane(
         val scope = rememberCoroutineScope()
         val reduced = reducedMotion()
         SideEffect {
-            collapse.reachLimit = if (!wide && force == 0f && !sheetOpen) reachLimit else 0f
+            collapse.reachLimit = if (wide) 0f else reachLimit
+            collapse.reachEnabled = !wide && force == 0f && !sheetOpen && state.bulkIds.isEmpty()
             collapse.reachLatch = with(density) { P.HEADER_REACH_LATCH.dp.toPx() }
             collapse.reducedMotion = reduced
         }
@@ -180,8 +180,9 @@ fun RoomPane(
         val filterShown = state.searching && !addingWithFilter
         Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
             val resetReach = { if (collapse.reach > 0f) scope.launch { collapse.resetReach() }; Unit }
-            RoomHeader(room, landscape, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp, onResetReach = resetReach)
-            Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true).nestedScroll(collapse.connection)) {
+            RoomHeader(room, wide, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp,
+                selected = state.bulk != null, onResetReach = resetReach)
+            Box(Modifier.weight(1f).fillMaxWidth().nestedScroll(collapse.connection)) {
                 androidx.compose.runtime.key(state.generation) { TaskList(state, actions, resetReach) }
             }
             state.failed.firstOrNull()?.let { f ->

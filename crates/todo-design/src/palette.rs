@@ -322,8 +322,18 @@ pub const GUARDS: [(&str, &[&str], f64); 17] = [
 pub const GUARD_STEP: f64 = 0.005;
 
 fn apply_guards(p: &mut Palette, theme: Theme, hue: f64, chroma_scale: f64) {
+    guard_pairs(p, theme, hue, chroma_scale, &GUARDS);
+}
+
+fn guard_pairs(
+    p: &mut Palette,
+    theme: Theme,
+    hue: f64,
+    chroma_scale: f64,
+    pairs: &[(&str, &[&str], f64)],
+) {
     let specs = Palette::specs();
-    for (fg, bgs, min) in GUARDS {
+    for &(fg, bgs, min) in pairs {
         let Some(spec) = specs.iter().find(|s| s.0 == fg).map(|s| match theme {
             Theme::Light => s.1,
             Theme::Dark => s.2,
@@ -381,6 +391,21 @@ pub fn palette_scaled(theme: Theme, hue: f64, chroma_scale: f64) -> Palette {
     let mut p = Palette::from_specs(theme, hh, chroma_scale);
     apply_guards(&mut p, theme, hh, chroma_scale);
     p
+}
+
+/// The room's arc ink guarded against the phone panorama's gradient endpoints, not just its sky.
+/// Desktop and web keep their original arc token and contrast rules.
+#[must_use]
+pub fn phone_arc(theme: Theme, hue: f64) -> Rgb {
+    let mut p = palette(theme, hue);
+    guard_pairs(
+        &mut p,
+        theme,
+        room_hue(theme, hue),
+        1.0,
+        &[("arc", &["sky", "horizon", "canvas"], 3.0)],
+    );
+    p.arc
 }
 
 /// The colours for a list with hue `hue`.

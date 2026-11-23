@@ -41,10 +41,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import app.todoornot.design.Landscape
+import app.todoornot.design.PairingLandscape
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.RoomColors
-import app.todoornot.design.Scene
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
@@ -81,7 +80,7 @@ interface PairingActions {
 @Composable
 fun PairingScreen(state: PairingState, actions: PairingActions, dark: Boolean, fixedRemainingSeconds: Long? = null) {
     // No tasks yet, so nothing to measure: the hills only, no sun (`docs/design-language.md`).
-    Welcome("Welcome", "Pair this phone", Scene(0, 0, finished = false), dark,
+    Welcome("Welcome", "Pair this phone", dark,
         footer = (state as? PairingState.Waiting)?.let { waiting -> { WaitingActions(waiting, actions) } },
     ) {
         when (state) {
@@ -123,7 +122,7 @@ fun CantOpenScreen(
     asking: Boolean = false,
 ) {
     var confirm by rememberSaveable { mutableStateOf(asking) }
-    Welcome("Paired with ${server.removePrefix("https://")}", "Can’t open your tasks", Scene(0, 0, finished = false), dark) {
+    Welcome("Paired with ${server.removePrefix("https://")}", "Can’t open your tasks", dark) {
         val r = LocalDesign.current.room
         Body(problem)
         Body("Try again in a moment. If it keeps failing, free some space or restart the phone first.")
@@ -138,7 +137,7 @@ fun CantOpenScreen(
 
 /** The sky header with an eyebrow, a title and a landscape, over a scrolling column of content. */
 @Composable
-private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
+private fun Welcome(eyebrow: String, title: String, dark: Boolean,
     footer: (@Composable () -> Unit)? = null, content: @Composable () -> Unit,
 ) {
     TodoTheme(dark, "my-day") {
@@ -151,7 +150,7 @@ private fun Welcome(eyebrow: String, title: String, scene: Scene, dark: Boolean,
                     Label(eyebrow, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
                     Label(title, Tokens.Type.ROOM_TITLE_PHONE, r.ink)
                 }
-                Landscape(scene, Tokens.Landscape.HEIGHT_COVER.dp)
+                PairingLandscape()
             }
             Box(Modifier.fillMaxWidth().height(Tokens.Elevation.HAIRLINE.dp).background(r.line))
             BoxWithConstraints(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.TopCenter) {

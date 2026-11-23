@@ -12,6 +12,8 @@ import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -37,6 +39,8 @@ import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.RoomKey
 import app.todoornot.core.ColorTarget
@@ -158,6 +162,7 @@ private fun Screen(
 ) {
     TodoTheme(dark, if (state.activity != null) "agent-activity" else state.room.hue) {
         val r = LocalDesign.current.room
+        val motion = LocalMotion.current
         var switcher by rememberSaveable { mutableStateOf(drawerOpen) }
         var reveal by remember { mutableStateOf<Float?>(null) }
         var returningGesture by remember { mutableStateOf(false) }
@@ -178,7 +183,6 @@ private fun Screen(
         var bulkPicker by remember(state.generation, state.bulkIds) { mutableStateOf<BulkPicker?>(null) }
         val detail = state.detail
         val detailSheets = rememberDetailSheets(detail?.id, state.generation)
-        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null || detailSheets.page != null
         state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed, paneWidth) }
         // Room and switcher actions: rename and delete ask in a
         // dialog; a move glides the rows it swaps.
@@ -193,6 +197,8 @@ private fun Screen(
         }
         var deleteCollection by rememberSaveable { mutableStateOf<String?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
+        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null || detailSheets.page != null ||
+            renaming != null || deleting != null || deleteCollection != null || newCollection || state.unpairing != null
         if (newCollection) OverlayDialog({ newCollection = false }, paneWidth = paneWidth) { overlay ->
             RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); switcher = false } }, overlay::close)
         }
@@ -273,8 +279,7 @@ private fun Screen(
                 fun Tasks(modifier: Modifier) {
                     RoomPane(
                         if (wide || detail == null) paneSurface else paneSurface.copy(toast = null),
-                        actions, (if (wide) Tokens.Landscape.HEIGHT_INNER else Tokens.Landscape.HEIGHT_COVER).dp,
-                        menu, modifier, draft, collapsed, onRoomMenu = { roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
+                        actions, menu, modifier, draft, collapsed, onRoomMenu = { roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
                         composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
                         reachExpanded = reachExpanded, onSwipeRooms = { progress ->
                             if (progress == null && !switcher && reveal != null) returningGesture = true
@@ -294,9 +299,18 @@ private fun Screen(
                         Row(Modifier.fillMaxSize()) {
                             Tasks(Modifier.width(paneWidth))
                             Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
+                            // Android sets status-icon contrast for the whole window, so the right
+                            // status inset shares dusk's zenith while the detail keeps its own theme.
+                            val insets = WindowInsets.statusBars
+                            val duskTop = LocalDesign.current.dusk().top
+                            val detailInset = Modifier.weight(1f).drawBehind {
+                                if (!dark && (motion.dusk(state.room.key)?.nightInk ?: state.room.finished)) {
+                                    drawRect(duskTop, size = Size(size.width, insets.getTop(this).toFloat()))
+                                }
+                            }
                             if (detail != null) DetailPane(paneSurface, actions, standalone = false,
-                                Modifier.weight(1f).statusBarsPadding(), hand = hand, sheets = detailSheets)
-                            else NoDetail(Modifier.weight(1f).navigationBarsPadding(), selection = state.bulk?.label)
+                                detailInset.statusBarsPadding(), hand = hand, sheets = detailSheets)
+                            else NoDetail(detailInset.navigationBarsPadding(), selection = state.bulk?.label)
                         }
                     } else {
                         Tasks(Modifier.fillMaxSize().then(if (detail != null) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier))

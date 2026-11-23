@@ -119,6 +119,82 @@ fn a_list_measures_today_and_not_its_old_completions() {
     assert!(!h.finished_day());
 }
 
+#[test]
+fn glance_cue_picks_urgency_then_the_first_upcoming_time_in_the_owner_zone() {
+    use todo_core::ids::ReminderId;
+    use todo_core::model::Reminder;
+
+    let mut w = World::new();
+    let list = w.list("Groceries", None);
+    let elsewhere = w.list("Garden", None);
+    let timed = w.task(list, "Pick up bread");
+    let done = w.task(list, "Finished pickup");
+    let outside = w.task(elsewhere, "Collect soil");
+    let late = w.task(list, "Return jars");
+    let now = prague("2026-11-21T09:35:00Z");
+    for id in [timed, done, outside] {
+        w.task_mut(id).due = Some(now.today());
+    }
+    w.done_at(done, "2026-11-21T08:00:00Z");
+    for (task, at) in [
+        (timed, "2026-11-21T09:10:00Z"), // elapsed reminder on the same due date
+        (timed, "2026-11-21T17:00:00Z"),
+        (timed, "2026-11-21T20:00:00Z"),
+        (timed, "2026-11-21T23:30:00Z"), // tomorrow in the owner's zone
+        (done, "2026-11-21T10:00:00Z"),
+        (outside, "2026-11-21T10:00:00Z"),
+    ] {
+        let id = ReminderId::from_uuid(w.id());
+        let created = w.task_mut(task).created.clone();
+        w.state.reminders.insert(
+            id,
+            Reminder {
+                id,
+                task,
+                at: ts(at),
+                created,
+                deleted: None,
+            },
+        );
+    }
+    let cue = |w: &World, key| {
+        let tasks = room_tasks(&w.state, key, &BTreeSet::new(), &now.eval());
+        glance_cue(&w.state, key, &tasks, &now)
+    };
+    let key = RoomKey::List(list);
+    assert_eq!(
+        cue(&w, key),
+        GlanceCue {
+            overdue_count: 0,
+            next_due_today: Some("18:00".into()),
+            local_hour: 10
+        }
+    );
+    w.task_mut(late).due = Some(day("2026-11-20"));
+    assert_eq!(
+        cue(&w, key),
+        GlanceCue {
+            overdue_count: 1,
+            next_due_today: None,
+            local_hour: 10
+        }
+    );
+    for excluded in [
+        RoomKey::Trash,
+        RoomKey::Activity(None),
+        RoomKey::Smart(SmartList::Completed),
+        RoomKey::Smart(SmartList::AgentActivity),
+    ] {
+        assert_eq!(
+            cue(&w, excluded),
+            GlanceCue {
+                local_hour: 10,
+                ..GlanceCue::default()
+            }
+        );
+    }
+}
+
 /// The owner's report: Important with two open tasks and nineteen finished on earlier days.
 #[test]
 fn important_counts_today_and_shows_the_day() {

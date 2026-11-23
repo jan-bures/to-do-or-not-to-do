@@ -10,9 +10,9 @@ deliberate type pairing, a restrained palette, exact alignment, and one small il
 
 ## Concept: a small landscape that keeps score
 
-Every room has a header, whether it's My Day, a collection or a list. The header is a **sky** in the room's hue,
-and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop, 36 dp on a phone's cover screen and
-40 dp on a large inner screen.
+Every room has a header, whether it's My Day, a collection or a list. The header is a **sky** in the room's hue.
+Desktop and web use a slim strip of two hills. Android uses a full-bleed sky with three paper-cut hills and a
+72 dp cover or 80 dp inner panorama; see the [Android header specification](android-header.md).
 
 - **The landscape sun measures completed tasks.** It climbs a faint arc as tasks are done. The part of the
   arc it has travelled is drawn in `sun-ink`, and the part still to go in `arc`. The arc is measured to 3:1 against
@@ -66,7 +66,8 @@ and it ends in a strip of **two flat hills**. The strip is 48 px on the desktop,
 
 `todo_design::landscape` computes the geometry: hills, arc, sun, rays, rings, stars and moon. GPUI and Compose
 draw the same shapes from it. Everything is a single-colour filled path, a stroked polyline or a circle, plus one
-linear gradient for the dusk sky. Build the paths when the size or the count changes, never per frame.
+linear gradient for the Android sky or the finished dusk scene. Cache static paths and reuse mutable paths for
+scroll-linked geometry; never allocate paths per frame.
 
 ## Colour
 
@@ -530,8 +531,8 @@ Completing a task is the one choreographed moment in the app.
 - **Trigger:** Completing the last open task in My Day, beginning as its `ROW_COLLAPSE` finishes and open count
   reaches `0`.
 - **What moves & properties (`DUSK` 1200 ms, `SUN`):**
-  - Header landscape height grows smoothly from its everyday height (`48 px` desktop; `36 dp` / `40 dp` phone)
-    to `164 px` (`HEIGHT_FINISHED`).
+  - Header landscape height grows smoothly from its everyday height (`48 px` desktop; `72 dp` / `80 dp` Android)
+    to `164 px` / dp (`HEIGHT_FINISHED`).
   - Sky crossfades from room `sky` fill to the `dusk.top → dusk.low` vertical gradient; far and near hills
     crossfade to `dusk.silhouette-far` and `dusk.silhouette-near`. At ~40 % progress, header text switches cleanly
     to dark-theme ink over the dusk sky.
@@ -854,7 +855,8 @@ or shift the rows. Fade the wash, outline and card over `HOVER` with `STANDARD`,
   expanded Daybreak header into the `36 dp` glanceable title strip **1:1 with scroll offset** (fading the
   landscape and date eyebrow proportionally so nothing snaps mid-scroll); releasing midway settles cleanly to
   either expanded or collapsed over `PANEL` (`200 ms`, `STANDARD`). Pulling down from the top on the cover
-  screen stretches the flat `sky` fill 1:1 up to `phone::HEADER_REACH_EXPAND` and settles over `PANEL`.
+  screen opens the sky panorama 1:1 up to `phone::HEADER_REACH_EXPAND` and settles over `PANEL`.
+  A quarter of the pull moves the text down; the rest reveals more of the three hills and lifts the arc.
 - **Task row swipes:** Horizontal drags (outside the `24 dp` edge dead-zone) track the thumb **1:1** to
   reveal Complete/Reopen (swipe right) or My Day (swipe left) past `phone::SWIPE_THRESHOLD` (`72 dp`), then
   settle back over `SWIPE_SETTLE` (`160 ms`, `STANDARD`).
@@ -960,7 +962,7 @@ Agents are shown as **round letter marks**: **C** (Claude), **X** (Codex) and **
 
 These are the generic "AI-default" looks, and they don't ship:
 
-- purple-to-blue gradients, and gradients in general (the dusk sky is the single exception, and it has a meaning);
+- purple-to-blue gradients, and gradients in general (only the Daybreak sky on Android and finished dusk use them);
 - glassmorphism, background blur and frosted panels;
 - emoji used as icons;
 - floating cards with heavy drop shadows;

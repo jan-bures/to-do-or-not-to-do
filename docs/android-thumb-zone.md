@@ -49,11 +49,11 @@ For one-handed cover use, the Settings sheet offers a local-only preference:
 
 ### 3.1 Scroll-linked header collapse (`HeaderCollapse`)
 
-- **At rest (top of list):** Full non-interactive Daybreak sky header below `statusBarsPadding()` — eyebrow (`EYEBROW_DAY_PHONE` + `EYEBROW_META_PHONE`), room title (`ROOM_TITLE_PHONE`, 33/36), progress summary (`3 of 12 done · 9 open`), and the landscape strip (`LANDSCAPE_COVER` 36 dp / `LANDSCAPE_INNER` 40 dp, or `HEIGHT_FINISHED` 164 dp on finished My Day).
+- **At rest (top of list):** Full non-interactive Daybreak sky header below `statusBarsPadding()` — eyebrow (`EYEBROW_DAY_PHONE` + `EYEBROW_META_PHONE`), room title (`ROOM_TITLE_PHONE`, 33/36), progress summary (`3 of 12 done · 9 open`), and the three-hill panorama (`HEADER_SCENE_COVER` 72 dp / `HEADER_SCENE_INNER` 80 dp, or `HEIGHT_FINISHED` 164 dp on finished My Day).
 - **Scrolling up (reading down the list):** The sky body and landscape collapse **1:1 with scroll offset** (`NestedScrollConnection.onPreScroll`) into a sleek **`36 dp` glanceable title bar** (`phone::COMPACT_HEADER`, down from the old `48 dp` app bar because it holds zero touch targets!).
   - Inside the `36 dp` compact header (over `sky` background with a `1 dp` bottom `line` hairline):
     - Leading (`start = S5` 20 dp): Room title in `ROOM_TITLE_BAR` (18/20, `ink`), fading in over `collapse.fraction` `0.5..1.0`.
-    - Trailing (`end = S5` 20 dp): Compact progress figure (`3/12`, `SUMMARY_FIGURES`, `ink-2`) + a tiny `10 dp` `sun` dot when progress > 0, plus a quiet `Offline` / pending count indicator if offline/error.
+    - Trailing (`end = S5` 20 dp): Overdue mark when needed, an `8 dp` sun ring or disc, compact progress figure (`3/12`), and quiet sync status. A `2 dp` progress line runs above the bottom hairline.
   - Releasing midway settles to expanded or collapsed over `PANEL` (`200 ms`, `STANDARD`; snaps under reduced motion).
 - **Keyboard open or short window (`maxHeight < 480 dp`):** Header forces collapsed (`forced = 1f`, `PANEL` 200 ms). The Bottom Utility Bar hides while the keyboard is open so the Quick-Add Composer (or Filter Field) docks directly above the IME and at least **4 full task rows** (`4 × 64 dp = 256 dp`) remain visible above it. If even the `36 dp` compact bar would leave fewer than 4 rows, it collapses away as before (`RoomPane.kt`).
 
@@ -64,7 +64,7 @@ When a list has few tasks (e.g. 1–4 open tasks), the top row sits near `y ≈ 
 - **Gesture:** When the task list is already at index 0, offset 0, pulling downward expands the Daybreak sky smoothly **1:1** up to `phone::HEADER_REACH_EXPAND` (`180 dp`, clamped to `28%` of viewport height).
 - **Visuals:** Instead of stretching a flat empty sky above the text, pull-down expands the Daybreak sky and landscape panorama smoothly (`0.25 × reach` upper sky drift above the text, `0.75 × reach` growing the 3-hill landscape, lifting the sun arc, and revealing high-altitude stars/clouds with parallax). See [`docs/android-header.md`](android-header.md) §4.1 for exact measurements and reduced-motion fallbacks.
 - **Latch & release:** Releasing past `96 dp` (`53%` of expansion) gently latches the expanded sky (`PANEL`, `STANDARD`) until the user taps a task, starts scrolling upward, opens a sheet, or taps the sky area—whereupon it settles back to normal height over `PANEL` (`200 ms`, `STANDARD`). Under reduced motion, pull-down still tracks the finger 1:1 and snaps on release.
-- **Unfolded posture:** Pull-down reachability is disabled (not needed with two-hand side grip and `40 dp` landscape).
+- **Unfolded posture:** Pull-down reachability is disabled (not needed with a two-hand side grip).
 
 ---
 
@@ -102,7 +102,7 @@ When a list has few tasks (e.g. 1–4 open tasks), the top row sits near `y ≈ 
 └─────────────────────────────────────────┘
 ```
 
-- **Top Sky Header:** Non-interactive. Uses `sky` fill, `eyebrow`, `title`, `Summary`, and `36 dp` `Landscape`. When offline or pending sync, a quiet `SyncChip` may appear at the trailing edge of the eyebrow for glanceability, while its interactive nudge lives in the Room Switcher footer and Bottom Bar dot.
+- **Top Sky Header:** Non-interactive. Uses one full-bleed gradient, stacked eyebrow, title and summary/cue, and a `72 dp` panorama. When offline or pending sync, a quiet `SyncChip` may appear at the trailing edge of the eyebrow for glanceability, while its interactive nudge lives in the Room Switcher footer and Bottom Bar dot.
 - **Banners (Failed change / Signed out):** Relocated from top-of-list to **directly above the Bottom Dock** (above `ToastStrip` if both are present), so **Dismiss** and **Pair again** sit squarely in the Comfortable thumb zone.
 - **Undo Toast Strip (`phone::TOAST_STRIP` 56 dp):** Unchanged visual design (`44 dp` `toast` card, `10 dp` radius, `2 dp` linear `UNDO_WINDOW` countdown bar), docked directly above the Upper Dock so it never covers any task row.
 - **Upper Dock — Quick-Add Composer (`56 dp` slot: `4 dp` top + `48 dp` `COMPOSER` + `4 dp` bottom, `pane` bg, `1 dp` top `line` hairline):**
@@ -120,7 +120,7 @@ When a list has few tasks (e.g. 1–4 open tasks), the top row sits near `y ≈ 
 #### Unfolded inner screen (`876 × 970 dp`)
 
 - **Two-pane split:** Left pane (`List`, `438 dp` or `phone::INNER_LIST` 450 dp capped to `50%` of width, respecting `FoldingFeature` hinge bounds if a physical hinge separation exists) + `1 dp` `line` vertical divider + Right pane (`Detail`, `weight(1f)`).
-- **Left Pane (`List`, left-thumb domain):** Uses the **exact same layout as Cover** — non-interactive Daybreak sky header (`40 dp` landscape) at top, scrollable task list in the middle, and the full 2-row **Bottom Thumb Dock** (Composer + `[≡]` Room Pills `[🔍]` `[⋯]`) at bottom-left!
+- **Left Pane (`List`, left-thumb domain):** Uses the **exact same layout as Cover** — non-interactive Daybreak sky header (`80 dp` panorama) at top, scrollable task list in the middle, and the full 2-row **Bottom Thumb Dock** (Composer + `[≡]` Room Pills `[🔍]` `[⋯]`) at bottom-left!
   - Left thumb naturally reaches `[≡ Rooms]`, room pills, checkboxes, quick-add input, and left-docked sheets.
 - **Right Pane (`Detail`, right-thumb domain):**
   - Top: `40 dp` non-interactive glanceable breadcrumb strip (`[• Personal] / Admin`).

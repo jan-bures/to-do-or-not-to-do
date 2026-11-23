@@ -185,6 +185,107 @@ pub fn landscape(
     }
 }
 
+/// One phone hill's offset and amplitude at a scene endpoint.
+#[derive(Clone, Copy, Debug, uniffi::Record)]
+pub struct PhoneHill {
+    /// Baseline above the bottom (dp).
+    pub depth: f32,
+    /// Multiplier for the Bézier control point offsets.
+    pub amplitude: f32,
+}
+
+/// Dimensions that interpolate independently of the canvas's actual height.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PhonePanorama {
+    /// Hill dimensions in drawing order.
+    pub hills: Vec<PhoneHill>,
+    /// Arc's horizontal inset (dp).
+    pub pad: f32,
+    /// Arc's baseline above the bottom (dp).
+    pub base_depth: f32,
+    /// Arc's peak below the top (dp).
+    pub peak: f32,
+}
+
+impl From<geo::phone::Panorama> for PhonePanorama {
+    fn from(p: geo::phone::Panorama) -> Self {
+        Self {
+            hills: p
+                .hills
+                .iter()
+                .map(|h| PhoneHill {
+                    depth: h.depth,
+                    amplitude: h.amplitude,
+                })
+                .collect(),
+            pad: p.arc.pad,
+            base_depth: p.arc.base_depth,
+            peak: p.arc.peak,
+        }
+    }
+}
+
+/// The cached endpoint geometry shared by phone room headers.
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct PhoneLandscape {
+    /// Resting panorama.
+    pub rest: PhonePanorama,
+    /// Full reach panorama.
+    pub reach: PhonePanorama,
+    /// Finished panorama.
+    pub dusk: PhonePanorama,
+    /// Finished panorama at full reach.
+    pub dusk_reach: PhonePanorama,
+    /// Unit Bézier coordinates (ridge, far, near).
+    pub hill_controls: Vec<Vec<Pt>>,
+    /// Unit sky positions, with radii in dp.
+    pub stars: Vec<Dot>,
+    /// Cloud, SVG path data in a 100-unit space, centred at its baseline.
+    pub cloud: String,
+    /// Standard 9.5 dp ambient crescent, centred at the origin.
+    pub ambient_moon: String,
+    /// The finished day's 13 dp crescent, centred at the origin.
+    pub dusk_moon: String,
+}
+
+/// Geometry depends on posture and pane width, never on the current count or drag distance.
+#[uniffi::export]
+pub fn phone_landscape(width: f32, inner: bool) -> PhoneLandscape {
+    use geo::phone;
+    PhoneLandscape {
+        rest: phone::rest(width, inner).into(),
+        reach: phone::reach(width).into(),
+        dusk: phone::dusk(false).into(),
+        dusk_reach: phone::dusk(true).into(),
+        hill_controls: phone::hill_controls()
+            .into_iter()
+            .map(|points| points.into_iter().map(Pt::from).collect())
+            .collect(),
+        stars: phone::stars()
+            .into_iter()
+            .map(|s| Dot {
+                center: s.center.into(),
+                radius: s.radius,
+            })
+            .collect(),
+        cloud: geo::svg_path(&phone::cloud(100.0)),
+        ambient_moon: geo::svg_path(&phone::moon(9.5)),
+        dusk_moon: geo::svg_path(&phone::moon(13.0)),
+    }
+}
+
+/// RGB ink of the remaining arc over the full room sky gradient.
+#[uniffi::export]
+pub fn phone_arc_color(dark: bool, hue: &str) -> u32 {
+    let theme = if dark {
+        todo_design::Theme::Dark
+    } else {
+        todo_design::Theme::Light
+    };
+    let hue = todo_design::hues::by_key(hue).map_or(todo_design::hues::MY_DAY, |h| h.degrees);
+    todo_design::palette::phone_arc(theme, hue).to_u32()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

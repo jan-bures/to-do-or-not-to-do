@@ -33,8 +33,12 @@ internal fun ActivityRoom(state: UiState, actions: Actions, drawer: () -> Unit, 
         LaunchedEffect(Unit) { load(ActivityLoad.INITIAL) }
         val s = Tokens.Space
         val title = state.room.copy(title = "Activity", eyebrow = Eyebrow.Kind("History", feed.agent?.let { "Agent: $it" } ?: "All changes"),
-            done = 0u, total = 0u, finished = false, summary = RoomSummary.None)
-        HistoryFrame(state, actions, title, wide, hand, drawer, footer = { left ->
+            done = 0u, total = 0u, finished = false, summary = RoomSummary.None, summaryText = "",
+            overdueCount = 0u, nextDueToday = null)
+        val shown = feed.days.sumOf { it.rows.size }
+        val today = feed.days.filter { it.isToday }.sumOf { it.rows.size }
+        val summary = if (shown == 0) null else "$shown shown · $today today"
+        HistoryFrame(state, actions, title, wide, hand, drawer, activitySummary = summary, footer = { left ->
             val refresh: @Composable () -> Unit = {
                 IconButton("refresh-cw", feed.refreshLabel, enabled = !feed.refreshing) { load(ActivityLoad.REFRESH) }
             }

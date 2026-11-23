@@ -249,9 +249,36 @@ class GalleryTest {
 
     @Test
     fun cover_my_day() {
-        val s = state(fixtureEngine())
+        val e = fixtureEngine()
+        val day = RoomKey.Smart(SmartList.MY_DAY)
+        e.setDue(e.taskId(day, "Call the dentist to reschedule"), "2026-11-20")
+        val s = state(e).quietlySynced()
+        assertEquals(2u, s.room.overdueCount)
         main("cover_my_day_light", FOLD7_COVER, s, dark = false)
         main("cover_my_day_dark", FOLD7_COVER, s, dark = true)
+    }
+
+    private fun UiState.quietlySynced() = copy(status = status.copy(state = SyncState.ONLINE, pending = 0u))
+
+    @Test
+    fun cover_list_zero_progress() {
+        val e = fixtureEngine("groceries")
+        val s = state(e, e.list("Groceries")).quietlySynced()
+        assertEquals(0u, s.room.done)
+        assertEquals(15u, s.room.total)
+        assertEquals("18:00", s.room.nextDueToday)
+        main("cover_list_zero_progress_light", FOLD7_COVER, s, dark = false)
+        main("cover_list_zero_progress_dark", FOLD7_COVER, s, dark = true)
+    }
+
+    @Test
+    fun cover_header_wraps_at_large_text() {
+        val e = fixtureEngine("groceries")
+        val list = e.list("Groceries") as RoomKey.List
+        e.renameList(list.id, "Weekly groceries")
+        val s = state(e, list).quietlySynced()
+        main("cover_header_wraps_at_large_text_light", FOLD7_COVER.copy(fontScale = 1.5f), s, dark = false)
+        main("cover_header_wraps_at_large_text_dark", FOLD7_COVER.copy(fontScale = 1.5f), s, dark = true)
     }
 
     @Test
@@ -456,9 +483,12 @@ class GalleryTest {
     @Test
     fun cover_reach_and_left_hand() {
         val e = fixtureEngine()
+        val groceries = fixtureEngine("groceries-reach")
+        val reach = state(groceries, groceries.list("Groceries")).quietlySynced()
+        assertEquals(5u, reach.room.done)
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
-            main("cover_reach_pull_$theme", FOLD7_COVER, state(e, e.list("Errands")), dark, reach = true)
+            main("cover_reach_pull_$theme", FOLD7_COVER, reach, dark, reach = true)
             main("cover_handedness_left_$theme", FOLD7_COVER, state(e), dark, hand = ThumbHand.LEFT)
             main("cover_switcher_left_$theme", FOLD7_COVER, state(e), dark, hand = ThumbHand.LEFT, drawer = true)
         }
@@ -483,8 +513,8 @@ class GalleryTest {
     @Test
     fun finished_day_hands_over_to_tomorrow() {
         val s = state(fixtureEngine("finished"))
-        main("cover_finished_dark", COVER, s, dark = true)
-        main("cover_finished_light", COVER, s, dark = false)
+        main("cover_finished_dark", FOLD7_COVER, s, dark = true)
+        main("cover_finished_light", FOLD7_COVER, s, dark = false)
         main("inner_finished_light", INNER, s, dark = false)
     }
 
@@ -492,8 +522,8 @@ class GalleryTest {
     fun empty_list() {
         val e = fixtureEngine()
         val s = state(e, e.list("Reading list"))
-        main("cover_empty_light", COVER, s, dark = false)
-        main("cover_empty_dark", COVER, s, dark = true)
+        main("cover_empty_light", FOLD7_COVER, s, dark = false)
+        main("cover_empty_dark", FOLD7_COVER, s, dark = true)
     }
 
     @Test
@@ -990,8 +1020,8 @@ class GalleryTest {
             }
             val days = listOf(
                 ActivityDay("Today", listOf(ActivityRow("c", 3u, "Added Water herbs", "You", "Just now", null, "Undo"),
-                    ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", "1 min ago", "Undoing…", null))),
-                ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo"))),
+                    ActivityRow("b", 2u, "Moved Check the seedlings", "Garden", "1 min ago", "Undoing…", null)), isToday = true),
+                ActivityDay("Yesterday", listOf(ActivityRow("a", 1u, "Added Prepare the beds", "You", "1 day ago", "Couldn't undo: it was changed again.", "Undo")), isToday = false),
             )
             val feed = ActivityView(null, days, 0u, "Refresh activity •", false, ActivityFooter.None)
             main("activity_$suffix", FOLD7_COVER, s.copy(activity = "", feed = feed), dark)

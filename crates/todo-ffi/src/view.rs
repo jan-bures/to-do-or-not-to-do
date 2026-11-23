@@ -410,6 +410,12 @@ pub struct RoomView {
     pub summary: RoomSummary,
     /// The summary as one line ("3 of 12 done · 9 open"), for screen readers.
     pub summary_text: String,
+    /// Overdue open tasks in the whole room. Takes priority over the timed cue.
+    pub overdue_count: u32,
+    /// The earliest upcoming timed task due today, as local `HH:MM`.
+    pub next_due_today: Option<String>,
+    /// Local hour of the derivation, for the ambient sky.
+    pub local_hour: u8,
     /// My Day with everything done: the dusk scene.
     pub finished: bool,
     /// Open rows, in order.
@@ -879,7 +885,9 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
     let shared =
         shared_key(&key).unwrap_or(room_header::RoomKey::Smart(room_header::SmartList::MyDay));
     let tasks = room_header::room_tasks(state, shared, &holding, &ctx);
-    let header = room_header::header_of(state, shared, &tasks, &holding, &now.local_time());
+    let local = now.local_time();
+    let header = room_header::header_of(state, shared, &tasks, &holding, &local);
+    let cue = room_header::glance_cue(state, shared, &tasks, &local);
     let room_header::RoomTasks { open, done } = tasks;
 
     let filtered = !filter_text.trim().is_empty() && !shared.is_history();
@@ -946,6 +954,9 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         open: count(header.open()),
         summary: header.summary.into(),
         summary_text: header.summary.text(),
+        overdue_count: cue.overdue_count,
+        next_due_today: cue.next_due_today,
+        local_hour: cue.local_hour,
         finished,
         tasks: open
             .iter()

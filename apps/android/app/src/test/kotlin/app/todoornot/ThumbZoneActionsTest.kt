@@ -1,10 +1,18 @@
 package app.todoornot
 
 import android.app.Application
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.semantics.SemanticsProperties
 import androidx.compose.ui.test.ExperimentalTestApi
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.assert
+import androidx.compose.ui.test.assertIsNotDisplayed
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -14,17 +22,21 @@ import androidx.compose.ui.test.performTouchInput
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.swipe
+import androidx.compose.ui.unit.dp
 import app.todoornot.core.ActivityFooter
 import app.todoornot.core.ActivityLoad
 import app.todoornot.core.ActivityView
 import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
+import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
 import app.todoornot.model.Actions
 import app.todoornot.model.TaskSwipe
 import app.todoornot.model.UiState
 import app.todoornot.session.ThumbHand
+import app.todoornot.ui.HeaderCollapse
 import app.todoornot.ui.MainScreen
+import app.todoornot.ui.RoomHeader
 import app.todoornot.ui.insideSwipeEdges
 import app.todoornot.ui.swipeDirection
 import org.junit.Assert.assertEquals
@@ -95,6 +107,28 @@ class ThumbZoneActionsTest {
         compose.onNodeWithContentDescription("Filter lists").assertExists()
         compose.onNodeWithText("Cancel").performClick()
         compose.onNodeWithText("Move to…").assertExists()
+    }
+
+    @Test fun room_heading_and_timed_cue_are_read_only_and_trade_for_one_compact_announcement() {
+        val engine = fixtureEngine("groceries")
+        val room = engine.room(engine.list("Groceries"), FIXTURE_NOW)
+        val collapse = HeaderCollapse()
+        compose.setContent {
+            TodoTheme(false, room.hue) {
+                Box(Modifier.width(412.dp)) {
+                    RoomHeader(room, false, collapse, engine.status(), onResetReach = {})
+                }
+            }
+        }
+        val isHeading = SemanticsMatcher.keyIsDefined(SemanticsProperties.Heading)
+        val title = compose.onNodeWithText(room.title)
+        val cue = compose.onNodeWithContentDescription("Next due at 18:00")
+        title.assert(isHeading and !hasClickAction())
+        cue.assert(!hasClickAction())
+        assertTrue(title.fetchSemanticsNode().boundsInRoot.bottom <= cue.fetchSemanticsNode().boundsInRoot.top)
+        compose.runOnIdle { collapse.consume(-collapse.range) }
+        cue.assertIsNotDisplayed()
+        compose.onNodeWithContentDescription("Groceries, 0 of 15 done").assert(isHeading and !hasClickAction())
     }
 
     @Test fun activity_footer_refresh_and_agent_pill_use_the_active_pager() {

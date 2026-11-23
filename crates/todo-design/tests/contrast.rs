@@ -98,6 +98,36 @@ fn landscape_rows(t: &Palette, e: [(&'static str, &'static str, f64); 5]) -> Vec
         .collect()
 }
 
+#[test]
+fn android_panorama_keeps_text_and_progress_legible_at_each_gradient_stop() {
+    use todo_design::palette::{dusk, phone_arc};
+
+    for theme in Theme::ALL {
+        for hue in (0..360).map(f64::from) {
+            let t = palette(theme, hue);
+            let arc = phone_arc(theme, hue);
+            for bg in [t.canvas, t.sky, t.horizon] {
+                for fg in [t.ink, t.ink_2, t.ink_3, t.accent_strong, t.danger_ink] {
+                    assert!(fg.contrast(bg) >= 4.5, "{theme:?}, {hue}, {fg:?} on {bg:?}");
+                }
+                assert!(arc.contrast(bg) >= 3.0, "{theme:?}, {hue}, arc on {bg:?}");
+                assert!(
+                    t.sun_ink.contrast(bg) >= 3.0,
+                    "{theme:?}, {hue}, sun-ink on {bg:?}"
+                );
+            }
+            for fg in [t.ink, t.ink_2, t.danger_ink] {
+                assert!(fg.contrast(t.selection_wash) >= 4.5);
+            }
+            let night = palette(Theme::Dark, hue);
+            let zenith = dusk(hue).top;
+            for fg in [night.ink, night.ink_2, night.ink_3, night.accent_strong] {
+                assert!(fg.contrast(zenith) >= 4.5);
+            }
+        }
+    }
+}
+
 const PLANNED: f64 = 150.0;
 const HEALTH: f64 = 352.0;
 const CLAUDE: f64 = 38.0;

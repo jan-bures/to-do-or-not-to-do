@@ -23,6 +23,8 @@ pub enum Fixture {
     Trash,
     /// Task detail with three activity lines and distinct actors.
     TaskActivity,
+    /// The phone header's zero-progress list, or the same list with work done for reach.
+    Groceries { started: bool },
     /// Nothing at all: the first start after pairing.
     Blank,
 }
@@ -35,6 +37,8 @@ impl Fixture {
             "finished" => Some(Self::Finished),
             "trash" => Some(Self::Trash),
             "task-activity" => Some(Self::TaskActivity),
+            "groceries" => Some(Self::Groceries { started: false }),
+            "groceries-reach" => Some(Self::Groceries { started: true }),
             "blank" => Some(Self::Blank),
             _ => None,
         }
@@ -277,6 +281,62 @@ fn task_activity(mut b: Builder<'_>) -> State {
     b.state
 }
 
+fn groceries(mut b: Builder<'_>, started: bool) -> State {
+    let home = b.collection("Home", "teal");
+    let list = b.list(Some(home), "Groceries", "teal");
+    b.list(Some(home), "Chores", "rose");
+    b.list(Some(home), "Repairs", "olive");
+    let bakery = b.tag("bakery");
+    let pantry = b.tag("pantry");
+    b.task(
+        list,
+        "Buy milk and sourdough bread",
+        Spec {
+            due: Some(0),
+            remind_in_min: Some(445),
+            tags: &[bakery],
+            ..Spec::default()
+        },
+    );
+    for title in [
+        "Pick up fresh basil and parsley",
+        "Order whole-bean coffee",
+        "Oat milk (two cartons)",
+        "Dishwasher tablets",
+        "Olive oil and sea salt",
+        "Brown rice",
+        "Apples",
+        "Tomato paste",
+        "Tea",
+    ] {
+        b.task(
+            list,
+            title,
+            Spec {
+                tags: &[pantry],
+                ..Spec::default()
+            },
+        );
+    }
+    for title in [
+        "Lemons",
+        "Dried apricots",
+        "Paper towels",
+        "Red lentils",
+        "Black pepper",
+    ] {
+        b.task(
+            list,
+            title,
+            Spec {
+                done: started,
+                ..Spec::default()
+            },
+        );
+    }
+    b.state
+}
+
 /// Builds a fixture world as of `now`.
 pub fn build(fixture: Fixture, now: &Now) -> State {
     let mut b = Builder::new(now);
@@ -285,6 +345,9 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
     }
     if fixture == Fixture::TaskActivity {
         return task_activity(b);
+    }
+    if let Fixture::Groceries { started } = fixture {
+        return groceries(b, started);
     }
     let finished = fixture == Fixture::Finished;
     let my = |done: bool| Spec {

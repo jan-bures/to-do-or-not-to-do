@@ -21,6 +21,8 @@
 use std::f32::consts::PI;
 use std::fmt::Write as _;
 
+pub mod phone;
+
 /// A point in the landscape's own coordinates: origin top left, y down, logical pixels.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Point {
@@ -348,38 +350,12 @@ impl Landscape {
 
     /// The far hill, a closed path.
     pub fn far_hill(&self) -> Vec<PathEl> {
-        self.hill(
-            self.far_top(),
-            [
-                (0.12, -6.0),
-                (0.22, 3.0),
-                (0.36, -2.0),
-                (0.50, -7.0),
-                (0.62, -8.0),
-                (0.74, -1.0),
-                (0.86, 6.0),
-                (0.93, 2.0),
-                (1.00, -4.0),
-            ],
-        )
+        self.hill(self.far_top(), phone::FAR_POINTS)
     }
 
     /// The near hill, a closed path.
     pub fn near_hill(&self) -> Vec<PathEl> {
-        self.hill(
-            self.near_top(),
-            [
-                (0.15, -5.0),
-                (0.30, 3.0),
-                (0.48, -1.0),
-                (0.66, -5.0),
-                (0.76, -5.0),
-                (0.90, 0.0),
-                (1.04, 5.0),
-                (0.98, 1.0),
-                (1.00, -2.0),
-            ],
-        )
+        self.hill(self.near_top(), phone::NEAR_POINTS)
     }
 
     /// Top of the horizon band drawn under the hills in the dark slim scene.

@@ -29,6 +29,7 @@ import app.todoornot.session.ThumbHand
 @Composable
 internal fun HistoryFrame(state: UiState, actions: Actions, room: RoomView, wide: Boolean,
     hand: ThumbHand, rooms: () -> Unit,
+    activitySummary: String? = null,
     footer: @Composable RowScope.(mirrored: Boolean) -> Unit,
     body: @Composable ColumnScope.(HeaderCollapse) -> Unit,
 ) {
@@ -45,7 +46,7 @@ internal fun HistoryFrame(state: UiState, actions: Actions, room: RoomView, wide
             } }
             header.reducedMotion = reduced
             Column(Modifier.fillMaxSize().navigationBarsPadding()) {
-                RoomHeader(room, (if (wide) p.LANDSCAPE_INNER else p.LANDSCAPE_COVER).dp, header, state.status) {}
+                RoomHeader(room, wide, header, state.status, activitySummary = activitySummary) {}
                 body(header)
                 state.failed.firstOrNull()?.let { f ->
                     Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }

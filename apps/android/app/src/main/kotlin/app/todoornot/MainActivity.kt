@@ -1,10 +1,12 @@
 package app.todoornot
 
 import android.Manifest
+import android.content.BroadcastReceiver
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -14,6 +16,11 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.derivedStateOf
+import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.LifecycleStartEffect
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.flow.first
@@ -166,17 +173,27 @@ class MainActivity : ComponentActivity() {
         val m = model
         val h = host
         val ready = h as? Host.Ready
+        val ui by m?.ui?.collectAsStateWithLifecycle() ?: remember { mutableStateOf(null) }
+        val nightHeader by remember(m, ui, wide) { derivedStateOf {
+            val s = ui ?: return@derivedStateOf false
+            if (s.activity != null || (!wide && s.detail != null)) return@derivedStateOf false
+            m?.motion?.dusk(s.room.key)?.nightInk ?: s.room.finished
+        } }
+        SideEffect {
+            WindowCompat.getInsetsController(window, window.decorView).isAppearanceLightStatusBars = !dark && !nightHeader
+        }
         app.todoornot.ui.AttachmentPickers(m?.takeIf { it.engine === ready?.engine }, ready?.session?.pairingId, graph::discardDocument) {
             when {
-                m != null -> {
-                    val ui by m.ui.collectAsStateWithLifecycle()
-                    val focus = composerRoom?.takeIf { it.first === m && it.second == ui.room.key && ui.activity == null }
+                m != null && ui != null -> {
+                    val screen = requireNotNull(ui)
+                    HeaderClock(m)
+                    val focus = composerRoom?.takeIf { it.first === m && it.second == screen.room.key && screen.activity == null }
                     CompositionLocalProvider(
                         LocalPairingOwner provides graph.devicePairing?.takeIf { m.engine === ready?.engine },
                         LocalScanPairing provides ::scanApproval,
                     ) {
                         MainScreen(
-                            ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
+                            screen, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
                             composerFocus = if (focus != null) ::clearComposerRequest else null,
                             hand = hand, onHand = { hand = it; thumbPreference.save(it) }, fold = fold,
                         )
@@ -192,6 +209,25 @@ class MainActivity : ComponentActivity() {
                     PairingScreen(state, pairingActions(graph.pairing), dark)
                 }
             }
+        }
+    }
+
+    @Composable
+    private fun HeaderClock(model: TodoModel) {
+        LifecycleStartEffect(model) {
+            val receiver = object : BroadcastReceiver() {
+                override fun onReceive(context: Context, intent: Intent) {
+                    lifecycleScope.launch { model.refreshHeaderClock(force = intent.action != Intent.ACTION_TIME_TICK) }
+                }
+            }
+            val events = IntentFilter().apply {
+                addAction(Intent.ACTION_TIME_TICK)
+                addAction(Intent.ACTION_TIME_CHANGED)
+                addAction(Intent.ACTION_TIMEZONE_CHANGED)
+            }
+            ContextCompat.registerReceiver(this@MainActivity, receiver, events, ContextCompat.RECEIVER_NOT_EXPORTED)
+            lifecycleScope.launch { model.refreshHeaderClock(force = true) }
+            onStopOrDispose { unregisterReceiver(receiver) }
         }
     }
 

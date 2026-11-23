@@ -128,6 +128,17 @@ data class UiState(
     val signedOut: Boolean get() = status.signedOut
 }
 
+/** Only rebuild the view at a relevant clock boundary (no idle sky animation). */
+internal fun UiState.headerClockChanged(now: LocalNow): Boolean {
+    val minutes = Math.floorDiv(now.epochMs + now.utcOffsetSecs * 1000L, 60_000L)
+    val minuteOfDay = Math.floorMod(minutes, 24L * 60L).toInt()
+    if (minuteOfDay / 60 != room.localHour.toInt() || isoDay(now) != today) return true
+    val next = room.nextDueToday ?: return false
+    val hour = next.substringBefore(':').toIntOrNull() ?: return false
+    val minute = next.substringAfter(':').toIntOrNull() ?: return false
+    return minuteOfDay >= hour * 60 + minute
+}
+
 data class TaskSwap(val serial: Long, val room: RoomKey, val rows: Set<String>)
 
 /**
@@ -462,6 +473,10 @@ class TodoModel(
      * choreography no longer keeps them. Every change to those inputs, and to the placement, starts a
      * refresh of its own, so the newer read follows.
      */
+    suspend fun refreshHeaderClock(force: Boolean = false) {
+        if (force || ui.value.headerClockChanged(now())) refresh()
+    }
+
     suspend fun refresh() {
         val generation = refreshes.incrementAndGet()
         val read = withContext(io) { snapshot() }

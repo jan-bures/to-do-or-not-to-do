@@ -1,108 +1,91 @@
 package app.todoornot.ui
 
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.hideFromAccessibility
-import androidx.compose.ui.semantics.semantics
-import app.todoornot.core.SyncState
-import app.todoornot.core.SyncStatus
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.ui.draw.drawBehind
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.Layout
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.isTraversalGroup
+import androidx.compose.ui.semantics.onClick
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.traversalIndex
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.constrainHeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import app.todoornot.core.Eyebrow
 import app.todoornot.core.RoomSummary
 import app.todoornot.core.RoomView
+import app.todoornot.core.SyncState
+import app.todoornot.core.SyncStatus
 import app.todoornot.design.Design
-import app.todoornot.design.Landscape
+import app.todoornot.design.HeaderPanorama
 import app.todoornot.design.LocalDesign
-import app.todoornot.design.Scene
+import app.todoornot.design.TextToken
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
+import app.todoornot.design.headerSky
 import app.todoornot.model.DuskLook
+import kotlin.math.roundToInt
 
 private val S = Tokens.Space
+private val P = Tokens.Metrics.Phone
+private val T = Tokens.Type
 
-/**
- * A room's header: the sky in the room's hue with the bar, the eyebrow, the title and the count, and the
- * landscape strip with the sun at done / total. When the day is finished the sky turns to dusk, and the
- * header is drawn in the dark palette so the text stays readable on it.
- *
- * Dusk falls when My Day's last task has left (`docs/design-language.md`, Motion, moment 2): the dusk sky
- * fades in over the room's, the landscape grows into the dusk scene, and the text switches to the night's
- * ink at its cue. Reopening a task lifts it again, more briskly.
- *
- * The compact read-only strip replaces the full scene as it collapses. It can disappear entirely
- * when the keyboard would otherwise leave too little room for tasks.
- */
+/** Read-only sky, with no controls. A stretched sky can be dismissed without dragging it back. */
 @Composable
 fun RoomHeader(
     room: RoomView,
-    landscape: Dp,
+    inner: Boolean,
     collapse: HeaderCollapse,
     status: SyncStatus,
-    compact: Dp = Tokens.Metrics.Phone.COMPACT_HEADER.dp,
+    compact: Dp = P.COMPACT_HEADER.dp,
+    selected: Boolean = false,
+    activitySummary: String? = null,
     onResetReach: () -> Unit,
 ) {
     val outer = LocalDesign.current
     val motion = LocalMotion.current
-    val dusk: () -> DuskLook = remember(room.key, room.finished, motion) {
+    val dusk = remember(room.key, room.finished, motion) {
         { motion.dusk(room.key) ?: DuskLook.rest(room.finished) }
     }
-    val sun: () -> Float? = remember(room.key, motion) { { motion.sun(room.key) } }
+    val target = if (room.total == 0u) 0f else room.done.toFloat() / room.total.toFloat()
+    val progress = remember(room.key, target, motion) { { (motion.sun(room.key) ?: target).coerceIn(0f, 1f) } }
     val nightInk by remember(dusk) { derivedStateOf { dusk().nightInk } }
-    TodoTheme(dark = outer.dark || nightInk, roomHue = outer.roomHue) {
-        HeaderBody(room, landscape, collapse, status, compact, onResetReach, outer, dusk, sun)
-    }
-}
-
-@Composable
-private fun HeaderBody(
-    room: RoomView,
-    landscape: Dp,
-    collapse: HeaderCollapse,
-    status: SyncStatus,
-    compact: Dp,
-    onResetReach: () -> Unit,
-    outer: Design,
-    dusk: () -> DuskLook,
-    sun: () -> Float?,
-) {
-    val d = LocalDesign.current
-    val r = d.room
-    // The room's sky, and the dusk sky fading in over it (read at draw time).
-    val daySky = outer.room.sky
-    val duskSky = Brush.verticalGradient(outer.dusk().let { listOf(it.top, it.low) })
-    val sky = Modifier.drawBehind {
-        val scene = dusk().scene
-        if (scene < 1f) drawRect(daySky)
-        if (scene > 0f) drawRect(duskSky, alpha = scene)
-    }
-    val density = LocalDensity.current
     val quiet = when {
         status.problem != null -> "Sync error"
         status.state == SyncState.OFFLINE && status.pending > 0u -> "Offline · ${status.pending}"
@@ -110,87 +93,211 @@ private fun HeaderBody(
         status.pending > 0u -> "${status.pending} pending"
         else -> null
     }
-    val stretched = collapse.reach > 0f && collapse.forced == 0f
-    Column(sky.fillMaxWidth().statusBarsPadding().then(if (stretched) Modifier.clickable(
-        remember { MutableInteractionSource() }, indication = null, onClickLabel = "Reset header reach", onClick = onResetReach,
-    ) else Modifier)) {
-        if (stretched) Spacer(Modifier.height(with(density) { collapse.reach.toDp() }))
-        Box(Modifier.fillMaxWidth()) {
-            Column(Modifier.collapsing(collapse, with(density) { compact.roundToPx() }).semantics {
-                if (collapse.fraction > 0.5f) hideFromAccessibility()
-            }) {
-                Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, top = S.S2.dp, bottom = S.S1.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(Modifier.weight(1f)) { EyebrowLine(room.eyebrow) }
-                        quiet?.let { Label(it, Tokens.Type.SUMMARY_FIGURES, r.ink2) }
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                        Label(room.title, Tokens.Type.ROOM_TITLE_PHONE, r.ink, Modifier.weight(1f).padding(end = S.S3.dp))
-                        Summary(room, Modifier.padding(bottom = S.S2.dp))
-                    }
+    val reset by rememberUpdatedState(onResetReach)
+    TodoTheme(dark = outer.dark || nightInk, roomHue = outer.roomHue) {
+        val textDesign = LocalDesign.current
+        val restScene = if (inner) P.HEADER_SCENE_INNER else P.HEADER_SCENE_COVER
+        Layout(
+            modifier = Modifier.fillMaxWidth()
+                .headerSky(outer, room.localHour.toInt(), collapse, dusk, restScene)
+                .hairline(textDesign.room.line)
+                .statusBarsPadding()
+                .clipToBounds()
+                .semantics {
+                    if (collapse.visibleReach > 0f) onClick("Return header to rest") { reset(); true }
                 }
-                Landscape(Scene(room.done.toInt(), room.total.toInt(), room.finished), landscape, design = outer, sun = sun, dusk = dusk)
-            }
-            if (compact > 0.dp) Row(
-                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(compact)
-                    .clearAndSetSemantics {
-                        if (collapse.fraction <= 0.5f) hideFromAccessibility()
-                        else contentDescription = buildString {
-                            append(room.title)
-                            if (room.total > 0u) append(", ${room.done} of ${room.total} done")
-                            quiet?.let { append(", $it") }
+                .pointerInput(collapse) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        if (collapse.visibleReach > 0f) {
+                            val up = waitForUpOrCancellation()
+                            if (up != null) { up.consume(); reset() }
                         }
                     }
-                    .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) }
-                    .then(sky).hairline(r.line).padding(horizontal = S.S5.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
-            ) {
-                Label(room.title, Tokens.Type.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f))
-                if (room.total > 0u) {
-                    if (room.done > 0u) Box(Modifier.size(Tokens.Radius.LG.dp).background(r.sunInk, CircleShape))
-                    Label("${room.done}/${room.total}", Tokens.Type.SUMMARY_FIGURES, r.ink2)
-                }
-                quiet?.let { Label(it, Tokens.Type.SUMMARY_FIGURES, r.ink2) }
+                },
+            content = {
+                HeaderPanorama(outer, room.localHour.toInt(), inner, collapse, room.total > 0u, progress, dusk)
+                HeaderText(room, activitySummary, quiet, collapse)
+                CompactHeader(room, quiet, compact, selected, collapse, progress, dusk, textDesign)
+            },
+        ) { (scene, text, bar), constraints ->
+            val width = constraints.maxWidth
+            val readable = Constraints.fixedWidth(width)
+            val textPlaceable = text.measure(readable)
+            val look = dusk()
+            val sceneRest = (restScene + (Tokens.Landscape.HEIGHT_FINISHED - restScene) * look.height).dp.toPx()
+            val base = textPlaceable.height + sceneRest.roundToInt()
+            val compactPx = compact.roundToPx().coerceAtMost(constraints.maxHeight)
+            if (collapse.compact != compactPx) collapse.compact = compactPx
+            if (collapse.body != base) collapse.body = base
+            val reachTop = collapse.reachToText.roundToInt()
+            val reachTotal = collapse.visibleReach.roundToInt()
+            val scenePx = (sceneRest.roundToInt() + reachTotal - reachTop).coerceAtLeast(0)
+            val height = constraints.constrainHeight(base - collapse.hidden.roundToInt() + reachTotal)
+            val landscape = scene.measure(Constraints.fixed(width, scenePx))
+            val compactPlaceable = bar.measure(Constraints.fixed(width, compactPx))
+            layout(width, height) {
+                if (collapse.fraction < 0.70f) landscape.place(0, height - scenePx)
+                if (collapse.fraction < 0.55f) textPlaceable.placeRelative(0, reachTop)
+                if (compactPx > 0 && collapse.fraction >= 0.5f) compactPlaceable.placeRelative(0, height - compactPx)
             }
         }
     }
+}
+
+@Composable
+private fun HeaderText(room: RoomView, activitySummary: String?, quiet: String?, collapse: HeaderCollapse) {
+    val r = LocalDesign.current.room
+    fun Modifier.detailMotion() = graphicsLayer {
+        val fade = HeaderChoreography.detail(collapse.fraction)
+        alpha = 1f - fade
+        translationY = if (collapse.reducedMotion) 0f else -S.S2.dp.toPx() * fade
+    }
+    Column(
+        Modifier.fillMaxWidth()
+            .semantics {
+                isTraversalGroup = true
+                if (collapse.fraction > 0.5f) hideFromAccessibility()
+            }
+            .padding(start = S.S5.dp, end = S.S5.dp, top = S.S3.dp, bottom = S.S2.dp),
+        verticalArrangement = Arrangement.spacedBy(S.S1.dp),
+    ) {
+        Row(
+            Modifier.fillMaxWidth().heightIn(min = S.S5.dp).detailMotion(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+        ) {
+            Box(Modifier.weight(1f).semantics(mergeDescendants = true) { traversalIndex = 0f }) { EyebrowLine(room.eyebrow) }
+            quiet?.let { Label(it, T.SUMMARY_FIGURES, r.ink2, Modifier.semantics { traversalIndex = 4f }) }
+        }
+        Box(Modifier.fillMaxWidth().heightIn(min = T.ROOM_TITLE_PHONE.lineHeight.dp).graphicsLayer {
+            val fade = HeaderChoreography.title(collapse.fraction)
+            alpha = 1f - fade
+            translationY = if (collapse.reducedMotion) 0f else -S.S3.dp.toPx() * fade
+        }, contentAlignment = Alignment.CenterStart) {
+            HeaderTitle(room.title, T.ROOM_TITLE_PHONE, r.ink, Modifier.semantics { heading(); traversalIndex = 1f })
+        }
+        FlowRow(
+            Modifier.fillMaxWidth().heightIn(min = S.S5.dp).detailMotion(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalArrangement = Arrangement.spacedBy(S.S1.dp),
+            itemVerticalAlignment = Alignment.CenterVertically,
+            maxItemsInEachRow = if (LocalDensity.current.fontScale >= 1.3f) 1 else 2,
+        ) {
+            val hasCue = room.overdueCount > 0u || room.nextDueToday != null
+            val summary = Modifier.then(if (hasCue) Modifier.padding(end = S.S2.dp) else Modifier)
+            if (activitySummary != null) {
+                Label(activitySummary, T.SUMMARY_FIGURES, r.ink2, summary.semantics { traversalIndex = 2f })
+            } else if (room.summary != RoomSummary.None) {
+                Summary(room, summary.clearAndSetSemantics { contentDescription = room.summaryText; traversalIndex = 2f })
+            }
+            if (room.overdueCount > 0u) {
+                OverdueBadge("${room.overdueCount} overdue", Modifier.clearAndSetSemantics {
+                    contentDescription = "${room.overdueCount} overdue"
+                    traversalIndex = 3f
+                })
+            } else room.nextDueToday?.let { time ->
+                Label("Next · $time", T.SUMMARY_FIGURES, r.accentStrong, Modifier.clearAndSetSemantics {
+                    contentDescription = "Next due at $time"
+                    traversalIndex = 3f
+                }, weight = T.ROOM_TITLE_PHONE.weight)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CompactHeader(
+    room: RoomView, quiet: String?, height: Dp, selected: Boolean, collapse: HeaderCollapse,
+    progress: () -> Float, dusk: () -> DuskLook, design: Design,
+) {
+    val r = design.room
+    Row(
+        Modifier.fillMaxWidth().clipToBounds()
+            .clearAndSetSemantics {
+                if (collapse.fraction <= 0.5f || height == 0.dp) hideFromAccessibility()
+                else {
+                    heading()
+                    contentDescription = buildString {
+                        append(room.title)
+                        if (room.total > 0u) append(", ${room.done} of ${room.total} done")
+                        if (room.overdueCount > 0u) append(", ${room.overdueCount} overdue")
+                        quiet?.let { append(", $it") }
+                    }
+                }
+            }
+            .graphicsLayer { alpha = HeaderChoreography.compact(collapse.fraction) }
+            .drawBehind {
+                drawRect(if (dusk().nightInk) design.dusk().top else if (selected) r.selectionWash else r.sky)
+                if (room.total > 0u) {
+                    val h = P.COMPACT_PROGRESS_HEIGHT.dp.toPx()
+                    val at = Offset(0f, size.height - h - Tokens.Elevation.HAIRLINE.dp.toPx())
+                    drawRect(r.arc.copy(alpha = 0.30f), at, Size(size.width, h))
+                    val travelled = size.width * progress()
+                    if (travelled > 0f) drawRect(r.sunInk, at, Size(travelled, h))
+                }
+            }
+            .padding(horizontal = S.S5.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+    ) {
+        HeaderTitle(room.title, T.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f))
+        if (room.overdueCount > 0u) {
+            Label("◆ ${room.overdueCount}", T.SUMMARY_FIGURES, r.dangerInk, weight = T.ROOM_TITLE_PHONE.weight)
+        }
+        if (room.total > 0u) {
+            Canvas(Modifier.size(S.S2.dp)) {
+                val stroke = Tokens.Landscape.TRAVELLED_STROKE.dp.toPx()
+                if (room.done == 0u) drawCircle(r.sunInk, (size.minDimension - stroke) / 2f, style = Stroke(stroke))
+                else drawCircle(if (design.dark) r.sun else r.sunInk)
+            }
+            Label("${room.done}/${room.total}", T.SUMMARY_FIGURES, r.ink2)
+        }
+        quiet?.let { Label(it, T.SUMMARY_FIGURES, r.ink2) }
+    }
+}
+
+@Composable
+private fun HeaderTitle(title: String, token: TextToken, color: Color, modifier: Modifier) {
+    // Centre the taller font box in the optical line without clipping accents or descenders. The
+    // slot grows with sp, unlike a fixed-height box, so large-text settings keep the full glyphs.
+    Label(title, token, color, modifier.layout { text, constraints ->
+        val p = text.measure(constraints.copy(minHeight = 0, maxHeight = Constraints.Infinity))
+        val line = constraints.constrainHeight(token.lineHeight.sp.roundToPx())
+        layout(p.width, line) { p.placeRelative(0, (line - p.height) / 2) }
+    })
 }
 
 @Composable
 private fun EyebrowLine(e: Eyebrow) {
     val r = LocalDesign.current.room
-    Row(
-        Modifier.heightIn(min = Tokens.Type.EYEBROW_DAY_PHONE.lineHeight.dp),
-        verticalAlignment = Alignment.CenterVertically,
+    FlowRow(
+        Modifier.heightIn(min = T.EYEBROW_DAY_PHONE.lineHeight.dp),
         horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+        itemVerticalAlignment = Alignment.CenterVertically,
     ) {
         when (e) {
             is Eyebrow.Day -> {
-                Label(e.weekday, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
-                Label(e.date, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
+                Label(e.weekday, T.EYEBROW_DAY_PHONE, r.accentStrong)
+                Label(e.date, T.EYEBROW_META_PHONE, r.ink3)
                 Box(Modifier.size(Tokens.Elevation.HAIRLINE.dp, Micro.eyebrowBar).background(r.lineStrong))
-                Label(e.week, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
+                Label(e.week, T.EYEBROW_META_PHONE, r.ink3)
             }
             is Eyebrow.Kind -> {
-                Label(e.kind, Tokens.Type.EYEBROW_DAY_PHONE, r.accentStrong)
-                Label(e.detail, Tokens.Type.EYEBROW_META_PHONE, r.ink3)
+                Label(e.kind, T.EYEBROW_DAY_PHONE, r.accentStrong)
+                Label(e.detail, T.EYEBROW_META_PHONE, r.ink3)
             }
         }
     }
 }
 
-/**
- * The summary beside the sun, as every client words it (`todo_client::room_header`): "3 of 12 done · 9 open",
- * "12 of 12 done · all clear" for the finished day, "12 done" in Completed, and "2 finished this month" or
- * "nothing yet" for an empty room.
- */
+/** The shared summary, with its figures in mono but announced as one line. */
 @Composable
-private fun Summary(room: RoomView, modifier: Modifier = Modifier) {
+private fun Summary(room: RoomView, modifier: Modifier) {
     val r = LocalDesign.current.room
-    val figures = Tokens.Type.SUMMARY_FIGURES
-    val words = Tokens.Type.SUMMARY
-    val bold = Tokens.Type.BUTTON.weight
+    val figures = T.SUMMARY_FIGURES
+    val words = T.SUMMARY
+    val bold = T.BUTTON.weight
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
         @Composable
         fun doneOf(done: UInt, total: UInt) {
@@ -202,13 +309,12 @@ private fun Summary(room: RoomView, modifier: Modifier = Modifier) {
         }
         when (val s = room.summary) {
             RoomSummary.None -> Unit
-            is RoomSummary.Empty ->
-                if (s.finishedThisMonth > 0u) {
-                    Label("${s.finishedThisMonth}", figures, r.ink, weight = bold)
-                    Label("finished this month", words, r.ink2)
-                } else {
-                    Label("nothing yet", words, r.ink2)
-                }
+            is RoomSummary.Empty -> if (s.finishedThisMonth > 0u) {
+                Label("${s.finishedThisMonth}", figures, r.ink, weight = bold)
+                Label("finished this month", words, r.ink2)
+            } else {
+                Label("nothing yet", words, r.ink2)
+            }
             is RoomSummary.Done -> {
                 Label("${s.done}", figures, r.accentStrong, weight = bold)
                 Label("done", words, r.ink2)

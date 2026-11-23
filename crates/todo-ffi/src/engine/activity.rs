@@ -21,6 +21,8 @@ pub struct ActivityRow {
 pub struct ActivityDay {
     pub heading: String,
     pub rows: Vec<ActivityRow>,
+    /// Whether this group is on the owner's current local date.
+    pub is_today: bool,
 }
 #[derive(Debug, uniffi::Record)]
 pub struct ActivityView {
@@ -233,6 +235,7 @@ impl TodoEngine {
             .into_iter()
             .map(|(day, seqs)| ActivityDay {
                 heading: activity::day_label(day, now.today()),
+                is_today: day == now.today(),
                 rows: seqs
                     .into_iter()
                     .filter_map(|seq| feed.entry(seq))

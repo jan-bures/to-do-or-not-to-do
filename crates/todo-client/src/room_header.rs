@@ -196,6 +196,69 @@ impl LocalTime {
     }
 }
 
+/// Read-only urgency beside a room's progress. A room shows at most one cue.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GlanceCue {
+    /// Open tasks whose due date has passed.
+    pub overdue_count: u32,
+    /// Earliest upcoming local time today, formatted as `HH:MM`.
+    pub next_due_today: Option<String>,
+    /// Local hour (0–23) for the sky's ambient details.
+    pub local_hour: u8,
+}
+
+/// Derive urgency from the whole room, before an on-screen filter narrows its rows.
+/// A due date has no time of its own: as on task rows, a live reminder on the due date supplies it.
+#[must_use]
+pub fn glance_cue(
+    state: &State,
+    key: RoomKey<'_>,
+    tasks: &RoomTasks<'_>,
+    now: &LocalTime,
+) -> GlanceCue {
+    let mut cue = GlanceCue {
+        local_hour: now.civil_time_at(now.at).hour().cast_unsigned(),
+        ..GlanceCue::default()
+    };
+    if key.is_history()
+        || matches!(
+            key,
+            RoomKey::Smart(SmartList::Completed | SmartList::AgentActivity)
+        )
+    {
+        return cue;
+    }
+    let today = now.today();
+    let mut due_today = BTreeSet::new();
+    for task in &tasks.open {
+        match task.due {
+            Some(due) if due < today => cue.overdue_count = cue.overdue_count.saturating_add(1),
+            Some(due) if due == today => {
+                due_today.insert(task.id);
+            }
+            _ => {}
+        }
+    }
+    if cue.overdue_count == 0 && !due_today.is_empty() {
+        cue.next_due_today = state
+            .reminders
+            .values()
+            .filter(|r| {
+                r.deleted.is_none()
+                    && r.at >= now.at
+                    && due_today.contains(&r.task)
+                    && now.date_of(r.at) == today
+            })
+            .map(|r| r.at)
+            .min()
+            .map(|at| {
+                let time = now.civil_time_at(at);
+                format!("{:02}:{:02}", time.hour(), time.minute())
+            });
+    }
+    cue
+}
+
 /// My Day's raw (done, total) progress for a surface with no rows or completion choreography.
 /// No queries, sorting, or allocation are needed to count the whole plan.
 #[must_use]
