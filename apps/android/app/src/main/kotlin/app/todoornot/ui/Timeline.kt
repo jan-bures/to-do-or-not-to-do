@@ -31,7 +31,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -77,7 +76,6 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import app.todoornot.core.Chip
 import app.todoornot.core.DateStyle
 import app.todoornot.core.LocalNow
 import app.todoornot.core.RoomKey
@@ -298,7 +296,7 @@ internal fun TimelineBody(state: UiState, actions: Actions, blocked: Boolean, sh
                     Column(Modifier.fillMaxSize()) {
                         val rulerHeight = if (cover && (zoom == TimelineZoom.WEEK || zoom == TimelineZoom.TWO_WEEKS)) {
                             with(density) { (Tokens.Type.COUNT.lineHeight * 2 + Tokens.Type.CAPS_LABEL.lineHeight).sp.toDp() } +
-                                S.S2.dp + T.TODAY_DOT.dp
+                                S.S3.dp
                         } else P.TOUCH.dp
                         Row(Modifier.fillMaxWidth().height(rulerHeight).background(r.canvas).hairline(r.line),
                             verticalAlignment = Alignment.CenterVertically) {
@@ -505,7 +503,7 @@ private fun CoverRuler(columns: List<TimelineColumn>, offset: Float, dayWidth: D
     zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier, useFullDates: Boolean,
 ) {
     if (zoom == TimelineZoom.MONTH || zoom == TimelineZoom.QUARTER) {
-        Ruler(columns, offset, dayWidth, grid, zoom, today, labelWidth, modifier, todayDot = true)
+        Ruler(columns, offset, dayWidth, grid, zoom, today, labelWidth, modifier)
         return
     }
     val r = LocalDesign.current.room
@@ -531,19 +529,24 @@ private fun CoverRuler(columns: List<TimelineColumn>, offset: Float, dayWidth: D
                     val date = if (useFullDates && dayWidth >= labelWidth) col.label else col.dayNumber
                     Label(date, Tokens.Type.COUNT, if (current) r.accentStrong else r.ink, weight = Tokens.Type.BUTTON.weight)
                 }
-                if (current) Box(Modifier.align(Alignment.BottomCenter).size(T.TODAY_DOT.dp).background(r.accentStrong, CircleShape))
+                if (current) TodayRulerTick(Modifier.align(Alignment.BottomCenter))
             }
         }
     }
 }
 
 @Composable
+private fun TodayRulerTick(modifier: Modifier) {
+    Box(modifier.width(T.TODAY_LINE.dp).height(S.S1.dp).background(LocalDesign.current.room.accentStrong))
+}
+
+@Composable
 private fun Ruler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, grid: Dp,
-    zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier, todayDot: Boolean = false,
+    zoom: TimelineZoom, today: String, labelWidth: Dp, modifier: Modifier,
 ) {
     val r = LocalDesign.current.room
     Box(modifier) {
-        GridLines(columns, offset, dayWidth, null, todayLine = !todayDot)
+        GridLines(columns, offset, dayWidth, null)
         val weekly = zoom == TimelineZoom.MONTH || zoom == TimelineZoom.QUARTER
         columns.forEachIndexed { i, col ->
             val show = !weekly || i == 0 || columns[i - 1].week != col.week
@@ -564,14 +567,11 @@ private fun Ruler(columns: List<TimelineColumn>, offset: Float, dayWidth: Dp, gr
         val todayX = dayWidth * (0.5f - offset)
         if (todayX in 0.dp..grid && labelWidth <= grid) {
             Box(Modifier.align(if (weekly) Alignment.BottomStart else Alignment.TopStart)
-                .offset(x = (todayX - labelWidth / 2).coerceIn(0.dp, grid - labelWidth)).width(labelWidth)
-                .padding(bottom = if (todayDot) T.TODAY_DOT.dp else 0.dp),
+                .offset(x = (todayX - labelWidth / 2).coerceIn(0.dp, grid - labelWidth)).width(labelWidth),
                 contentAlignment = Alignment.Center) {
                 Label(today, Tokens.Type.META_PHONE, r.accentStrong, Modifier.background(r.tint).padding(S.S1.dp)
                     .semantics { contentDescription = "Today, $today" })
             }
-            if (todayDot) Box(Modifier.align(Alignment.BottomStart).offset(x = todayX - T.TODAY_DOT.dp / 2)
-                .size(T.TODAY_DOT.dp).background(r.accentStrong, CircleShape))
         }
     }
 }
@@ -632,9 +632,9 @@ private fun Lane(
             else if (done || !railOpen) Icon(if (done) "check" else "calendar", r.ink3, size = C.ICON_SMALL.dp)
             if (railOpen) Column(Modifier.weight(1f)) {
                 Label(task.title, Tokens.Type.BUTTON_SMALL, r.ink, decoration = if (done) TextDecoration.LineThrough else null)
-                if (overdueLabel != null) Label(overdueLabel, Tokens.Type.META_PHONE, r.dangerInk)
+                if (overdueLabel != null) OverdueBadge(overdueLabel)
                 else if (chip == null) Label(painted.label, Tokens.Type.META_PHONE, r.ink2)
-                else TimelineListPill(chip)
+                else ListChip(chip)
             }
         }
         Box(Modifier.weight(1f).fillMaxHeight().clipToBounds()) {
@@ -674,8 +674,9 @@ private fun Lane(
                 val startRadius = if (startVisible) Tokens.Radius.MD.dp else 0.dp
                 val endRadius = if (endVisible) Tokens.Radius.MD.dp else 0.dp
                 val shape = RoundedCornerShape(topStart = startRadius, bottomStart = startRadius, topEnd = endRadius, bottomEnd = endRadius)
-                val marker = overdue || painted.bar == TimelineBar.MILESTONE
-                val railMark = !marker && (inProgress || list != null) && startVisible && width >= S.S8.dp
+                val milestone = painted.bar == TimelineBar.MILESTONE
+                val marker = milestone && !overdue
+                val railMark = !overdue && !milestone && (inProgress || list != null) && startVisible && width >= S.S8.dp
                 val showStartGrip = startGrip && startVisible
                 val showEndGrip = endGrip && endVisible
                 val pad = if (marker && width < C.ICON_SMALL.dp + S.S2.dp) 0.dp else S.S1.dp
@@ -689,7 +690,7 @@ private fun Lane(
                 val space = maxOf(after, before)
                 val markerWidth = if (marker) C.ICON_SMALL.dp + S.S1.dp else 0.dp
                 val suffixFitsBeside = overdueSuffix != null && space >= suffixWidth + S.S3.dp
-                val titleInside = cover && (!marker || width >= T.INLINE_LABEL_MIN.dp) &&
+                val titleInside = cover && (!milestone || width >= T.INLINE_LABEL_MIN.dp) &&
                     (inner - markerWidth >= titleWidth || inner - markerWidth >= maxOf(space, P.TOUCH.dp)) &&
                     (!suffixFitsBeside || inner - markerWidth >= metaWidth + minOf(titleWidth, T.INLINE_LABEL_MIN.dp) + S.S2.dp)
                 val metaInside = titleInside && inner - markerWidth >= metaWidth + S.S2.dp + minOf(titleWidth, T.INLINE_LABEL_MIN.dp)
@@ -702,9 +703,7 @@ private fun Lane(
                     .padding(start = padStart, end = padEnd), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = if (marker && !titleInside && (cover || width < T.INLINE_LABEL_MIN.dp))
                         Arrangement.Center else Arrangement.spacedBy(S.S1.dp)) {
-                    if (overdue) OverdueDiamond(ink, inner)
-                    else if (painted.bar == TimelineBar.MILESTONE && inner >= C.ICON_SMALL.dp)
-                        Icon("flag", color, size = C.ICON_SMALL.dp)
+                    if (marker && inner >= C.ICON_SMALL.dp) Icon("flag", color, size = C.ICON_SMALL.dp)
                     if (titleInside) {
                         Label(task.title, Tokens.Type.BUTTON, ink, Modifier.weight(1f),
                             decoration = TextDecoration.LineThrough.takeIf { done })
@@ -730,7 +729,7 @@ private fun Lane(
                                     Modifier.weight(1f, fill = false), decoration = TextDecoration.LineThrough.takeIf { done })
                                 if (suffixFitsBeside) Label(overdueSuffix, Tokens.Type.META_PHONE, ink)
                             }
-                            if (cover && chip != null) TimelineListPill(chip)
+                            if (cover && chip != null) ListChip(chip)
                         }
                     }
                 }
@@ -756,27 +755,6 @@ private fun Lane(
             }
         }
     }
-}
-
-@Composable
-private fun OverdueDiamond(ink: Color, width: Dp) {
-    if (width > 0.dp) Canvas(Modifier.size(minOf(S.S2.dp, width))) {
-        val diamond = androidx.compose.ui.graphics.Path().apply {
-            moveTo(center.x, 0f)
-            lineTo(size.width, center.y)
-            lineTo(center.x, size.height)
-            lineTo(0f, center.y)
-            close()
-        }
-        drawPath(diamond, ink)
-    }
-}
-
-@Composable
-private fun TimelineListPill(chip: Chip) {
-    val list = LocalDesign.current.list(chip.hue)
-    Label(chip.label, Tokens.Type.CHIP, list.ink, Modifier.heightIn(min = C.CHIP.dp)
-        .background(list.tint, RoundedCornerShape(Tokens.Radius.CHIP.dp)).padding(horizontal = C.CHIP_PAD_X.dp))
 }
 
 private fun Modifier.openEnd(fill: Color, ink: Color) = drawWithContent {
@@ -819,7 +797,7 @@ private fun UnscheduledTray(tasks: List<TimelineTask>, enabled: Boolean, events:
                             horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                             Icon("grip-vertical", r.ink3, size = C.ICON_SMALL.dp)
                             Label(task.title, Tokens.Type.BUTTON_SMALL, r.ink, Modifier.weight(1f, fill = false))
-                            task.chip?.let { TimelineListPill(it) }
+                            task.chip?.let { ListChip(it) }
                         }
                         TimelineButton("Schedule", enabled = enabled, description = "Schedule ${task.title}") { schedule(task) }
                     }
