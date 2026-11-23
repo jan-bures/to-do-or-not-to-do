@@ -760,6 +760,30 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         self.with(|s| f(s.replica.confirmed()))
     }
 
+    /// Pin the assistant's confirmed state, epoch and cursor together, without optimistic edits.
+    /// An already caught-up replica remains useful for reads while offline, marked stale.
+    #[cfg(feature = "assistant")]
+    #[must_use]
+    pub fn assistant_snapshot(&self) -> Option<crate::assistant::ConfirmedSnapshot> {
+        use crate::assistant::{ConfirmedSnapshot, Revision};
+        self.with(|s| {
+            if self.inner.revocation.is_revoked()
+                || s.resync_requested
+                || s.readiness != Readiness::CaughtUp
+            {
+                return None;
+            }
+            Some(ConfirmedSnapshot {
+                revision: Revision {
+                    epoch: s.replica.epoch()?,
+                    cursor: s.replica.cursor(),
+                },
+                state: Arc::new(s.replica.confirmed().clone()),
+                stale: !s.caught_up,
+            })
+        })
+    }
+
     /// The last confirmed sequence number.
     #[must_use]
     pub fn cursor(&self) -> u64 {

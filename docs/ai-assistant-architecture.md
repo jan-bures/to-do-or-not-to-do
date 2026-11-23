@@ -340,6 +340,14 @@ BYOK can be added for providers that support it, with scoped keys, where the own
 
 Each row is a separate PR; keep incomplete paths behind a disabled feature until their tests pass.
 
+The controller lives behind `todo-client`'s opt-in `assistant` feature. A host captures the
+confirmed replica with `SyncClient::assistant_snapshot`, feeds sync changes to `Controller`, and
+runs the future returned by a deliberate `start`. Model adapters supply normalized round events;
+`RoundDecoder` can frame SSE or buffered JSON without owning a transport. A framed successful
+`finish_reason` can complete a round on clean EOF without `[DONE]`; EOF without positive completion
+cannot freeze a draft. Proposal cards use simulated core effects, not streamed prose. The approval
+method is a non-writing stub until PR 3, and v1 does not advertise destructive tools.
+
 | PR | Scope and release tests |
 |---|---|
 | 1. Tool contract | Extract typed descriptors/mappers and scope-aware local read projection. Keep MCP behaviour identical. Snapshot discovery/input schema and error cases, compare command conversion and read/query semantics with REST, test hidden IDs, derived counts and excluded references. Check wasm32 and aarch64 Android without native-only dependencies. |

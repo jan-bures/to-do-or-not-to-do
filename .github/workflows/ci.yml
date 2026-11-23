@@ -107,8 +107,8 @@ jobs:
       - name: Install pinned toolchain
         run: rustup show active-toolchain || rustup toolchain install
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-      - run: cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --locked --target wasm32-unknown-unknown
-      - run: cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --locked --target aarch64-linux-android
+      - run: cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --features todo-client/assistant --locked --target wasm32-unknown-unknown
+      - run: cargo check -p todo-core -p todo-client -p todo-design -p todo-tools --features todo-client/assistant --locked --target aarch64-linux-android
 
   deploy-scripts:
     name: deploy scripts (shellcheck, install and recovery, systemd units)

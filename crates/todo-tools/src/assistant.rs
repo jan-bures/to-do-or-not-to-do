@@ -85,6 +85,11 @@ impl<A: JsonSchema + DeserializeOwned> Tool<A> {
                 "The visible list to propose creating it in. Omit to use the visible Inbox if available."
             );
         }
+        if let Some(due) = schema.get_mut("properties").and_then(|p| p.get_mut("due")) {
+            due["description"] = json!(
+                "Due date: YYYY-MM-DD, today, tomorrow, yesterday or a day offset such as +3d. Relative dates use the owner's local date. For update_task, null clears the date."
+            );
+        }
         if let Some(completed) = schema
             .get_mut("properties")
             .and_then(|p| p.get_mut("completed"))

@@ -32,6 +32,7 @@
 //!
 //! # Features
 //!
+//! - `assistant`: portable in-memory chat controller and proposal preview; no provider or writes.
 //! - `native`: tokio + reqwest (rustls with *ring*) implementations of the platform traits, for the
 //!   desktop app and tests.
 //! - `sqlite`: a bundled-SQLite [`Storage`] (implies `native`).
@@ -41,6 +42,8 @@
 #![cfg_attr(test, allow(clippy::unwrap_used))]
 
 pub mod activity;
+#[cfg(feature = "assistant")]
+pub mod assistant;
 pub mod board;
 pub mod client;
 pub mod device_pairing;

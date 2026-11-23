@@ -1223,9 +1223,35 @@ pub fn decide(
     command: &Command,
     now: Timestamp,
 ) -> Result<Vec<Event>, DomainError> {
+    decide_inner(state, actor, command, now, None)
+}
+
+/// Like [`decide`], with an additional host-supplied event ID namespace. Use distinct seeds for
+/// commands within an atomic batch, so repeating the same command after an intervening change at
+/// the same timestamp cannot reuse event IDs. Retrying with the same seed is deterministic.
+pub fn decide_seeded(
+    state: &State,
+    actor: &Actor,
+    command: &Command,
+    now: Timestamp,
+    seed: &str,
+) -> Result<Vec<Event>, DomainError> {
+    decide_inner(state, actor, command, now, Some(seed))
+}
+
+fn decide_inner(
+    state: &State,
+    actor: &Actor,
+    command: &Command,
+    now: Timestamp,
+    namespace: Option<&str>,
+) -> Result<Vec<Event>, DomainError> {
     check_limits(command)?;
     authorize(state, actor, command)?;
-    let seed = format!("{actor:?}|{command:?}");
+    let seed = match namespace {
+        Some(namespace) => format!("batch|{namespace:?}|{actor:?}|{command:?}"),
+        None => format!("{actor:?}|{command:?}"),
+    };
     let mut events = if let Command::BulkTasks { tasks, action } = command {
         if let BulkTaskAction::Reorder { list, placement } = action {
             // Never relocate a partial group if one of its tasks moved or completed meanwhile.

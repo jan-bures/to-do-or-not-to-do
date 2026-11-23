@@ -102,6 +102,12 @@ impl SseParser {
         Ok(out)
     }
 
+    /// Whether there are no undispatched bytes in the current SSE frame.
+    #[cfg(feature = "assistant")]
+    pub(crate) fn at_frame_boundary(&self) -> bool {
+        self.frame_bytes == 0 && !self.has_data
+    }
+
     fn end_line(&mut self, out: &mut Vec<SseFrame>) {
         let line = std::mem::take(&mut self.line);
         let line = String::from_utf8_lossy(&line);

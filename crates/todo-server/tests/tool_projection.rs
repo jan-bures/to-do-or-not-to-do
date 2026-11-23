@@ -186,6 +186,13 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
     server
         .ok(json!({"cmd":"create_step","id":step,"task":live,"title":"Visiblecheck"}))
         .await;
+    let deleted_step = id();
+    server
+        .ok(json!({"cmd":"create_step","id":deleted_step,"task":live,"title":"Removedcheck"}))
+        .await;
+    server
+        .ok(json!({"cmd":"delete","id":{"kind":"step","id":deleted_step}}))
+        .await;
     let link = id();
     server.ok(json!({"cmd":"add_link","id":link,"task":live,"kind":{"type":"web","url":"https://example.com","title":"Private link"}})).await;
     let deleted = server.create_task(&inbox, "Deleted", json!({})).await;
@@ -193,10 +200,31 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
         .ok(json!({"cmd":"delete","id":{"kind":"task","id":deleted}}))
         .await;
 
+    let deleted_collection = id();
+    server
+        .ok(json!({"cmd":"create_collection","id":deleted_collection,"name":"Removed Collection"}))
+        .await;
+    let opted_in = id();
+    server
+        .ok(json!({"cmd":"create_list","id":opted_in,"name":"Opted In","collection":deleted_collection}))
+        .await;
+    let buried = server
+        .create_task(&opted_in, "Buriedtitle", json!({}))
+        .await;
+    let buried_done = server.create_task(&opted_in, "Burieddone", json!({})).await;
+    server
+        .ok(json!({"cmd":"complete_task","id":buried_done}))
+        .await;
+    server
+        .ok(json!({"cmd":"delete","id":{"kind":"collection","id":deleted_collection}}))
+        .await;
+
     let live_id = live.parse().unwrap();
     let hidden_task_id = hidden_task.parse().unwrap();
-    let allowed = BTreeSet::from([inbox.parse::<ListId>().unwrap()]);
+    let opted_in_id = opted_in.parse::<ListId>().unwrap();
+    let allowed = BTreeSet::from([inbox.parse::<ListId>().unwrap(), opted_in_id]);
     let state = server.server.engine.state();
+    assert!(state.lists[&opted_in_id].deleted.is_none());
     let mut state_with_ref = (*state).clone();
     // A reference on a visible row must not disclose its destination in another list.
     state_with_ref.tasks.get_mut(&live_id).unwrap().merged_into = Some(hidden_task_id);
@@ -213,6 +241,7 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
             .unwrap()
     };
     let detail = json!(read.get_task(&get(&live)).unwrap());
+    assert_eq!(detail["steps"].as_array().unwrap().len(), 1);
     assert_eq!(detail["steps"][0]["title"], "Visiblecheck");
     for field in ["notes", "merged_into", "links", "reminders", "attachments"] {
         assert!(detail.get(field).is_none());
@@ -221,6 +250,9 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
     let lists = json!(read.list_lists(&Default::default()).unwrap());
     assert_eq!(ids(&lists), [&inbox]);
     assert_eq!(lists["items"][0]["open_count"], 1);
+    assert_eq!(lists["items"][0]["completed_count"], 0);
+    assert!(!read.contains_list(opted_in_id));
+    assert_eq!(ids(&json!(read.query_tasks(&query("")).unwrap())), [&live]);
     for excluded in [
         &collection,
         &hidden,
@@ -228,6 +260,11 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
         &hidden_tag,
         &link,
         &deleted,
+        &deleted_step,
+        &deleted_collection,
+        &opted_in,
+        &buried,
+        &buried_done,
     ] {
         assert!(!detail.to_string().contains(excluded));
         assert!(!lists.to_string().contains(excluded));
@@ -238,6 +275,10 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
         "tag:Excludedtag",
         r#"collection:"Excluded Collection""#,
         "Deleted",
+        "Removedcheck",
+        "Buriedtitle",
+        "Burieddone",
+        r#"collection:"Removed Collection""#,
     ] {
         assert!(
             read.query_tasks(&query(text)).unwrap().items.is_empty(),
@@ -249,7 +290,7 @@ async fn scoped_reads_omit_excluded_references_and_do_not_search_notes() {
         live_id
     );
     assert_eq!(ids(&server.query_tasks("Privatenote").await.1), [&live]); // REST intentionally searches notes.
-    for unavailable in [&hidden_task, &deleted, &id()] {
+    for unavailable in [&hidden_task, &deleted, &buried, &buried_done, &id()] {
         assert!(matches!(
             read.get_task(&get(unavailable)),
             Err(ReadError::NotFound)

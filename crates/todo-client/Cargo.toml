@@ -10,6 +10,8 @@ publish.workspace = true
 
 [features]
 default = []
+# In-memory assistant controller; no provider adapter or approval transport yet.
+assistant = ["dep:todo-tools", "dep:sha2"]
 # tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
 native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "uuid/v4"]
 # A bundled-SQLite `Storage` (native only).
@@ -33,6 +35,8 @@ futures-util.workspace = true
 url.workspace = true
 qrcode.workspace = true
 mail-parser.workspace = true
+todo-tools = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 # `native`
 todo-fs = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["fs", "io-util"] }
