@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cover — Quick-Add with Thumb-First Picker — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="my-day">
+    <div class="status-bar">
+      <span>10:35</span>
+      <div class="status-bar-right">
+        <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+        <span>5G</span>
+        <span class="battery-icon"><span class="battery-fill"></span></span>
+      </div>
+    </div>
+
+    <!-- Collapsed 36 dp Glanceable Title Strip (while composer is active) -->
+    <header class="compact-header">
+      <span class="compact-header-title">My Day</span>
+      <span class="compact-header-right">
+        <span class="compact-sun-dot"></span>
+        <span>3/12</span>
+      </span>
+    </header>
+
+    <!-- Visible task rows above the picker -->
+    <main class="task-list">
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring overdue"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Pay quarterly VAT filing</span><span class="priority-col p3">!!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="overdue-badge"><span class="diamond"></span>2d overdue</span></span><span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span></div>
+        </div>
+        <div class="star-btn on"><i class="ic" data-icon="star-filled"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Send venue booking confirmation</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text soon">in 1h 25m</span></span><span class="list-chip" data-list-hue="fern"><span class="dot"></span>Events</span><i class="ic sm" style="color:var(--color-ink-3)" data-icon="mail"></i></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Prepare Q4 roadmap review</span><span class="agent-mark" data-agent="codex">X</span><span class="priority-col p2">!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Today 17:00</span></span><span class="list-chip" data-list-hue="azure"><span class="dot"></span>Planning</span><span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">2/5</span></span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Koupit rohlíky a mléko</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Today 18:30</span></span><span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span><span class="tag-text">#domácnost</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row" style="opacity:0.35">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main"><div class="row-top"><span class="row-title">Renew passport appointment</span></div><div class="row-meta"><span class="due-slot"><span class="due-text">Tomorrow</span></span></div></div>
+      </div>
+      <div class="task-row" style="opacity:0.35">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main"><div class="row-top"><span class="row-title">Vyřídit žádost o přeplatek…</span></div><div class="row-meta"><span class="due-slot"><span class="due-text">Mon 23 Nov</span></span></div></div>
+      </div>
+    </main>
+
+    <!-- Thumb-first Calendar Popover (Presets anchored at BOTTOM closest to Calendar button!) -->
+    <div class="popover-card" role="dialog" aria-label="Choose due date">
+      <div class="cal-month-bar">
+        <span class="touch-btn"><i class="ic" data-icon="chevron-left"></i></span>
+        <span class="cal-month-title">November 2026</span>
+        <span class="touch-btn"><i class="ic" data-icon="chevron-right"></i></span>
+      </div>
+      <div class="cal-weekdays">
+        <span class="cal-weekday">Mon</span><span class="cal-weekday">Tue</span><span class="cal-weekday">Wed</span>
+        <span class="cal-weekday">Thu</span><span class="cal-weekday">Fri</span><span class="cal-weekday">Sat</span><span class="cal-weekday">Sun</span>
+      </div>
+      <div class="cal-days">
+        <span class="cal-cell"></span><span class="cal-cell"></span><span class="cal-cell"></span><span class="cal-cell"></span><span class="cal-cell"></span><span class="cal-cell"></span><span class="cal-cell">1</span>
+        <span class="cal-cell">2</span><span class="cal-cell">3</span><span class="cal-cell">4</span><span class="cal-cell">5</span><span class="cal-cell">6</span><span class="cal-cell">7</span><span class="cal-cell">8</span>
+        <span class="cal-cell">9</span><span class="cal-cell">10</span><span class="cal-cell">11</span><span class="cal-cell">12</span><span class="cal-cell">13</span><span class="cal-cell">14</span><span class="cal-cell">15</span>
+        <span class="cal-cell">16</span><span class="cal-cell">17</span><span class="cal-cell">18</span><span class="cal-cell">19</span><span class="cal-cell">20</span><span class="cal-cell today">21</span><span class="cal-cell selected">22</span>
+        <span class="cal-cell">23</span><span class="cal-cell">24</span><span class="cal-cell">25</span><span class="cal-cell">26</span><span class="cal-cell">27</span><span class="cal-cell">28</span><span class="cal-cell">29</span>
+        <span class="cal-cell">30</span>
+      </div>
+      <!-- Quick Presets at BOTTOM edge right above the composer's Calendar button -->
+      <div class="cal-presets">
+        <div class="cal-preset">Today</div>
+        <div class="cal-preset selected">Tomorrow <i class="ic sm tick" data-icon="check"></i></div>
+        <div class="cal-preset">Next week</div>
+        <div class="cal-preset">No date</div>
+      </div>
+    </div>
+
+    <!-- Active Composer docked directly at bottom (Lower utility bar hidden while composing) -->
+    <footer class="bottom-dock">
+      <div class="composer-slot" style="padding-bottom:12px;">
+        <div class="composer-box focused">
+          <div class="composer-row">
+            <i class="ic" style="color:var(--color-accent-strong)" data-icon="plus"></i>
+            <span class="composer-value">Water the plants zítra !!</span>
+            <span class="touch-btn expanded" title="Choose due date"><i class="ic" data-icon="calendar"></i></span>
+            <span class="touch-btn" style="color:var(--color-ink)" title="Choose priority"><i class="ic" data-icon="flag"></i></span>
+          </div>
+          <div class="composer-chips">
+            <span class="quick-chip date">
+              <i class="ic sm" data-icon="calendar"></i>
+              <span>Sun 22 Nov</span>
+              <i class="ic sm" data-icon="x"></i>
+            </span>
+            <span class="quick-chip">
+              <span>!!</span>
+              <i class="ic sm" data-icon="x"></i>
+            </span>
+          </div>
+        </div>
+      </div>
+      <div class="gesture-bar on-pane"><span class="gesture-pill"></span></div>
+    </footer>
+
+    <div class="zones-overlay" data-zones-kind="cover" data-zones-note="Quick presets &amp; composer chips sit 1-tap away in Comfortable zone"></div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

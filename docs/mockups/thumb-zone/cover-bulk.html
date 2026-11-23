@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cover — Bulk Selection Dock — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="my-day">
+    <div class="status-bar">
+      <span>10:35</span>
+      <div class="status-bar-right">
+        <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+        <span>5G</span>
+        <span class="battery-icon"><span class="battery-fill"></span></span>
+      </div>
+    </div>
+
+    <!-- Calm non-interactive Sky Header (no top Clear X button!) -->
+    <header class="sky-header">
+      <div class="sky-header-text">
+        <div class="eyebrow">
+          <span class="eyebrow-day">Saturday</span>
+          <span class="eyebrow-meta">21 NOV 2026</span>
+          <span class="eyebrow-sep"></span>
+          <span class="eyebrow-meta">W47</span>
+        </div>
+        <div class="sky-title-row">
+          <h1 class="room-title">My Day</h1>
+          <div class="room-summary">
+            <span class="fig accent">3</span><span>of</span><span class="fig">12</span><span>done</span>
+            <span class="dot"></span><span class="fig">9</span><span>open</span>
+          </div>
+        </div>
+      </div>
+      <div class="landscape-wrap" data-landscape data-width="412" data-height="36" data-done="3" data-total="12"></div>
+    </header>
+
+    <!-- Task list with 3 bulk-selected rows + drag grips -->
+    <main class="task-list">
+      <div class="task-row bulk-selected">
+        <div class="check-slot"><span class="check-ring overdue"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Pay quarterly VAT filing</span><span class="priority-col p3">!!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="overdue-badge"><span class="diamond"></span>2d overdue</span></span><span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span></div>
+        </div>
+        <div class="star-btn on"><i class="ic" data-icon="star-filled"></i></div>
+        <div class="grip-col"><i class="ic" data-icon="grip-vertical"></i></div>
+      </div>
+
+      <div class="task-row bulk-selected">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Send venue booking confirmation</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text soon">in 1h 25m</span></span><span class="list-chip" data-list-hue="fern"><span class="dot"></span>Events</span><i class="ic sm" style="color:var(--color-ink-2)" data-icon="mail"></i></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+        <div class="grip-col"><i class="ic" data-icon="grip-vertical"></i></div>
+      </div>
+
+      <div class="task-row bulk-selected">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Prepare Q4 roadmap review</span><span class="agent-mark" data-agent="codex">X</span><span class="priority-col p2">!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Today 17:00</span></span><span class="list-chip" data-list-hue="azure"><span class="dot"></span>Planning</span><span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">2/5</span></span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+        <div class="grip-col"><i class="ic" data-icon="grip-vertical"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Koupit rohlíky a mléko</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Today 18:30</span></span><span class="list-chip" data-list-hue="coral"><span class="dot"></span>Errands</span><span class="tag-text">#domácnost</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Renew passport appointment</span><span class="agent-mark" data-agent="pi">π</span><span class="priority-col p2">!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Tomorrow</span></span><span class="list-chip" data-list-hue="orchid"><span class="dot"></span>Admin</span><span class="step-meter"><span class="step-bars"><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span><span class="step-bar"></span></span><span class="step-count">1/4</span></span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Vyřídit žádost o přeplatek na zdravotním pojištění</span><span class="agent-mark" data-agent="pi">π</span><span class="priority-col p1">!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Mon 23 Nov</span></span><span class="list-chip" data-list-hue="pink"><span class="dot"></span>Health</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Call the dentist to reschedule</span></div>
+          <div class="row-meta"><span class="list-chip" data-list-hue="pink"><span class="dot"></span>Health</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Review sync-engine pull request</span><span class="agent-mark" data-agent="claude">C</span><span class="priority-col p3">!!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Today</span></span><span class="list-chip" data-list-hue="fern"><span class="dot"></span>To-do app</span></div>
+        </div>
+        <div class="star-btn on"><i class="ic" data-icon="star-filled"></i></div>
+      </div>
+
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Write schema migration notes</span><span class="agent-mark" data-agent="codex">X</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text">Mon 23 Nov</span></span><span class="list-chip" data-list-hue="fern"><span class="dot"></span>To-do app</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+    </main>
+
+    <!-- Unified 2-Row Bottom Bulk Selection Dock (Clear X + Count + Bulk Tools) -->
+    <footer class="bottom-dock">
+      <div class="bulk-status-strip">
+        <span class="touch-btn" style="color:var(--color-accent-strong)" title="Clear selection">
+          <i class="ic" data-icon="x"></i>
+        </span>
+        <span class="bulk-status-label">3 tasks selected</span>
+        <span class="bulk-status-hint">Drag grip to move</span>
+      </div>
+      <nav class="bulk-tools-strip" aria-label="Bulk actions">
+        <span class="bulk-tool"><i class="ic" data-icon="check"></i><span>Complete</span></span>
+        <span class="bulk-tool"><i class="ic" data-icon="star"></i><span>Star</span></span>
+        <span class="bulk-tool"><i class="ic" data-icon="sun"></i><span>Remove</span></span>
+        <span class="bulk-tool"><i class="ic" data-icon="list"></i><span>Move</span></span>
+        <span class="bulk-tool"><i class="ic" data-icon="calendar"></i><span>Due</span></span>
+        <span class="bulk-tool danger"><i class="ic" data-icon="trash-2"></i><span>Delete</span></span>
+      </nav>
+      <div class="gesture-bar on-wash"><span class="gesture-pill"></span></div>
+    </footer>
+
+    <div class="zones-overlay" data-zones-kind="cover" data-zones-note="Clear (×) and all 6 bulk actions live together in green zone"></div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

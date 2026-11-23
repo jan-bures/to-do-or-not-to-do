@@ -238,8 +238,7 @@ whole logical pixels; the bar fades out over the same duration when neither hove
   clamp the sidebar to its limits and the detail to at least its minimum. The live window, not the saved
   detail preference, sets the maximum. The medium and phone web overlays have no divider.
 
-**Sidebar order.** The desktop and web sidebars and the Android drawer list the rooms in one order, top to
-bottom:
+**Sidebar order.** The desktop and web sidebars list the rooms in one order, top to bottom:
 
 1. the smart lists: **My Day**, **Important**, **Planned**, **All**, **Completed**, **Agent activity**;
 2. **Activity**, a row like the smart lists' (Clock icon in the `agent-activity` hue; the desktop adds its
@@ -258,6 +257,12 @@ bottom:
    shows the server above **Open admin pages** and **Sync now**. Its **Devices…** item sits above
    **Sign out** (Android: **Unpair this phone**), opens the device pairing dialog, and returns focus
    to the gear when the dialog closes.
+
+On **Android**, the room list moves from a top-anchored side drawer to a bottom-anchored **Room Switcher
+sheet** so every primary control stays in the thumb zone (`docs/android-thumb-zone.md`). Collections, their
+lists, loose lists, Activity (with today's active agents) and Trash keep their natural top-to-bottom order
+inside a bottom-gravity scrollable region directly above a pinned 2×3 smart-rooms grid, a quick-filter field,
+and the same pinned footer (`+ New`, sync status, settings gear).
 
 Within the sidebar, keyboard navigation through focusable controls follows their order on screen. Desktop
 room rows are not Tab stops.
@@ -294,19 +299,28 @@ natural width so the task grip, Important control and metadata can still fit. We
 (`phone::CHIP_MAX`) and trailing tags can end with an ellipsis. A cover screen fits nine full rows above the
 composer. A row is at least 64 dp and grows with the font scale, so its metadata line is never clipped.
 
-**The phone header gives way to the tasks.** As the list scrolls up, the header (eyebrow, big title, landscape)
-and the room pills slide away under a 48 dp bar, and the room's name fades into the bar in `room-title-bar`.
-Scrolling back to the top brings them back. While the keyboard is open, or when the window is short (under
-480 dp), the header stays collapsed, so the list keeps room for at least four rows above the composer.
+**Sky above, hands below on Android.** The Daybreak header (eyebrow, big title, count and landscape) stays at
+the top of the room as a glanceable, non-interactive sky—no top app bar buttons. As the list scrolls up, the
+header slides away into a 36 dp glanceable title strip (`phone::COMPACT_HEADER`) showing the room name in
+`room-title-bar` and the compact count. Scrolling back to the top brings it back; pulling further down from
+the top on the cover screen expands the sky smoothly (`phone::HEADER_REACH_EXPAND`) to bring the top rows into
+thumb reach. While the keyboard is open, or when the window is short (under 480 dp), the header stays collapsed
+and the bottom utility bar hides so the list keeps room for at least four rows above the composer. All primary
+room controls (Rooms switcher, horizontally scrollable room pills, Filter, Room menu and Quick-Add composer)
+live in a two-row bottom thumb dock (`docs/android-thumb-zone.md`).
 
-**Every phone target is at least 48 dp** (`touch`), even where the visual is smaller. A drawer row's highlight is
-40 dp (`nav-row`) and a room pill is 32 dp, but each sits in a 48 dp target, and the press ripple stays on the
-visual.
+**Every phone target is at least 48 dp** (`touch`), even where the visual is smaller. A switcher row's
+highlight is 40 dp (`nav-row`) and a room pill is 32 dp, but each sits in a 48 dp target, and the press
+ripple stays on the visual.
 
-**The detail pane's top bar** holds the breadcrumb on the left and three actions on the right, in this order on
-every client: **My Day** (sun), **Important** (star), **Close** (×). Android and web also have **Task actions**
-(⋯) right after the star. On Android's cover screen Back replaces Close. The breadcrumb takes what's left and ends
-in an ellipsis; the actions never move, however long the list's name.
+**The detail pane's action bar** holds the breadcrumb and task actions. On desktop and web, the top bar holds
+the breadcrumb on the left and the actions on the right, in this order: **My Day** (sun), **Important**
+(star), **Close** (×) — with **Task actions** (⋯) right after the star on web. On **Android**, the top bar
+stays a glanceable, non-interactive breadcrumb (`40 dp`), and the actions move into a pinned `52 dp` bottom
+bar in the thumb zone: **Back**, **Complete**, **My Day**, **Important**, **Task actions** on the cover screen
+(mirroring in left-handed mode), and **Complete** on the inner edge with **My Day**, **Important**, **Task
+actions**, **Close** at the bottom-right on the unfolded screen. The breadcrumb takes the full top width and
+ends in an ellipsis; the bottom actions never move, however long the list's name.
 
 **Task detail activity** sits below Attachments on each client. A quiet heading and hairline introduce a flat list:
 actor mark at the leading edge, actor and action beside it, and the relative time in mono at the trailing edge.
@@ -316,16 +330,18 @@ The mark repeats the actor already named in text. This is a read-only summary, n
 
 - On the desktop, the bottom of the list reserves a 56 px inset. "Completed 3" sits on the left and the toast on
   the right.
-- On phones, a 56 dp strip above the composer holds the toast. The composer has one 48 dp input row and,
-  only when it has metadata, a second touch-height row for its chips.
+- On phones, a 56 dp strip above the bottom dock (composer + utility bar, or the detail bottom action bar)
+  holds the toast. The composer has one 48 dp input row and, only when it has metadata, a second touch-height
+  row for its chips.
 
 **Multi-selection.** Every selected row gets the stronger `selection-wash` and a leading
 `accent-strong` mark, with `ink-2` for quiet text and `selection-check` for a checked box. On desktop
 and web only the keyboard cursor gets a thin outline, inset from the leading mark. The desktop and
 web place the selection count,
 actions and clear button in a flat strip above the reserved Undo footer; narrow web lets the controls
-wrap. Android uses a count and Close in the app bar and replaces the composer with touch-sized bulk
-controls. The wide detail column shows a selection summary instead of a task editor. A bulk completion
+wrap. Android replaces the bottom dock with a two-row bottom bulk dock: a `44 dp` selection status strip
+(Clear `×` and count) directly above touch-sized bulk controls, keeping the top sky non-interactive. The wide
+detail column shows a selection summary in its lower third instead of a task editor. A bulk completion
 or move changes the rows together, without staggering; one count-based toast offers one Undo.
 
 **Pills are rationed.** Only three things are pill-shaped: list chips (a 6 px dot, a 6 px gap and 8 px padding),
@@ -342,7 +358,9 @@ keep them in the field. Phone puts them in a second row inside the same field so
 
 The date picker uses the same opaque raised surface, radius and overlay shadow as a menu. It opens next to
 its button, on the roomier side when it wouldn't fit below. **Today**, **Tomorrow**, **Next week** (the next
-Monday) and **No date** sit above the month grid. Month arrows flank the heading. The grid uses the same
+Monday) and **No date** sit above the month grid on desktop and web; on Android, where the popover opens
+upward from the bottom composer, those four presets sit at the bottom edge of the card right above the
+Calendar button for immediate thumb reach. Month arrows flank the heading. The grid uses the same
 Monday-first ISO convention as the room's week number and the same English weekday names as the date chips.
 Days outside the month are blank. The selected date has a wash and a stronger label; today's outline and
 the keyboard focus edge are separate. The picker opens on the pending date or today. The arrow keys move by
@@ -824,14 +842,20 @@ or shift the rows. Fade the wash, outline and card over `HOVER` with `STANDARD`,
 
 #### 14. Android transitions (Compose)
 
-- **Navigation drawer:** Edge swipe tracks the finger **1:1**, coupling scrim opacity directly to drawer progress
-  `0..1`. Release settles open (`PANEL` 200 ms, `ENTER`) or closed (`PANEL` 200 ms, `EXIT`).
-- **Collapsing room header (scroll-linked):** Scrolling the task list collapses the expanded Daybreak header into
-  the compact title bar **1:1 with scroll offset** (fading the landscape, date eyebrow and room-pill strip
-  proportionally so nothing snaps mid-scroll); releasing midway settles cleanly to either expanded or collapsed
-  over `PANEL` (`200 ms`, `STANDARD`).
+- **Room Switcher & modal bottom sheets:** Swiping up from the bottom utility bar (or dragging a sheet handle)
+  tracks the thumb **1:1**, coupling `elevation::scrim` opacity directly to sheet progress `0..1`. Release
+  settles open (`PANEL` 200 ms, `ENTER`) or closed (`PANEL` 200 ms, `EXIT`). Sub-pages inside a sheet
+  (settings → devices, room menu → colour swatches) swap in place over `CONTENT_SWAP` (`120 ms`, `ENTER`).
+- **Collapsing room header & pull-down reachability (scroll-linked):** Scrolling the task list collapses the
+  expanded Daybreak header into the `36 dp` glanceable title strip **1:1 with scroll offset** (fading the
+  landscape and date eyebrow proportionally so nothing snaps mid-scroll); releasing midway settles cleanly to
+  either expanded or collapsed over `PANEL` (`200 ms`, `STANDARD`). Pulling down from the top on the cover
+  screen stretches the flat `sky` fill 1:1 up to `phone::HEADER_REACH_EXPAND` and settles over `PANEL`.
+- **Task row swipes:** Horizontal drags (outside the `24 dp` edge dead-zone) track the thumb **1:1** to
+  reveal Complete/Reopen (swipe right) or My Day (swipe left) past `phone::SWIPE_THRESHOLD` (`72 dp`), then
+  settle back over `SWIPE_SETTLE` (`160 ms`, `STANDARD`).
 - **Predictive back (Android 14+ / `PredictiveBackHandler`):** Gesture progress `0..1` continuously scales the
-  outgoing surface down (`1.0 → 0.92`), rounds its corners to `radius::CARD`, and shifts it toward the swipe edge
+  outgoing surface down (`1.0 → 0.92`), rounds its corners to `radius::LG`, and shifts it toward the swipe edge
   while revealing the previous screen underneath. Commit finishes over `PANEL` (`200 ms`, `EXIT`); cancel returns
   to `1.0` over `PANEL` (`200 ms`, `STANDARD`).
 - **Shared-element transitions (`SharedTransitionLayout`):**
@@ -840,12 +864,13 @@ or shift the rows. Fade the wash, outline and card over `HOVER` with `STANDARD`,
     notes and steps fade in (`PANEL` 200 ms, `ENTER`).
   - *Phone room pill → Room header:* Room sky hue morphs (`ROOM_HUE` 360 ms, `SUN`) while title crossfades
     (`CONTENT_SWAP` 120 ms).
-- **Haptics:** Restraint matches motion — confirm on task completion (`Confirm`), pickup on drag (`LongPress`),
-  and subtle tick on reorder slot cross (`TextHandleMove`). Never vibrate on room switch, scroll, or tap.
-- **Reduced motion (`ANIMATOR_DURATION_SCALE == 0`):** Button-triggered drawer snaps (`0 ms`; drag still tracks
-  finger 1:1); header scroll collapse remains scroll-linked without settle bounce (or snaps on threshold);
-  predictive back falls back to instant back on commit; shared-element bounds morphs disable in favour of
-  `REDUCED_FADE` (`100 ms`) crossfades.
+- **Haptics:** Restraint matches motion — confirm on task completion and row swipe threshold (`Confirm`),
+  pickup on drag (`LongPress`), and subtle tick on reorder slot cross (`TextHandleMove`). Never vibrate on
+  room switch, scroll, or tap.
+- **Reduced motion (`ANIMATOR_DURATION_SCALE == 0`):** Button-triggered sheets snap (`0 ms`; drag still tracks
+  finger 1:1); header scroll collapse and pull-down remain scroll-linked without settle bounce (or snap on
+  threshold); row swipe settle snaps (`0 ms`); predictive back falls back to instant back on commit;
+  shared-element bounds morphs disable in favour of `REDUCED_FADE` (`100 ms`) crossfades.
 
 #### 15. Web transitions (View Transitions API)
 

@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Android Thumb-Zone Mockup Gallery</title>
+  <link rel="stylesheet" href="shared.css" />
+  <style>
+    body {
+      background: #141210;
+      color: #f4efe9;
+      font-family: var(--font-ui);
+      padding: 40px 32px 80px;
+      max-width: 1320px;
+      margin: 0 auto;
+    }
+    h1 {
+      font: 600 32px/38px var(--font-ui);
+      letter-spacing: -0.03em;
+      margin-bottom: 8px;
+    }
+    p.lead {
+      color: #b7aea5;
+      font: 400 15px/22px var(--font-ui);
+      max-width: 740px;
+      margin-bottom: 32px;
+    }
+    h2 {
+      font: 600 18px/24px var(--font-ui);
+      margin: 36px 0 14px;
+      color: #f3ad66;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    h2 a {
+      font: 500 12px/16px var(--font-mono);
+      color: #b7aea5;
+      text-decoration: none;
+      border: 1px solid #38332e;
+      border-radius: 6px;
+      padding: 3px 8px;
+    }
+    h2 a:hover { color: #fff; border-color: #6b6157; }
+    .triptych {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 20px;
+    }
+    .pair {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 20px;
+    }
+    figure {
+      background: #1d1916;
+      border: 1px solid #2e2925;
+      border-radius: 14px;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    figure img {
+      width: 100%;
+      height: auto;
+      border-radius: 10px;
+      display: block;
+    }
+    figcaption {
+      font: 500 12px/16px var(--font-mono);
+      color: #a89f96;
+      display: flex;
+      justify-content: space-between;
+    }
+  </style>
+</head>
+<body>
+  <h1>Android Thumb-Zone Redesign — Mockup Gallery</h1>
+  <p class="lead">
+    Built directly on <code>crates/todo-design/generated/tokens.css</code>, bundled Geist / Geist Mono fonts, and invented fixture data.
+    Fold7 Cover posture (<code>412 × 960 dp</code>, 21:9) and Unfolded Inner posture (<code>876 × 970 dp</code>, near-square two-thumb).
+    Click any interactive HTML link to toggle themes and thumb-zone overlays live.
+  </p>
+
+  <h2>1. Cover — Room (My Day) <a href="cover-room.html">Open interactive HTML</a></h2>
+  <div class="triptych">
+    <figure><img src="cover-room-light.png" alt="Cover Room Light" /><figcaption><span>Light</span><span>412 × 960 dp</span></figcaption></figure>
+    <figure><img src="cover-room-dark.png" alt="Cover Room Dark" /><figcaption><span>Dark</span><span>412 × 960 dp</span></figcaption></figure>
+    <figure><img src="cover-room-zones-light.png" alt="Cover Room Thumb Zones" /><figcaption><span>Thumb-Zone Map</span><span>2-thumb / 1-hand</span></figcaption></figure>
+  </div>
+
+  <h2>2. Cover — Bottom-Anchored Room Switcher <a href="cover-switcher.html">Open interactive HTML</a></h2>
+  <div class="triptych">
+    <figure><img src="cover-switcher-light.png" alt="Room Switcher Light" /><figcaption><span>Light</span><span>72% default sheet</span></figcaption></figure>
+    <figure><img src="cover-switcher-dark.png" alt="Room Switcher Dark" /><figcaption><span>Dark</span><span>72% default sheet</span></figcaption></figure>
+    <figure><img src="cover-switcher-zones-light.png" alt="Room Switcher Thumb Zones" /><figcaption><span>Thumb-Zone Map</span><span>Smart grid + footer</span></figcaption></figure>
+  </div>
+
+  <h2>3. Cover — Task Detail <a href="cover-detail.html">Open interactive HTML</a></h2>
+  <div class="triptych">
+    <figure><img src="cover-detail-light.png" alt="Task Detail Light" /><figcaption><span>Light</span><span>Bottom action bar</span></figcaption></figure>
+    <figure><img src="cover-detail-dark.png" alt="Task Detail Dark" /><figcaption><span>Dark</span><span>Bottom action bar</span></figcaption></figure>
+    <figure><img src="cover-detail-zones-light.png" alt="Task Detail Thumb Zones" /><figcaption><span>Thumb-Zone Map</span><span>Zero top controls</span></figcaption></figure>
+  </div>
+
+  <h2>4. Cover — Quick-Add + Thumb-First Calendar <a href="cover-quick-add.html">Open interactive HTML</a></h2>
+  <div class="triptych">
+    <figure><img src="cover-quick-add-light.png" alt="Quick-Add Light" /><figcaption><span>Light</span><span>Presets at bottom</span></figcaption></figure>
+    <figure><img src="cover-quick-add-dark.png" alt="Quick-Add Dark" /><figcaption><span>Dark</span><span>Presets at bottom</span></figcaption></figure>
+    <figure><img src="cover-quick-add-zones-light.png" alt="Quick-Add Thumb Zones" /><figcaption><span>Thumb-Zone Map</span><span>1-tap presets</span></figcaption></figure>
+  </div>
+
+  <h2>5. Cover — Bulk Selection Dock <a href="cover-bulk.html">Open interactive HTML</a></h2>
+  <div class="triptych">
+    <figure><img src="cover-bulk-light.png" alt="Bulk Selection Light" /><figcaption><span>Light</span><span>2-row bulk dock</span></figcaption></figure>
+    <figure><img src="cover-bulk-dark.png" alt="Bulk Selection Dark" /><figcaption><span>Dark</span><span>2-row bulk dock</span></figcaption></figure>
+    <figure><img src="cover-bulk-zones-light.png" alt="Bulk Selection Thumb Zones" /><figcaption><span>Thumb-Zone Map</span><span>Clear × at bottom</span></figcaption></figure>
+  </div>
+
+  <h2>6. Unfolded — Personal + Detail (Two-Thumb) <a href="unfolded-workspace.html">Open interactive HTML</a></h2>
+  <div class="pair">
+    <figure><img src="unfolded-workspace-light.png" alt="Unfolded Light" /><figcaption><span>Light</span><span>876 × 970 dp</span></figcaption></figure>
+    <figure><img src="unfolded-workspace-dark.png" alt="Unfolded Dark" /><figcaption><span>Dark</span><span>876 × 970 dp</span></figcaption></figure>
+    <figure><img src="unfolded-workspace-zones-light.png" alt="Unfolded Thumb Zones Light" /><figcaption><span>Thumb-Zone Map (Light)</span><span>Left &amp; Right thumb arcs</span></figcaption></figure>
+    <figure><img src="unfolded-workspace-zones-dark.png" alt="Unfolded Thumb Zones Dark" /><figcaption><span>Thumb-Zone Map (Dark)</span><span>Left &amp; Right thumb arcs</span></figcaption></figure>
+  </div>
+</body>
+</html>

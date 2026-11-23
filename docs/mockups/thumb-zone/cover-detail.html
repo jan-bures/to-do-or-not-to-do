@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cover — Task Detail — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="orchid">
+    <div class="status-bar on-pane">
+      <span>10:35</span>
+      <div class="status-bar-right">
+        <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+        <span>5G</span>
+        <span class="battery-icon"><span class="battery-fill"></span></span>
+      </div>
+    </div>
+
+    <!-- Non-interactive Glanceable Top Breadcrumb (zero buttons at top!) -->
+    <header class="detail-top-breadcrumb">
+      <span class="list-chip" data-list-hue="rose"><span class="dot"></span>Personal</span>
+      <span class="breadcrumb-sep">/</span>
+      <span class="breadcrumb-list">Admin</span>
+    </header>
+
+    <!-- Scrollable Detail Content -->
+    <main class="detail-body">
+      <div class="detail-title-row">
+        <div class="check-slot" style="height:32px;"><span class="check-ring"></span></div>
+        <h1 class="detail-title">Renew passport appointment</h1>
+      </div>
+      <div class="detail-subtitle">Created 12 Nov by Pi / Edited today 09:50</div>
+
+      <div class="section-head">
+        <span class="caps-label">Steps</span>
+        <span class="step-meter">
+          <span class="step-bars"><span class="step-bar on"></span><span class="step-bar"></span><span class="step-bar"></span><span class="step-bar"></span></span>
+          <span class="step-count">1/4</span>
+        </span>
+      </div>
+
+      <div class="step-row">
+        <div class="check-slot"><span class="check-ring sm done"><i class="ic xs" data-icon="check"></i></span></div>
+        <span class="step-text done">Check which documents are required</span>
+        <span class="count-label">01</span>
+        <i class="ic sm" style="color:var(--color-ink-3)" data-icon="ellipsis"></i>
+      </div>
+      <div class="step-row">
+        <div class="check-slot"><span class="check-ring sm"></span></div>
+        <span class="step-text">Book a slot on the town hall site</span>
+        <span class="count-label">02</span>
+        <i class="ic sm" style="color:var(--color-ink-3)" data-icon="ellipsis"></i>
+      </div>
+      <div class="step-row">
+        <div class="check-slot"><span class="check-ring sm"></span></div>
+        <span class="step-text">Get a passport photo taken</span>
+        <span class="count-label">03</span>
+        <i class="ic sm" style="color:var(--color-ink-3)" data-icon="ellipsis"></i>
+      </div>
+      <div class="step-row">
+        <div class="check-slot"><span class="check-ring sm"></span></div>
+        <span class="step-text">Fill in the application form</span>
+        <span class="count-label">04</span>
+        <i class="ic sm" style="color:var(--color-ink-3)" data-icon="ellipsis"></i>
+      </div>
+      <div class="add-step-row">
+        <div class="check-slot"><i class="ic sm" style="color:var(--color-accent-strong)" data-icon="plus"></i></div>
+        <span>Add step</span>
+      </div>
+
+      <div class="detail-notes-block">
+        <div class="caps-label">Notes</div>
+        <p class="detail-notes-text">Bring the old passport and proof of address. Slots open on Mondays at 08:00.</p>
+      </div>
+
+      <!-- Property rows (land naturally in Comfortable thumb zone!) -->
+      <div class="field-row">
+        <span class="field-icon"><i class="ic sm" data-icon="calendar"></i></span>
+        <span class="field-label">Due</span>
+        <span class="field-value mono">Sun 22 Nov</span>
+        <i class="ic sm" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+      </div>
+      <div class="field-row">
+        <span class="field-icon"><i class="ic sm" data-icon="flag"></i></span>
+        <span class="field-label">Priority</span>
+        <span class="field-value">Normal</span>
+        <i class="ic sm" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+      </div>
+      <div class="field-row">
+        <span class="field-icon"><i class="ic sm" data-icon="bell"></i></span>
+        <span class="field-label">Reminder</span>
+        <span class="field-value mono">Today, 18:00</span>
+        <i class="ic sm" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+      </div>
+      <div class="field-row">
+        <span class="field-icon"><i class="ic sm" data-icon="repeat"></i></span>
+        <span class="field-label">Repeat</span>
+        <span class="field-value empty">Does not repeat</span>
+        <i class="ic sm" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+      </div>
+      <div class="field-row">
+        <span class="field-icon"><i class="ic sm" data-icon="hash"></i></span>
+        <span class="field-label">Tags</span>
+        <span class="field-value mono" data-list-hue="olive">
+          <span style="width:6px;height:6px;border-radius:50%;background:var(--list-dot);display:inline-block;"></span>#admin
+        </span>
+        <i class="ic sm" style="color:var(--color-ink-4)" data-icon="chevron-right"></i>
+      </div>
+
+      <div style="margin-top:14px;">
+        <div class="caps-label">Source</div>
+        <div class="source-card">
+          <div class="source-icon-box"><i class="ic sm" data-icon="mail"></i></div>
+          <div class="source-meta">
+            <div class="source-title">Your appointment reminder</div>
+            <div class="source-sub">info@example.com · Thu 12 Nov</div>
+          </div>
+          <i class="ic sm" style="color:var(--color-ink-3)" data-icon="arrow-up-right"></i>
+          <i class="ic sm" style="color:var(--color-ink-3);margin-left:6px;" data-icon="trash-2"></i>
+        </div>
+      </div>
+    </main>
+
+    <!-- Pinned Bottom Detail Action Bar (Back + Complete + My Day + Star + More) -->
+    <nav class="detail-bottom-bar" aria-label="Task actions">
+      <span class="touch-btn" title="Back">
+        <i class="ic" data-icon="chevron-left"></i>
+      </span>
+      <div class="detail-bottom-cluster">
+        <span class="touch-btn" title="Complete task">
+          <i class="ic" data-icon="circle-check"></i>
+        </span>
+        <span class="touch-btn on-sun" title="In My Day">
+          <i class="ic" data-icon="sun-filled"></i>
+        </span>
+        <span class="touch-btn" title="Important">
+          <i class="ic" data-icon="star"></i>
+        </span>
+        <span class="touch-btn" title="More task actions">
+          <i class="ic" data-icon="ellipsis"></i>
+        </span>
+      </div>
+    </nav>
+    <div class="gesture-bar"><span class="gesture-pill"></span></div>
+
+    <div class="zones-overlay" data-zones-kind="cover" data-zones-note="Back, Complete, My Day, Star, More &amp; editors in green zone"></div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>

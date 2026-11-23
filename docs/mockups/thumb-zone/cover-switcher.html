@@ -1,0 +1,200 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Cover — Bottom Room Switcher — Thumb-Zone Mockup</title>
+  <link rel="stylesheet" href="shared.css" />
+</head>
+<body>
+  <div class="device-screen device-cover" data-theme="light" data-room-hue="my-day">
+    <!-- Dimmed underlying My Day room (top sky stays visible for spatial orientation) -->
+    <div class="status-bar">
+      <span>10:35</span>
+      <div class="status-bar-right">
+        <span class="signal-bars"><span></span><span></span><span></span><span></span></span>
+        <span>5G</span>
+        <span class="battery-icon"><span class="battery-fill"></span></span>
+      </div>
+    </div>
+
+    <header class="sky-header">
+      <div class="sky-header-text">
+        <div class="eyebrow">
+          <span class="eyebrow-day">Saturday</span>
+          <span class="eyebrow-meta">21 NOV 2026</span>
+          <span class="eyebrow-sep"></span>
+          <span class="eyebrow-meta">W47</span>
+        </div>
+        <div class="sky-title-row">
+          <h1 class="room-title">My Day</h1>
+          <div class="room-summary">
+            <span class="fig accent">3</span><span>of</span><span class="fig">12</span><span>done</span>
+            <span class="dot"></span><span class="fig">9</span><span>open</span>
+          </div>
+        </div>
+      </div>
+      <div class="landscape-wrap" data-landscape data-width="412" data-height="36" data-done="3" data-total="12"></div>
+    </header>
+
+    <main class="task-list">
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring overdue"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Pay quarterly VAT filing</span><span class="priority-col p3">!!!</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="overdue-badge"><span class="diamond"></span>2d overdue</span></span><span class="list-chip" data-list-hue="clay"><span class="dot"></span>Finance</span></div>
+        </div>
+        <div class="star-btn on"><i class="ic" data-icon="star-filled"></i></div>
+      </div>
+      <div class="task-row">
+        <div class="check-slot"><span class="check-ring"></span></div>
+        <div class="row-main">
+          <div class="row-top"><span class="row-title">Send venue booking confirmation</span></div>
+          <div class="row-meta"><span class="due-slot"><span class="due-text soon">in 1h 25m</span></span><span class="list-chip" data-list-hue="fern"><span class="dot"></span>Events</span></div>
+        </div>
+        <div class="star-btn"><i class="ic" data-icon="star"></i></div>
+      </div>
+    </main>
+
+    <!-- Scrim + Bottom-Anchored Room Switcher Sheet (76% height) -->
+    <div class="scrim-layer">
+      <section class="bottom-sheet" style="height: 736px;">
+        <div class="sheet-handle-row"><span class="sheet-handle"></span></div>
+
+        <!-- Bottom-gravity scrollable Collections, Lists, Activity & Trash -->
+        <div class="switcher-scroll">
+          <div class="nav-row heading" data-list-hue="lagoon">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="briefcase"></i>
+            <span class="nav-row-name">Work</span>
+            <span class="nav-row-count">5</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="nav-row indent" data-list-hue="clay">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="coin"></i>
+            <span class="nav-row-name">Finance</span>
+            <span class="nav-row-count">1</span>
+          </div>
+          <div class="nav-row indent" data-list-hue="fern">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="calendar-star"></i>
+            <span class="nav-row-name">Events</span>
+            <span class="nav-row-count">2</span>
+          </div>
+          <div class="nav-row indent" data-list-hue="azure">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="flag"></i>
+            <span class="nav-row-name">Planning</span>
+            <span class="nav-row-count">2</span>
+          </div>
+
+          <div class="nav-row heading" data-list-hue="rose" style="margin-top:4px;">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="house"></i>
+            <span class="nav-row-name">Personal</span>
+            <span class="nav-row-count">9</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-down"></i>
+          </div>
+          <div class="nav-row indent" data-list-hue="coral">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="basket"></i>
+            <span class="nav-row-name">Errands</span>
+            <span class="nav-row-count">2</span>
+          </div>
+          <div class="nav-row indent" data-list-hue="orchid">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="document"></i>
+            <span class="nav-row-name">Admin</span>
+            <span class="nav-row-count">1</span>
+          </div>
+
+          <div class="nav-row heading" data-list-hue="jade" style="margin-top:4px;">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="layers"></i>
+            <span class="nav-row-name">Projects</span>
+            <span class="nav-row-count">2</span>
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="chevron-right"></i>
+          </div>
+
+          <div class="nav-divider"></div>
+
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="clock"></i>
+            <span class="nav-row-name">Activity</span>
+          </div>
+          <div class="nav-row indent">
+            <span class="agent-mark" data-agent="claude">C</span>
+            <span class="nav-row-name">Claude</span>
+            <span class="nav-row-count">3 edited today</span>
+          </div>
+          <div class="nav-row indent">
+            <span class="agent-mark" data-agent="codex">X</span>
+            <span class="nav-row-name">Codex</span>
+            <span class="nav-row-count">2 edited today</span>
+          </div>
+          <div class="nav-row" data-list-hue="agent-activity">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="trash-2"></i>
+            <span class="nav-row-name">Trash</span>
+          </div>
+        </div>
+
+        <!-- Pinned 2x3 Smart Rooms Grid (Prime Thumb Zone!) -->
+        <div class="smart-grid-wrap">
+          <div class="smart-tile active" data-list-hue="my-day">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-glyph="sun"></i>
+            <span class="smart-tile-label">My Day</span>
+            <span class="smart-tile-count">9</span>
+          </div>
+          <div class="smart-tile" data-list-hue="important">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="star"></i>
+            <span class="smart-tile-label">Important</span>
+            <span class="smart-tile-count">3</span>
+          </div>
+          <div class="smart-tile" data-list-hue="planned">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="calendar"></i>
+            <span class="smart-tile-label">Planned</span>
+            <span class="smart-tile-count">15</span>
+          </div>
+          <div class="smart-tile" data-list-hue="all">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="list"></i>
+            <span class="smart-tile-label">All</span>
+            <span class="smart-tile-count">16</span>
+          </div>
+          <div class="smart-tile" data-list-hue="completed">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="circle-check"></i>
+            <span class="smart-tile-label">Done</span>
+          </div>
+          <div class="smart-tile" data-list-hue="agent-activity">
+            <i class="ic glyph" style="color:var(--list-glyph)" data-icon="sparkles"></i>
+            <span class="smart-tile-label">Agents</span>
+            <span class="smart-tile-count">7</span>
+          </div>
+        </div>
+
+        <!-- Pinned Quick-Filter Input -->
+        <div class="switcher-search-wrap">
+          <div class="switcher-search">
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="search"></i>
+            <span>Find a room…</span>
+          </div>
+        </div>
+
+        <!-- Pinned Footer (+ New, Sync, Settings) -->
+        <div class="switcher-footer">
+          <div class="footer-new">
+            <i class="ic sm" style="color:var(--color-ink-3)" data-icon="plus"></i>
+            <span>New</span>
+          </div>
+          <div class="footer-sync">
+            <span class="dot"></span>
+            <span>20:18</span>
+          </div>
+          <span class="touch-btn" title="Settings">
+            <i class="ic" data-icon="settings"></i>
+          </span>
+        </div>
+
+        <div class="gesture-bar"><span class="gesture-pill"></span></div>
+      </section>
+    </div>
+
+    <div class="zones-overlay" data-zones-kind="cover" data-zones-note="Smart grid, quick-filter, Activity, Trash &amp; footer sit in green zone"></div>
+  </div>
+
+  <script src="icons.js"></script>
+  <script src="shared.js"></script>
+</body>
+</html>
