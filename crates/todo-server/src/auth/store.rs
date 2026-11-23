@@ -447,6 +447,13 @@ fn decode_agent(raw: RawAgent) -> Result<AgentRow> {
 
 const AGENT_COLUMNS: &str = "id, agent_id, token_hash, grants, writes_per_hour, created_at, expires_at, last_used_at, revoked_at";
 
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum PushRegistration {
+    Stored,
+    MissingDevice,
+    Conflict,
+}
+
 impl AuthStore {
     /// Opens a connection to the (already migrated) database at `path`.
     pub fn open(path: &Path) -> Result<Self> {
@@ -482,7 +489,12 @@ impl AuthStore {
 
     // ---- push -------------------------------------------------------------------------------------
 
-    pub(crate) fn register_push(&self, device: &str, project: &str, token: &str) -> Result<bool> {
+    pub(crate) fn register_push(
+        &self,
+        device: &str,
+        project: &str,
+        token: &str,
+    ) -> Result<PushRegistration> {
         let mut conn = self.conn();
         let tx = conn.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
         let active: bool = tx.query_row(
@@ -490,20 +502,25 @@ impl AuthStore {
             [device],
             |row| row.get(0),
         )?;
-        if active {
-            // After re-pairing, the same installation may still have the same Firebase token.
-            tx.execute(
-                "DELETE FROM device_push WHERE project = ?1 AND token = ?2 AND device <> ?3",
-                params![project, token, device],
-            )?;
-            tx.execute(
-                "INSERT INTO device_push (device, project, token) VALUES (?1, ?2, ?3)
-                 ON CONFLICT (device) DO UPDATE SET project = excluded.project, token = excluded.token",
-                params![device, project, token],
-            )?;
+        if !active {
+            return Ok(PushRegistration::MissingDevice);
         }
+        // An installation token is not evidence that this bearer owns another pairing.
+        let in_use: bool = tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM device_push WHERE project = ?1 AND token = ?2 AND device <> ?3)",
+            params![project, token, device],
+            |row| row.get(0),
+        )?;
+        if in_use {
+            return Ok(PushRegistration::Conflict);
+        }
+        tx.execute(
+            "INSERT INTO device_push (device, project, token) VALUES (?1, ?2, ?3)
+             ON CONFLICT (device) DO UPDATE SET project = excluded.project, token = excluded.token",
+            params![device, project, token],
+        )?;
         tx.commit()?;
-        Ok(active)
+        Ok(PushRegistration::Stored)
     }
 
     pub(crate) fn unregister_push(&self, device: &str) -> Result<()> {

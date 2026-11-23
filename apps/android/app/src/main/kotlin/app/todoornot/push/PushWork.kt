@@ -28,12 +28,14 @@ import kotlinx.coroutines.withTimeoutOrNull
 
 private const val PAIRING = "pairing"
 private const val WAKE = "wake"
+private const val SEQUENCE = "seq"
 private const val MAX_RETRIES = 3
 internal const val FALLBACK_MINUTES = 30L
 
 /** The push payload is only a hint; no state or sequence is advanced from it. */
-internal fun syncTickle(data: Map<String, String>, hasNotification: Boolean): Boolean =
-    !hasNotification && data["t"] == "sync" && (data["seq"]?.toULongOrNull() ?: 0uL) > 0uL
+internal fun syncTickle(data: Map<String, String>, hasNotification: Boolean): ULong? =
+    if (hasNotification || data["t"] != "sync") null
+    else data["seq"]?.toULongOrNull()?.takeIf { it > 0uL }
 
 /** The FCM transport never posts a notification. The usual local reminder planner still can. */
 class TodoMessagingService : FirebaseMessagingService() {
@@ -45,12 +47,12 @@ class TodoMessagingService : FirebaseMessagingService() {
     }
 
     override fun onMessageReceived(message: RemoteMessage) {
-        if (syncTickle(message.data, message.notification != null)) catchUp()
+        syncTickle(message.data, message.notification != null)?.let(::catchUp)
     }
 
-    override fun onDeletedMessages() = catchUp()
+    override fun onDeletedMessages() = catchUp(null)
 
-    private fun catchUp() {
+    private fun catchUp(seq: ULong?) {
         val graph = todoGraph
         val pairing = graph.push.messagePairing() ?: return
         val at = Instant.now()
@@ -58,11 +60,11 @@ class TodoMessagingService : FirebaseMessagingService() {
             // Before Android 12 expedited WorkManager jobs require a visible foreground notification.
             // FCM already calls this on a background thread with a short execution window.
             val caughtUp = runBlocking(Dispatchers.IO) {
-                withTimeoutOrNull(AppGraph.RECEIVER_BUDGET_MS) { graph.syncReminders(pairing, at) } == true
+                withTimeoutOrNull(AppGraph.RECEIVER_BUDGET_MS) { graph.syncReminders(pairing, at, seq) } == true
             }
             if (caughtUp) return
         }
-        PushWork.wake(this, pairing, at)
+        PushWork.wake(this, pairing, at, seq)
     }
 }
 
@@ -70,12 +72,25 @@ class ReminderSyncWorker(context: Context, params: WorkerParameters) : Coroutine
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val pairing = inputData.getString(PAIRING) ?: return@withContext Result.success()
         val wake = inputData.getLong(WAKE, 0L).takeIf { it > 0L }?.let(Instant::ofEpochMilli)
+            ?: return@withContext Result.success()
+        val seq = inputData.getString(SEQUENCE)?.toULongOrNull()
+        val caughtUp = applicationContext.todoGraph.syncReminders(pairing, wake, seq)
+        if (caughtUp) Result.success() else if (runAttemptCount >= MAX_RETRIES) Result.failure() else Result.retry()
+    }
+}
+
+/** An installation has one fallback schedule; each run uses only the current pairing. */
+class ReminderFallbackWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val graph = applicationContext.todoGraph
-        val caughtUp = graph.syncReminders(pairing, wake)
-        if (wake == null && (graph.host.state.value as? Host.Ready)?.session?.pairingId == pairing) {
-            // Discover newly configured push and recover registration even without foreground starts.
-            PushWork.register(applicationContext, pairing)
+        if (withTimeoutOrNull(AppGraph.RECEIVER_BUDGET_MS) { graph.loaded.first { it } } == null) {
+            return@withContext Result.retry()
         }
+        val ready = graph.host.state.value as? Host.Ready ?: return@withContext Result.success()
+        if (!graph.host.isAuthorized(ready)) return@withContext Result.success()
+        val id = ready.session.pairingId
+        val caughtUp = graph.syncReminders(id)
+        if (graph.host.isAuthorized(ready)) PushWork.register(applicationContext, id)
         if (caughtUp || runAttemptCount >= MAX_RETRIES) Result.success() else Result.retry()
     }
 }
@@ -87,7 +102,7 @@ class PushRegistrationWorker(context: Context, params: WorkerParameters) : Corou
         if (withTimeoutOrNull(5_000L) { graph.loaded.first { it } } == null) return@withContext Result.retry()
         val ready = graph.host.state.value as? Host.Ready ?: return@withContext Result.success()
         if (ready.session.pairingId != pairing || !graph.host.isAuthorized(ready)) return@withContext Result.success()
-        val registered = graph.push.refresh(ready.session) { graph.host.isAuthorized(ready) }
+        val registered = graph.push.refresh(ready.session, ready.engine) { graph.host.isAuthorized(ready) }
         if (registered || runAttemptCount >= MAX_RETRIES) Result.success() else Result.retry()
     }
 }
@@ -96,15 +111,20 @@ internal object PushWork {
     private val connected = Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build()
     private fun tag(id: String) = "reminder-push-$id"
 
+    internal const val FALLBACK_WORK = "todo-reminder-fallback"
+
     fun start(context: Context, id: String) {
-        val request = PeriodicWorkRequestBuilder<ReminderSyncWorker>(FALLBACK_MINUTES, TimeUnit.MINUTES)
-            .setConstraints(connected)
-            .setInputData(workDataOf(PAIRING to id))
-            .addTag(tag(id))
-            .build()
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork("reminder-sync-$id", ExistingPeriodicWorkPolicy.KEEP, request)
+        scheduleFallback(WorkManager.getInstance(context))
         register(context, id)
     }
+
+    internal fun scheduleFallback(manager: WorkManager) = manager.enqueueUniquePeriodicWork(
+        FALLBACK_WORK, ExistingPeriodicWorkPolicy.KEEP,
+        PeriodicWorkRequestBuilder<ReminderFallbackWorker>(FALLBACK_MINUTES, TimeUnit.MINUTES)
+            .setConstraints(connected).build(),
+    )
+
+    fun cancelFallback(context: Context) = WorkManager.getInstance(context).cancelUniqueWork(FALLBACK_WORK)
 
     fun register(context: Context, id: String, rotation: Boolean = false) {
         val request = OneTimeWorkRequestBuilder<PushRegistrationWorker>()
@@ -117,19 +137,21 @@ internal object PushWork {
         WorkManager.getInstance(context).enqueueUniqueWork("reminder-registration-$id", policy, request)
     }
 
-    fun wake(context: Context, id: String, at: Instant) {
+    fun wake(context: Context, id: String, at: Instant, seq: ULong?) {
         val builder = OneTimeWorkRequestBuilder<ReminderSyncWorker>()
             .setConstraints(connected)
-            .setInputData(workDataOf(PAIRING to id, WAKE to at.toEpochMilli()))
+            .setInputData(workDataOf(PAIRING to id, WAKE to at.toEpochMilli(), SEQUENCE to seq?.toString()))
             .addTag(tag(id))
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             builder.setExpedited(OutOfQuotaPolicy.RUN_AS_NON_EXPEDITED_WORK_REQUEST)
         }
-        // A newer wake supersedes an older retry and must not sit behind its backoff.
-        WorkManager.getInstance(context).enqueueUniqueWork("reminder-wake-$id", ExistingWorkPolicy.REPLACE, builder.build())
+        // FCM can deliver out of order. Don't let an older cursor replace queued work for a newer one,
+        // or make a new wake wait behind another wake's retry backoff.
+        WorkManager.getInstance(context).enqueueUniqueWork("reminder-wake-$id-${seq ?: "latest"}", ExistingWorkPolicy.KEEP, builder.build())
     }
 
     fun cancel(context: Context, id: String) {
         WorkManager.getInstance(context).cancelAllWorkByTag(tag(id))
+        cancelFallback(context)
     }
 }

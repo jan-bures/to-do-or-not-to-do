@@ -5,8 +5,7 @@ import android.util.Log
 import app.todoornot.Cleartext
 import app.todoornot.core.FfiException
 import app.todoornot.core.PushOptions
-import app.todoornot.core.pushOptions
-import app.todoornot.core.pushRegister
+import app.todoornot.core.TodoEngine
 import app.todoornot.core.pushUnregister
 import app.todoornot.session.Session
 import com.google.firebase.FirebaseApp
@@ -17,6 +16,7 @@ import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.sync.Mutex
@@ -45,14 +45,44 @@ internal suspend fun registerForPush(
     options: () -> PushOptions?,
     token: suspend (PushOptions) -> String?,
     register: (String) -> Unit,
+    renew: suspend () -> String? = { null },
 ): PushStatus.State {
     if (!current()) return PushStatus.State.OFF
     val config = options() ?: return PushStatus.State.NOT_CONFIGURED
     if (!current()) return PushStatus.State.OFF
     val registration = token(config) ?: return PushStatus.State.OFF
     if (!current()) return PushStatus.State.OFF
-    register(registration)
+    try {
+        register(registration)
+    } catch (e: FfiException.Refused) {
+        if (e.status.toInt() != 409) throw e
+        if (!current()) return PushStatus.State.OFF
+        // Re-pairing can reuse the installation's old token. Ask Firebase for a different one;
+        // the new pairing may not claim the old pairing's registration.
+        val fresh = renew()?.takeUnless { it == registration } ?: return PushStatus.State.OFF
+        if (!current()) return PushStatus.State.OFF
+        register(fresh)
+    }
     return PushStatus.State.ON
+}
+
+/** Firebase can wrap cleanup failures in SDK-specific exception types. Never swallow cancellation. */
+private suspend fun bestEffortFirebaseCleanup(failed: () -> Unit, cleanup: suspend () -> Unit) {
+    try {
+        cleanup()
+    } catch (e: CancellationException) {
+        throw e
+    } catch (_: Exception) {
+        failed()
+    }
+}
+
+internal suspend fun retireFirebase(deleteToken: suspend () -> Unit, clear: () -> Unit, failed: () -> Unit) {
+    try {
+        bestEffortFirebaseCleanup(failed, deleteToken)
+    } finally {
+        bestEffortFirebaseCleanup(failed) { clear() }
+    }
 }
 
 /** One Firebase default app (needed by Messaging), bound to one pairing at a time. All I/O off Main. */
@@ -110,14 +140,14 @@ internal class AndroidPush(private val context: Context) {
         firebase = FirebaseApp.initializeApp(context, firebaseOptions)
     }
 
-    suspend fun refresh(session: Session, authorized: () -> Boolean): Boolean = change.withLock {
+    suspend fun refresh(session: Session, engine: TodoEngine, authorized: () -> Boolean): Boolean = change.withLock {
         val id = session.pairingId
         val current = { pairing == id && authorized() }
         if (!current()) return@withLock true
         val state = try {
             registerForPush(
                 current,
-                options = { pushOptions(session.server, session.token, Cleartext.allowLoopbackHttp) },
+                options = engine::pushOptions,
                 token = { options ->
                     configure(options)
                     val edit = prefs.edit()
@@ -127,13 +157,23 @@ internal class AndroidPush(private val context: Context) {
                         .putString("sender", options.gcmSenderId).apply()
                     withTimeoutOrNull(TOKEN_WAIT_MS) { FirebaseMessaging.getInstance().token.await() }
                 },
-                register = { pushRegister(session.server, session.token, Cleartext.allowLoopbackHttp, it) },
+                register = engine::pushRegister,
+                renew = {
+                    withTimeoutOrNull(TOKEN_WAIT_MS) {
+                        val messaging = FirebaseMessaging.getInstance()
+                        messaging.deleteToken().await()
+                        messaging.token.await()
+                    }
+                },
             )
         } catch (e: FfiException.Refused) {
             Log.d("ReminderPush", "push request refused (${e.status})")
             PushStatus.State.OFF
         } catch (e: FfiException) {
             Log.d("ReminderPush", "push setup failed: ${e::class.simpleName}")
+            PushStatus.State.OFF
+        } catch (e: java.util.concurrent.ExecutionException) {
+            Log.d("ReminderPush", "Firebase couldn't refresh the installation token")
             PushStatus.State.OFF
         } catch (e: IOException) {
             Log.d("ReminderPush", "Firebase couldn't obtain a registration")
@@ -165,26 +205,32 @@ internal class AndroidPush(private val context: Context) {
             Log.d("ReminderPush", "could not unregister this pairing: ${e::class.simpleName}")
         }
         if (pairing == session.pairingId) {
-            try {
-                if (firebase != null) withTimeoutOrNull(2_000L) { FirebaseMessaging.getInstance().deleteToken().await() }
-            } catch (e: IOException) {
-                Log.d("ReminderPush", "could not retire the old Firebase token")
-            } catch (e: IllegalStateException) {
-                Log.d("ReminderPush", "Firebase is no longer available")
-            } finally {
-                clearFirebase(session.pairingId)
-                pairing = null
-                _status.value = PushStatus()
-            }
+            retireFirebase(
+                deleteToken = {
+                    if (firebase != null) withTimeoutOrNull(2_000L) { FirebaseMessaging.getInstance().deleteToken().await() }
+                },
+                clear = {
+                    try {
+                        clearFirebase(session.pairingId)
+                    } finally {
+                        pairing = null
+                        _status.value = PushStatus()
+                    }
+                },
+                failed = { Log.d("ReminderPush", "could not finish Firebase cleanup") },
+            )
         } else if (messagePairing() == session.pairingId) {
             prefs.edit().clear().apply()
         }
     }
 
     private fun clearFirebase(id: String) {
-        firebase?.delete()
-        firebase = null
-        if (messagePairing() == id) prefs.edit().clear().apply()
+        try {
+            firebase?.delete()
+        } finally {
+            firebase = null
+            if (messagePairing() == id) prefs.edit().clear().apply()
+        }
     }
 
     companion object {

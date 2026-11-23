@@ -3,6 +3,7 @@
 use super::error::{ApiError, ErrorBody};
 use super::{ApiJson, RequestCancel, Work, blocking, no_such_endpoint};
 use crate::app::AppState;
+use crate::auth::store::PushRegistration;
 use crate::auth::{Authenticated, Principal};
 use crate::config::PushConfig;
 use axum::Json;
@@ -67,7 +68,8 @@ pub(crate) async fn config(
 
 #[utoipa::path(put, path = "/api/v1/pair/push", tag = "pairing", request_body = Registration,
     responses((status = 204, description = "Registration replaced"), (status = 401, body = ErrorBody),
-        (status = 404, body = ErrorBody), (status = 422, body = ErrorBody)), security(("bearer" = [])))]
+        (status = 404, body = ErrorBody), (status = 409, description = "Token belongs to another device", body = ErrorBody),
+        (status = 422, body = ErrorBody)), security(("bearer" = [])))]
 pub(crate) async fn register(
     State(app): State<AppState>,
     caller: Authenticated,
@@ -89,13 +91,18 @@ pub(crate) async fn register(
         if !cancel.begin_commit() {
             return Err(ApiError::timeout());
         }
-        if !auth
+        match auth
             .store()
             .register_push(device.as_str(), &push.project_id, &body.token)?
         {
-            return Err(no_such_endpoint());
+            PushRegistration::Stored => Ok(StatusCode::NO_CONTENT),
+            PushRegistration::MissingDevice => Err(no_such_endpoint()),
+            PushRegistration::Conflict => Err(ApiError::new(
+                StatusCode::CONFLICT,
+                "push_token_in_use",
+                "the registration belongs to another paired device",
+            )),
         }
-        Ok(StatusCode::NO_CONTENT)
     })
     .await?
 }

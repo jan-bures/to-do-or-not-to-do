@@ -6,6 +6,7 @@ import app.todoornot.reminders.AlarmSink
 import app.todoornot.reminders.Record
 import app.todoornot.reminders.ReminderAccess
 import app.todoornot.reminders.ReminderNeed
+import app.todoornot.reminders.ReminderDisplayGate
 import app.todoornot.reminders.ReminderPlan
 import app.todoornot.reminders.Reminders
 import app.todoornot.reminders.Schedule
@@ -14,6 +15,9 @@ import app.todoornot.reminders.clockChangeNote
 import app.todoornot.reminders.reminderLabel
 import app.todoornot.reminders.reminderStart
 import app.todoornot.reminders.resolveReminder
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -33,7 +37,7 @@ private const val HOUR = 60 * MIN
 private val ZONE: TimeZone = TimeZone.getTimeZone(ZoneOffset.ofHours(1))
 
 /** What the scheduler did, in place of `AlarmManager` and the notifications. */
-private class FakeAlarms : AlarmSink {
+internal class FakeAlarms : AlarmSink {
     /** The alarms set now, by reminder. */
     val alarms = HashMap<String, Long>()
 
@@ -190,6 +194,46 @@ class RemindersTest {
         e.removeReminder(venue.task, requireNotNull(e.seen(venue.task)))
         r.reconcile(e)
         assertTrue(sink.shown.isEmpty())
+    }
+
+    @Test
+    fun cold_start_does_not_show_a_cached_due_reminder_before_the_wake_sync() = runTest {
+        fixtureEngine().use { e ->
+            val gate = ReminderDisplayGate()
+            val syncCanFinish = CompletableDeferred<Unit>()
+            val r = scheduler()
+            val venue = e.reminderOf("Send venue booking confirmation")
+            now = venue.atMs
+            // follow() may get here before the worker (or even before initial sync starts).
+            r.reconcile(e, catchingUp = gate.holdDue)
+            assertTrue(sink.shown.isEmpty())
+            val initial = launch {
+                gate.initialCatchUp {
+                    syncCanFinish.await()
+                    e.removeReminder(venue.task, requireNotNull(e.seen(venue.task)))
+                }
+            }
+            assertTrue(gate.holdDue)
+            syncCanFinish.complete(Unit)
+            initial.join()
+            r.reconcile(e, catchingUp = gate.holdDue)
+            assertFalse(gate.holdDue)
+            assertTrue(sink.shown.isEmpty())
+        }
+    }
+
+    @Test
+    fun cold_start_offline_fallback_still_shows_a_due_reminder() = runTest {
+        fixtureEngine().use { e ->
+            val gate = ReminderDisplayGate()
+            val r = scheduler()
+            now = e.reminderOf("Send venue booking confirmation").atMs
+            r.reconcile(e, catchingUp = gate.holdDue)
+            assertTrue(sink.shown.isEmpty())
+            gate.initialCatchUp { /* The bounded sync returned without a network response. */ }
+            r.reconcile(e, catchingUp = gate.holdDue)
+            assertEquals(listOf("Send venue booking confirmation"), sink.shown)
+        }
     }
 
     @Test

@@ -39,6 +39,7 @@ pub mod attachments;
 pub mod bulk;
 pub mod merge;
 pub mod organize;
+pub mod push;
 pub mod task_drag;
 pub mod trash;
 pub mod workflow;
@@ -763,6 +764,11 @@ impl TodoEngine {
             old.abort();
         }
         Ok(())
+    }
+
+    /// Latest server event applied to this engine's confirmed replica.
+    pub fn confirmed_cursor(&self) -> u64 {
+        self.client.cursor()
     }
 
     /// The sync status.

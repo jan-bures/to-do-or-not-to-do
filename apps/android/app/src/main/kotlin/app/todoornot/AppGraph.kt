@@ -22,7 +22,10 @@ import app.todoornot.model.TodoModel
 import app.todoornot.push.AndroidPush
 import app.todoornot.push.PushWork
 import app.todoornot.reminders.AndroidAlarms
+import app.todoornot.reminders.ReminderDisplayGate
 import app.todoornot.reminders.Reminders
+import app.todoornot.reminders.reconcileReminders
+import app.todoornot.reminders.syncForReminder
 import app.todoornot.session.EngineHost
 import app.todoornot.session.Host
 import app.todoornot.session.KeystoreCipher
@@ -37,7 +40,6 @@ import app.todoornot.core.ProblemKind
 import app.todoornot.core.SyncState
 import java.time.Instant
 import java.time.ZoneId
-import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
@@ -99,6 +101,7 @@ class AppGraph(private val app: Context) {
 
     /** Work for the reminders (and their broadcasts), off the main thread. */
     private val reminderScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val reminderDisplay = ReminderDisplayGate()
 
     /** The engine reported a change: the alarms follow, at most one pass waiting. */
     private val reminderChanges = MutableSharedFlow<Unit>(extraBufferCapacity = 1, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -125,6 +128,18 @@ class AppGraph(private val app: Context) {
             }
         }
         reminderScope.launch { reminderChanges.collect { reconcileReminders() } }
+        reminderScope.launch {
+            loaded.first { it }
+            try {
+                reminderDisplay.initialCatchUp {
+                    val ready = host.state.value as? Host.Ready
+                    if (ready != null) syncReminders(ready.session.pairingId)
+                }
+            } finally {
+                // Follow may have planned cached alarms already, but only this pass may show them.
+                reconcileReminders()
+            }
+        }
         scope.launch {
             withContext(Dispatchers.IO) { host.load() }
             host.state.collectLatest { h ->
@@ -158,6 +173,7 @@ class AppGraph(private val app: Context) {
 
     /** Builds the model when an engine opens, and drops it otherwise. */
     private suspend fun follow(h: Host) {
+        if (h == Host.SignedOut) PushWork.cancelFallback(app)
         widgets.invalidate()
         val ready = h as? Host.Ready
         if (_model.value?.engine === ready?.engine) return
@@ -209,16 +225,8 @@ class AppGraph(private val app: Context) {
      * clock change). Without an open engine (not paired, or the cache won't open) they stay as they are.
      */
     fun reconcileReminders(force: Boolean = false) {
-        val ready = host.state.value as? Host.Ready ?: return
         try {
-            reminders.reconcile(ready.engine, force, catchingUp = catchingUp.get() > 0) {
-                if (host.state.value !== ready) false
-                else if (host.isAuthorized(ready)) true
-                else {
-                    reminders.clear()
-                    false
-                }
-            }
+            host.reconcileReminders(reminders, force, holdDue = reminderDisplay.holdDue)
         } catch (e: IllegalStateException) {
             // The engine was closed meanwhile (unpaired): nothing to follow any more.
             Log.d("Reminders", "the engine closed during a pass: ${e::class.simpleName}")
@@ -227,9 +235,6 @@ class AppGraph(private val app: Context) {
 
     /** Snooze 10 min, from a reminder's notification. */
     fun snoozeReminder(id: String) = reminders.snooze(id, engine())
-
-    /** Catch-up syncs under way: nothing due is shown until they end. */
-    private val catchingUp = AtomicInteger()
 
     /** What is left of a broadcast's time, in milliseconds. */
     class Deadline(private val until: Long = now() + RECEIVER_BUDGET_MS) {
@@ -257,31 +262,27 @@ class AppGraph(private val app: Context) {
     suspend fun reminderFired(deadline: Deadline) {
         val m = readyModel(minOf(MainActivity.MODEL_WAIT_MS, deadline.left() / 2))
         if (m != null) {
-            catchingUp.incrementAndGet()
-            try {
+            reminderDisplay.catchingUp {
                 m.syncInBackground(minOf(FIRE_SYNC_MS, deadline.left() - MARGIN_MS)) {
                     it.signedOut || (it.state == SyncState.ONLINE && it.caughtUp) ||
                         (it.state == SyncState.OFFLINE && it.problem == ProblemKind.NETWORK)
                 }
-            } finally {
-                catchingUp.decrementAndGet()
             }
         }
         reconcileReminders()
     }
 
     /** A silent wake-up or periodic fallback: wait for a fresh backlog, then plan local alarms. */
-    internal suspend fun syncReminders(pairing: String, wake: Instant?): Boolean {
-        catchingUp.incrementAndGet()
+    internal suspend fun syncReminders(pairing: String, wake: Instant? = null, seq: ULong? = null): Boolean {
         try {
-            if (withTimeoutOrNull(MainActivity.MODEL_WAIT_MS) { loaded.first { it } } == null) return false
-            val ready = host.state.value as? Host.Ready ?: return true
-            if (ready.session.pairingId != pairing || !host.isAuthorized(ready)) return true
-            if (wake != null) scope.launch(Dispatchers.IO) { push.woke(pairing, wake) }
-            val m = readyModel(MainActivity.MODEL_WAIT_MS)?.takeIf { it.engine === ready.engine } ?: return false
-            m.engine.nudge()
-            return m.syncInBackground(FIRE_SYNC_MS) {
-                it.signedOut || (it.state == SyncState.ONLINE && it.caughtUp && it.pending == 0u)
+            return reminderDisplay.catchingUp {
+                if (withTimeoutOrNull(MainActivity.MODEL_WAIT_MS) { loaded.first { it } } == null) return@catchingUp false
+                val ready = host.state.value as? Host.Ready ?: return@catchingUp true
+                if (ready.session.pairingId != pairing || !host.isAuthorized(ready)) return@catchingUp true
+                if (wake != null) scope.launch(Dispatchers.IO) { push.woke(pairing, wake) }
+                val m = readyModel(MainActivity.MODEL_WAIT_MS)?.takeIf { it.engine === ready.engine }
+                    ?: return@catchingUp false
+                m.syncForReminder(FIRE_SYNC_MS, seq, freshConnection = wake != null && seq == null)
             }
         } catch (e: FfiException) {
             Log.d("Reminders", "background sync failed: ${e::class.simpleName}")
@@ -290,7 +291,6 @@ class AppGraph(private val app: Context) {
             // The pairing closed during the wake-up.
             return true
         } finally {
-            catchingUp.decrementAndGet()
             reconcileReminders()
         }
     }

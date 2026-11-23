@@ -8,6 +8,9 @@ import app.todoornot.core.RoomKey
 import app.todoornot.core.SmartList
 import app.todoornot.core.TodoEngine
 import app.todoornot.model.TodoModel
+import app.todoornot.push.registerForPush
+import app.todoornot.reminders.Reminders
+import app.todoornot.reminders.reconcileReminders
 import app.todoornot.session.EngineHost
 import app.todoornot.session.Host
 import app.todoornot.session.PairingFiles
@@ -152,6 +155,70 @@ class EngineHostTest {
             assertTrue(widgetSnapshot(restarted, room, FIXTURE_NOW).data is WidgetData.Room)
             val model = TodoModel(engine, backgroundScope, Dispatchers.Unconfined, now = { FIXTURE_NOW })
             assertFalse("an action retained from the old pairing must be refused", click.apply(restarted, model, FIXTURE_NOW))
+        }
+    }
+
+    @Test
+    fun a_registration_only_401_hides_widget_and_reminder_titles_even_after_an_offline_restart() = runTest {
+        fun realHost() = EngineHost(SessionStore(values, FakeCipher()), PairingFiles(root), forgetKey = {}, newPairingId = ::nextId) { s, db ->
+            TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, true))
+        }
+        val paths = java.util.concurrent.ConcurrentLinkedQueue<String>()
+        val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
+        server.createContext("/") { exchange -> exchange.use {
+            paths.add("${it.requestMethod} ${it.requestURI.path}")
+            if (it.requestMethod == "GET" && it.requestURI.path == "/api/v1/pair/push") {
+                val options = """{"projectId":"test-firebase","applicationId":"test-application","apiKey":"test-key","gcmSenderId":"123"}""".toByteArray()
+                it.sendResponseHeaders(200, options.size.toLong())
+                it.responseBody.write(options)
+            } else it.sendResponseHeaders(401, -1)
+        } }
+        server.start()
+        val room = RoomKey.Smart(SmartList.ALL)
+        val first = realHost().apply { paired(approved.copy(server = "http://127.0.0.1:${server.address.port}")) }
+        val ready = first.state.value as Host.Ready
+        val alarms = FakeAlarms()
+        var now = FIXTURE_NOW.epochMs
+        val reminders = Reminders(MapValues(), alarms, clock = { now })
+        try {
+            ready.engine.use { engine ->
+                val task = engine.addTask(room, "Cached reminder title", FIXTURE_NOW)
+                val at = now + 60_000L
+                engine.setReminder(task, null, at, FIXTURE_NOW)
+                first.reconcileReminders(reminders)
+                assertTrue(alarms.alarms.isNotEmpty())
+                val recorded = CountDownLatch(1)
+                engine.setListener(object : ChangeListener {
+                    override fun onChange() {
+                        if (first.status(ready).revoked) {
+                            first.reconcileReminders(reminders)
+                            recorded.countDown()
+                        }
+                    }
+                })
+                try {
+                    registerForPush({ first.isAuthorized(ready) }, engine::pushOptions, { "test-token" }, engine::pushRegister)
+                    error("expected 401")
+                } catch (e: FfiException.Refused) {
+                    assertEquals(401, e.status.toInt())
+                }
+                assertTrue(recorded.await(5, TimeUnit.SECONDS))
+                assertEquals(listOf("GET /api/v1/pair/push", "PUT /api/v1/pair/push"), paths.toList())
+                assertEquals(WidgetData.SignedOut, widgetSnapshot(first, room, FIXTURE_NOW).data)
+                assertTrue(alarms.alarms.isEmpty())
+                now = at
+            }
+        } finally {
+            server.stop(0)
+        }
+        val restarted = realHost().apply { load() }
+        (restarted.state.value as Host.Ready).engine.use { engine ->
+            assertTrue("the native marker is loaded without a network response", engine.status().revoked)
+            assertNull(engine.status().problem)
+            assertEquals(WidgetData.SignedOut, widgetSnapshot(restarted, room, FIXTURE_NOW).data)
+            restarted.reconcileReminders(reminders)
+            assertTrue(alarms.alarms.isEmpty())
+            assertTrue(alarms.shown.isEmpty())
         }
     }
 

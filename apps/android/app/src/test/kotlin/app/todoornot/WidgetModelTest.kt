@@ -6,6 +6,7 @@ import app.todoornot.core.SmartList
 import app.todoornot.core.SyncState
 import app.todoornot.design.Tokens
 import app.todoornot.model.TodoModel
+import app.todoornot.reminders.syncForReminder
 import app.todoornot.widget.WIDGET_ROW_LIMIT
 import app.todoornot.widget.WidgetData
 import app.todoornot.widget.WidgetEdit
@@ -16,6 +17,7 @@ import app.todoornot.widget.widgetKey
 import app.todoornot.widget.widgetRoom
 import app.todoornot.widget.widgetRowHeight
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.advanceTimeBy
@@ -106,6 +108,28 @@ class WidgetModelTest {
             longer.cancel()
             runCurrent()
             assertEquals(SyncState.PAUSED, engine.status().state)
+        }
+    }
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    @Test
+    fun reminder_wake_waits_for_its_confirmed_cursor_even_when_foregrounding_changes() = runTest {
+        fixtureEngine().use { engine ->
+            val status = engine.status().copy(state = SyncState.ONLINE, caughtUp = true)
+            val model = TodoModel(engine, backgroundScope, Dispatchers.Unconfined, syncStatus = { status })
+            model.resume()
+            var cursor = 9uL
+            val wake = async { model.syncForReminder(2_000L, 10uL, cursor = { cursor }) }
+            advanceTimeBy(500L)
+            assertFalse("an already-live connection hasn't observed the pushed event", wake.isCompleted)
+            model.pause()
+            advanceTimeBy(500L)
+            assertNotEquals("the wake holds a sync lease as SSE would normally pause", SyncState.PAUSED, engine.status().state)
+            assertFalse(wake.isCompleted)
+            cursor = 10uL
+            assertTrue(wake.await())
+            assertEquals(SyncState.PAUSED, engine.status().state)
+            assertFalse("an unobserved cursor must retry", model.syncForReminder(500L, 11uL, cursor = { cursor }))
         }
     }
 

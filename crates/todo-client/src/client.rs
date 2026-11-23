@@ -597,7 +597,9 @@ impl<T: Transport, C: Clock> SyncClient<T, C> {
         &self.inner.revocation
     }
 
-    async fn send_request(
+    /// Sends an authenticated request through this client's transport and latches a 401.
+    /// The caller supplies its deadline and interprets the response.
+    pub async fn send_request(
         &self,
         request: crate::platform::Request,
     ) -> Result<Response, TransportError> {

@@ -208,7 +208,7 @@ Long-press an empty spot on the home screen, open **Widgets**, and add **To-do l
 own selection. Tap the name or chevron to pick again; on wider widgets **Widget settings** does the same.
 A deleted list or collection offers to pick another. A signed-out widget says **Open the app to sign in**.
 If the server signs the phone out, widgets hide task and list names and refuse task edits, even after an
-offline restart. A 401 from sync, Activity, an upload or a download latches immediately. The native
+offline restart. A 401 from sync, Activity, an upload, a download or push registration latches immediately. The native
 engine writes an empty `todo.sqlite.revoked` marker beside that pairing's cache; the app also honors
 its existing preference marker, and keeps the pairing blocked while retrying a failed write to
 preferences. The outbox stays intact until the owner confirms **Pair again**.
@@ -241,7 +241,9 @@ engine is ready, then plans alarms from the synced reminders. The wake-up contai
 event sequence number, never task or reminder content. It does not post a notification itself.
 
 - **Push setup.** The app gets the Firebase client options and registers its installation after pairing,
-  and refreshes its registration on startup and when Firebase rotates the token. No Firebase project is
+  and refreshes its registration on startup and when Firebase rotates the token. If re-pairing reuses a
+  token still registered to the old pairing, the app requests a fresh token rather than transferring it.
+  No Firebase project is
   built into the APK. The server operator can [enable push](hosting-linux.md#android-reminder-wake-ups).
   **Rooms → Settings** shows **Push: On** when registered, **Push: Not configured** when the server
   has push off, or **Push: Off** if registration is not active. It also shows when a push last woke sync.
@@ -253,6 +255,9 @@ event sequence number, never task or reminder content. It does not post a notifi
 - **When an alarm goes off in the background**, the app first syncs for up to four seconds (until it
   catches up or discovers there is no network). It waits to show what is still due, so a reminder
   deleted or moved elsewhere, or a task completed there, isn't shown if the change comes through.
+  A cold start also waits for its first short catch-up before showing due notifications from the cache.
+  A push wake can finish once its event sequence is confirmed, even if the app goes to the background
+  while waiting.
 
 - **What gets an alarm.** `TodoEngine.reminderAlarms` lists the live reminders of open tasks
   (`intent::reminder::alarms`). `reminders/ReminderPlan.kt` decides, purely, which alarms to set or cancel

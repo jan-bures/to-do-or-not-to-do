@@ -369,20 +369,37 @@ async fn send(
     }
     if matches!(status, StatusCode::NOT_FOUND | StatusCode::BAD_REQUEST) {
         let body = response.json::<Value>().await.unwrap_or_default();
-        let error = &body["error"];
-        let invalid =
-            |code: &Value| matches!(code.as_str(), Some("UNREGISTERED" | "INVALID_ARGUMENT"));
-        if invalid(&error["status"])
-            || error["details"]
-                .as_array()
-                .is_some_and(|items| items.iter().any(|d| invalid(&d["errorCode"])))
-        {
+        if invalid_registration(&body["error"]) {
             return Delivery::Invalid;
         }
     }
     // Google may echo a token in an error body. Log only the HTTP status.
     tracing::warn!(%status, "FCM rejected a reminder wake-up");
     Delivery::Done
+}
+
+fn invalid_registration(error: &Value) -> bool {
+    if error["status"] == "UNREGISTERED" {
+        return true;
+    }
+    // An invalid payload can also return INVALID_ARGUMENT. Require evidence about this token.
+    let Some(details) = error["details"].as_array() else {
+        return false;
+    };
+    details.iter().any(|d| match d["@type"].as_str() {
+        Some("type.googleapis.com/google.firebase.fcm.v1.FcmError") => {
+            d["errorCode"] == "UNREGISTERED"
+                || (d["errorCode"] == "INVALID_ARGUMENT"
+                    && error["message"]
+                        == "The registration token is not a valid FCM registration token")
+        }
+        Some("type.googleapis.com/google.rpc.BadRequest") => {
+            d["fieldViolations"].as_array().is_some_and(|fields| {
+                !fields.is_empty() && fields.iter().all(|v| v["field"] == "message.token")
+            })
+        }
+        _ => false,
+    })
 }
 
 struct Pending {

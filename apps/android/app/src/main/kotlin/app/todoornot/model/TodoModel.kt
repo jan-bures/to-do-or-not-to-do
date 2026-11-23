@@ -1167,22 +1167,22 @@ class TodoModel(
 
     /**
      * With the app in the background, syncs for up to [budget] ms, or until [done] says the status is
-     * enough, then stops again (also when cancelled). In the foreground it syncs anyway: nothing to do.
+     * enough, then stops again if there is no foreground or other sync. The lease also covers a
+     * foreground-to-background transition while the caller is still waiting for confirmation.
+     * [freshConnection] invalidates the previous backlog marker if the caller has no target cursor.
      */
-    suspend fun syncInBackground(budget: Long, done: (SyncStatus) -> Boolean): Boolean {
-        if (foreground || budget <= 0) return foreground
+    suspend fun syncInBackground(budget: Long, freshConnection: Boolean = false, done: (SyncStatus) -> Boolean): Boolean {
+        if (budget <= 0) return false
         var started = false
         try {
             withContext(io) {
                 lifecycle.withLock {
-                    if (!foreground) {
-                        if (backgroundSyncs == 0) engine.start()
-                        backgroundSyncs++
-                        started = true
-                    }
+                    if (freshConnection) engine.stop()
+                    engine.start()
+                    backgroundSyncs++
+                    started = true
                 }
             }
-            if (!started) return foreground
             return withTimeoutOrNull(budget) {
                 do delay(SYNC_POLL_MS) while (!done(withContext(io) { syncStatus() }))
                 true

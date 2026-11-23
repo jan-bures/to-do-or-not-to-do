@@ -209,6 +209,7 @@ dependencies {
     testImplementation(libs.compose.ui.test.junit4)
     testImplementation(libs.junit)
     testImplementation(libs.robolectric)
+    testImplementation(libs.work.testing)
     testImplementation(libs.jna)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.json)

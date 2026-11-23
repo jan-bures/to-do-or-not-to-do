@@ -64,9 +64,8 @@ async fn push_off_by_default_and_exposed_only_to_paired_bearers() {
     t.stop().await;
 }
 
-#[tokio::test]
-async fn registration_is_bounded_replaceable_and_removed_with_the_pairing() {
-    let t = TestServer::start_with(|cfg| {
+async fn configured() -> TestServer {
+    TestServer::start_with(|cfg| {
         cfg.push = Some(PushConfig {
             project_id: "test-firebase".into(),
             application_id: "1:123:android:abcdef".into(),
@@ -76,7 +75,54 @@ async fn registration_is_bounded_replaceable_and_removed_with_the_pairing() {
             service_account_file: None,
         });
     })
-    .await;
+    .await
+}
+
+#[tokio::test]
+async fn a_second_active_device_cannot_take_another_devices_push_token() {
+    let t = configured().await;
+    let url = format!("{}{PATH}", t.url);
+    let (first_id, first) = t.server.authsvc.create_device("First", None).unwrap();
+    let (second_id, second) = t.server.authsvc.create_device("Second", None).unwrap();
+    let first_token = "first-registration";
+    let second_token = "second-registration";
+    let put = |bearer: &str, token: &str| {
+        t.client
+            .put(&url)
+            .bearer_auth(bearer)
+            .json(&json!({"token":token}))
+            .send()
+    };
+    assert_eq!(
+        put(&first, first_token).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put(&second, second_token).await.unwrap().status(),
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        put(&second, first_token).await.unwrap().status(),
+        StatusCode::CONFLICT
+    );
+    let db = rusqlite::Connection::open(t.config.database_path()).unwrap();
+    for (id, expected) in [(first_id, first_token), (second_id, second_token)] {
+        let token: String = db
+            .query_row(
+                "SELECT token FROM device_push WHERE device = ?1",
+                [id.as_str()],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(token, expected);
+    }
+    drop(db);
+    t.stop().await;
+}
+
+#[tokio::test]
+async fn registration_is_bounded_replaceable_and_removed_with_the_pairing() {
+    let t = configured().await;
     let url = format!("{}{PATH}", t.url);
     let (id, bearer) = t.server.authsvc.create_device("Phone", None).unwrap();
     let response = t

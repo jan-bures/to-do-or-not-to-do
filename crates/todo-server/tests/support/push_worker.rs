@@ -1,5 +1,6 @@
 use super::*;
 use crate::app::{Options, Server};
+use crate::auth::store::PushRegistration;
 use crate::config::Config;
 use crate::engine::Engine;
 use axum::extract::State as AxumState;
@@ -20,6 +21,7 @@ const TOKEN_A: &str = "test-registration-a";
 const TOKEN_B: &str = "test-registration-b";
 const UNREGISTERED: &str = "test-registration-gone";
 const INVALID: &str = "test-registration-invalid";
+const MALFORMED: &str = "test-registration-malformed-payload";
 const QUOTA: &str = "test-registration-quota";
 const UNAVAILABLE: &str = "test-registration-unavailable";
 
@@ -49,14 +51,20 @@ async fn message(
     match registration.as_str() {
         UNREGISTERED => (
             StatusCode::NOT_FOUND,
-            Json(json!({"error":{"details":[{"errorCode":"UNREGISTERED"}]}})),
+            Json(json!({"error":{"details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError", "errorCode":"UNREGISTERED"}]}})),
         )
             .into_response(),
         INVALID => (
             StatusCode::BAD_REQUEST,
-            Json(json!({"error":{"status":"INVALID_ARGUMENT"}})),
-        )
-            .into_response(),
+            Json(json!({"error":{"status":"INVALID_ARGUMENT", "message":"The registration token is not a valid FCM registration token",
+                "details":[{"@type":"type.googleapis.com/google.firebase.fcm.v1.FcmError", "errorCode":"INVALID_ARGUMENT"}]}})),
+        ).into_response(),
+        MALFORMED => (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"error":{"status":"INVALID_ARGUMENT", "details":[
+                {"@type":"type.googleapis.com/google.rpc.BadRequest", "fieldViolations":[{"field":"message.data"}]}
+            ]}})),
+        ).into_response(),
         QUOTA => (StatusCode::TOO_MANY_REQUESTS, [(header::RETRY_AFTER, "75")]).into_response(),
         UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE.into_response(),
         _ => StatusCode::OK.into_response(),
@@ -271,15 +279,23 @@ async fn invalid_tokens_are_removed_and_transient_errors_wait_without_blocking_o
     let mut pending = BTreeMap::new();
     let now = Instant::now();
     let mut ids = Vec::new();
-    for (i, token) in [INVALID, UNREGISTERED, QUOTA, UNAVAILABLE, TOKEN_B]
-        .into_iter()
-        .enumerate()
+    for (i, token) in [
+        INVALID,
+        UNREGISTERED,
+        QUOTA,
+        UNAVAILABLE,
+        TOKEN_B,
+        MALFORMED,
+    ]
+    .into_iter()
+    .enumerate()
     {
         let (id, _) = auth.create_device(&format!("Device {i}"), None).unwrap();
-        assert!(
+        assert_eq!(
             auth.store()
                 .register_push(id.as_str(), PROJECT, token)
-                .unwrap()
+                .unwrap(),
+            PushRegistration::Stored
         );
         ids.push(id.to_string());
         pending.insert(
@@ -301,10 +317,15 @@ async fn invalid_tokens_are_removed_and_transient_errors_wait_without_blocking_o
     sender.deliver(&auth, targets(), &mut pending, now).await;
     assert!(!targets().contains_key(&ids[0]));
     assert!(!targets().contains_key(&ids[1]));
+    assert_eq!(
+        targets()[&ids[5]],
+        MALFORMED,
+        "a malformed payload cannot erase a registration"
+    );
     assert_eq!(pending.len(), 2);
     assert!(pending[&ids[2]].at >= now + Duration::from_secs(75));
     assert!(pending[&ids[3]].at >= now + Duration::from_secs(10));
-    for _ in 0..5 {
+    for _ in 0..6 {
         messages.try_recv().unwrap();
     }
     sender.deliver(&auth, targets(), &mut pending, now).await;
@@ -333,11 +354,11 @@ async fn invalid_tokens_are_removed_and_transient_errors_wait_without_blocking_o
     );
     auth.revoke_device(&ids[2], None).unwrap();
     assert!(!targets().contains_key(&ids[2]));
-    assert!(
-        !auth
-            .store()
+    assert_eq!(
+        auth.store()
             .register_push(&ids[2], PROJECT, TOKEN_A)
-            .unwrap()
+            .unwrap(),
+        PushRegistration::MissingDevice
     );
     fake_task.abort();
     server.spawn().unwrap().shutdown().await.unwrap();
