@@ -96,6 +96,7 @@ fun DueDateCard(
     markToday: Boolean = true,
     clearAvailable: Boolean = due != null,
     repeatNote: String = REPEAT_NOTE,
+    inSheet: Boolean = false,
 ) {
     val d = LocalDesign.current
     val r = d.room
@@ -107,8 +108,7 @@ fun DueDateCard(
     val compact = maxHeight < COMPACT_BELOW
     Column(
         Modifier
-            .widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp)
-            .overlay(shape, d)
+            .then(if (inSheet) Modifier.fillMaxWidth() else Modifier.widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp).overlay(shape, d))
             .semantics { paneTitle = "Due date" },
     ) {
         Box(Modifier.weight(1f, fill = false).verticalScroll(rememberScrollState())) {

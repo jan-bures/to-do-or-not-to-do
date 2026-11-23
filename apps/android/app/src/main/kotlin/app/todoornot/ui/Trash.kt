@@ -12,6 +12,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -33,9 +34,15 @@ internal fun TrashRoom(state: UiState, actions: Actions, drawer: () -> Unit, wid
     val phone = Tokens.Metrics.Phone
     val collapse = remember(state.generation) { HeaderCollapse() }
     val pad = (if (wide) Tokens.Metrics.Desktop.LIST_PAD_X else phone.ROW_PAD_LEFT).dp
-    Column(Modifier.fillMaxSize().background(r.pane).navigationBarsPadding().nestedScroll(collapse.connection)) {
+    Column(Modifier.fillMaxSize().background(r.pane).systemBarsPadding().nestedScroll(collapse.connection)) {
+        Row(Modifier.fillMaxWidth().background(r.sky).padding(horizontal = space.S2.dp), verticalAlignment = Alignment.CenterVertically) {
+            IconButton("menu", "Rooms", onClick = drawer)
+            Label(state.room.title, Tokens.Type.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f)
+                .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) })
+            SyncChip(state.status, actions::nudge)
+        }
         val landscape = if (wide) Tokens.Landscape.HEIGHT_INNER else Tokens.Landscape.HEIGHT_COVER
-        RoomHeader(state.room, landscape.dp, collapse, drawer) { SyncChip(state.status, actions::nudge) }
+        RoomHeader(state.room, landscape.dp, collapse, state.status, compact = 0.dp) {}
         Label(trash.description, Tokens.Type.BODY, r.ink2,
             Modifier.fillMaxWidth().hairline(r.line).padding(horizontal = pad, vertical = space.S3.dp),
             maxLines = Int.MAX_VALUE)

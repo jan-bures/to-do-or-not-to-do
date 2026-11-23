@@ -9,33 +9,39 @@ What the first version does:
 
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
   on any device. The device token is sealed with a key in the Android Keystore.
-- **Lists.** My Day, the smart lists, collections and lists, with the room pills and the drawer. In the
-  drawer, collections fold with their chevron. **+ New → List** adds a list with a swatch and opens it.
+- **Lists.** The bottom room pills show all siblings in a sideways-scrolling strip. Tap **Rooms** or
+  swipe up on the bottom bar to open the room switcher. Its pinned **Find a room…** field searches
+  names without regard to case or accents, including lists in folded collections. The six smart rooms
+  sit above the filter; collections, loose lists, Activity, agents and Trash share the scrolling area.
+  Collections fold with their chevron. **+ New → List** adds a list with a swatch and opens it.
   It creates a sibling from a list, a child from a collection, or a top-level list from a smart room.
-  The settings gear shows the paired server. **Open admin pages** opens that server's `/admin` in the
+  The pinned footer's sync status retries sync on tap. The settings gear opens a sheet with the paired
+  server and a **Thumb-zone hand** choice. Left-handed mode mirrors the cover room bar and switcher
+  footer only; the unfolded list stays on the left. This choice is stored on the phone, not synced. **Open admin pages** opens that server's `/admin` in the
   browser, where you can sign in with your passkey if asked. **Sync now** retries without waiting for the
   next automatic attempt; it shows **Syncing…** and is disabled while the engine is busy. The menu also
   offers **Devices…** and **Unpair this phone**.
-- **Managing lists.** A long press on a list in the drawer opens its menu: **Rename**, **Move up**, **Move
+- **Managing lists.** A long press on a list in the room switcher opens its bottom action sheet: **Rename**, **Move up**, **Move
   down**, **Move to…**, **Colour…** and **Delete list…**. The move picker lists the collections and **No collection**.
-  A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The drawer's
+  A collection offers **Rename**, **Move up**, **Move down**, **Colour…** and **Delete collection…**. The switcher's
   **+ New → Collection** opens the collection after creating it. Both colour pickers use the twelve design swatches. A move
   that would go past either end is greyed out. The room's **⋯** button offers what applies to the room:
   in a list or collection, Rename, Colour…, the moves, Show or Hide completed and Delete…; in My Day, Important, Planned and All, the Completed
-  toggle. Completed and Agent activity have no menu, so no button. Renaming asks for the name in a dialog
+  toggle. Completed and Agent activity have no menu, so no button. The actions open in a bottom sheet;
+  colour and move pickers replace its contents. Renaming asks for the name in a bottom-aligned dialog
   (a blank one can't be saved). Deleting asks first, in full, as the desktop does ("Delete the list
   “Errands” and its 4 tasks? Undo brings them back."), with **Cancel** first and focused. Confirming checks
   the question again (`TodoEngine::delete_list` takes the question the owner saw): if the list was renamed,
   or tasks synced into it or out of it while the question was open, nothing is deleted and the new
-  question is asked, saying it changed. Deleting the open list goes to My Day, and the drawer closes so the
+  question is asked, saying it changed. Deleting the open list goes to My Day, and the room switcher closes so the
   toast's **Undo** is in view; it brings the list and its tasks back either way.
-- **Agents.** The drawer's **Activity** row sits right after Agent activity, and under it, indented, the
+- **Agents.** The switcher's **Activity** row sits below the lists and collections. Under it, indented, are the
   agents active today (at most four), each with its letter mark and what it did ("2 added, 1 edited today",
   "3 edited today"). The selection and wording are shared with desktop (`todo_client::activity`), and
   the phone supplies the actual bounds of its local day, including on days the clocks change.
-  Tap one to open Activity filtered to its ID. The order of the drawer is
-  the one every client keeps (`docs/design-language.md`, *Sidebar order*).
-- **Activity.** The drawer's Activity room reads the confirmed event log, newest first. Events are grouped
+  Tap one to open Activity filtered to its ID. Sections keep their shared order within each zone; Android
+  groups the smart rooms at the bottom to keep them within reach.
+- **Activity.** The switcher's Activity room reads the confirmed event log, newest first. Events are grouped
   by local calendar day and show the actor and relative time. Scrolling reads older pages. New events mark
   **Refresh activity •** without moving the reader. Switching agent or log epoch starts a new feed. If a
   change is too large, **Skip this change** continues at the server’s cursor. Undo names the event by
@@ -43,35 +49,38 @@ What the first version does:
   uses the shared plain wording, never the server message. `todo_client::activity::Feed` owns each room’s pages;
   the engine keeps `Undos` for the pairing, so switching agents or leaving Activity does not unblock a pending
   batch. Compose draws the day groups and row actions returned by `todo-ffi`. The Agent activity smart list is still a list of tasks.
-- **Trash.** Open it in the drawer below Activity and its agents. Directly deleted tasks, lists and collections
+- **Trash.** Open it in the switcher below Activity and its agents. Directly deleted tasks, lists and collections
   are ordered newest first. **Restore** returns an item to its original place and offers tracked **Undo**.
   A deleted list or collection must be restored first before a separately deleted child can return. Restoring
   a parent also reveals children hidden with it that were not deleted themselves. Undo a merge in Activity
   to recover a merge source. Trash reads the local synced replica, has no automatic expiry or permanent-delete
   control, and does not change the server's separate attachment blob-retention policy.
-- **Filter.** The search button in the bar opens a filter under the room pills. It takes the desktop's query
+- **Filter.** The search button in the bottom bar swaps the composer for a filter field right above the
+  bar or keyboard. With a query active and the keyboard closed, **+** restores the composer without clearing
+  the query. The filter takes the desktop's query
   language (`tag:docs`, `due<=friday`, `priority>=high`), or plain words to find in titles. The rows narrow;
   the sun and the counts still measure the whole room. Done tasks that match stay under Completed. Opening a
   room, even the same one, clears the filter and closes its field.
 - **Tasks.** Add, complete (with the completion choreography and undo, see *Motion*), rename, add to or remove from My Day, mark
   important (the star, as on the desktop: high priority), and add and tick steps.
 - **Select several tasks.** Long-press a task row, then tap other rows to add or remove them. The app
-  bar shows the count; **Close** or system **Back** clears it. Changing rooms or filtering a row out
+  bottom dock shows the count; **Clear selection** or system **Back** clears it. Changing rooms or filtering a row out
   drops its selection. With two or more tasks, the contextual controls offer Complete or Reopen,
   importance, My Day, Move to…, Set due… and Delete. Mixed selections offer the positive action and
-  skip tasks already in that state. Move and Due reuse their usual pickers; moved tasks keep their
+  skip tasks already in that state. Move and Due open in bottom sheets; moved tasks keep their
   room order at the front of the destination. The unfolded detail pane shows the selected count.
   Each successful change clears selection and offers one **Undo** for all affected tasks, including
   any next occurrences created by completing repeats. The `multi_selection` gallery shows both themes.
 - **Drag tasks.** Long-press a row to select it, then drag a selected row by its six-dot grip. All
   selected tasks lift together, with a count on the preview. In a manual list, drop on the insertion
   line to reorder the open tasks. A filter still allows reorder relative to visible rows; hidden
-  tasks keep their relative order. Smart lists and collections don't show an insertion line. Drag
-  to the left edge to open Lists, then release over another list to prepend the tasks or over **My Day**
-  to add them to today's plan. The list and drawer scroll near their edges. Only valid destinations
+  tasks keep their relative order. Smart lists and collections don't show an insertion line. As tasks
+  lift, the dock shows sibling room pills and **Rooms** as drop targets. Drop on a valid pill, or drag
+  onto **Rooms** to open the switcher and drop on another list to prepend the tasks or on **My Day**
+  to add them to today's plan. The list and switcher scroll near their edges. Only valid destinations
   highlight; letting go elsewhere cancels. A drop has one **Undo**. The detail menu still offers
   **Move up**, **Move down**, **Move to…**, and the My Day action without a drag. The `task_drag`
-  gallery captures the lifted selection, insertion line and drawer highlight.
+  gallery captures the lifted selection, insertion line and switcher highlight.
 - **Task actions.** Tap **⋯** in a task's detail header. The menu offers Complete or
   Reopen, Add to or Remove from My Day, Mark as important or Remove importance, Priority…, Move to…,
   Merge into… and Delete task. **Move to…** shows lists grouped by collection, with the current list ticked. Type words
@@ -116,8 +125,8 @@ What the first version does:
   cancel the upload. **Remove** works offline and offers **Undo**.
 - **Task activity.** Below Attachments, **Activity** shows who created, last edited or completed the
   task, newest first. `todo-client` supplies the same labels and relative times as desktop and web
-  through UniFFI; Compose uses the drawer's agent marks. A later edit doesn't replace the completer,
-  and unknown historical completers aren't guessed. Unlike the drawer's Activity feed, this summary
+  through UniFFI; Compose uses the switcher's agent marks. A later edit doesn't replace the completer,
+  and unknown historical completers aren't guessed. Unlike the switcher's Activity feed, this summary
   works offline and offers no Undo.
 - **Delete confirmations.** For tags and collections the app checks the displayed name and impact again
   behind pending writes. If they changed, it asks again and queues nothing. Undo restores the exact deletion.
@@ -173,11 +182,15 @@ What the first version does:
 - **The finished day.** My Day hands over to tomorrow, with **Plan <weekday>** (it opens Planned) and today's
   Completed section. With nothing due tomorrow there is no hand-over, but **Plan <weekday>** is still there.
 - **Offline.** Task and organization edits use a local SQLite cache and outbox, and sync
-  when the network comes back. Activity needs a connection to read pages. A chip in the bar shows how many changes are waiting.
+  when the network comes back. Activity needs a connection to read pages. The sky and switcher footer
+  show sync trouble or waiting changes. Failed edits and sign-out actions sit right above the dock.
 - **Live updates.** While the app is in the foreground it holds the server's event stream open.
-- **Layouts.** Folded (compact width) it is one pane, with the detail over the list. Unfolded it shows the
-  list and the detail side by side, like the F2 inner-screen mockup. The header collapses while scrolling
-  and while the keyboard is open. Light and dark follow the system.
+- **Layouts.** Folded (compact width) it is one pane, with detail over the list. Unfolded it puts the list
+  and its sheets in the left pane, clear of a separating hinge, with detail to the right. The read-only sky
+  collapses to a 36 dp strip while scrolling. On the cover, pull down from the top of the list to bring
+  tasks closer; release after a long pull to leave them there, or tap the stretched sky to reset. While
+  typing, the room bar hides and the header collapses to leave more space for rows. Light and dark follow
+  the system. See [the thumb-zone specification](android-thumb-zone.md) for the postures and Fold7 gallery.
 
 ## Home-screen widget
 
@@ -285,7 +298,7 @@ cue comes from the generated `Tokens.Motion` (`motion.durationsMs`, `motion.easi
   (`CHECK_FILL`, `POP`), the tick and the title's strike-through draw from the left as the title dims
   (`CHECK_TICK` after `CHECK_TICK_DELAY`), the row holds still (`COMPLETE_HOLD`), then fades and collapses
   (`ROW_COLLAPSE`, `EXIT`) while the rows below rise to close the gap. Only then is it released: it leaves
-  the open rows (entering an open Completed section, `ROW_ENTER`), and the counts (header, drawer, pills)
+  the open rows (entering an open Completed section, `ROW_ENTER`), and the counts (header and switcher)
   change and the sun travels to the new count (`SUN_TRAVEL`, `SUN`). Until the release the Rust view
   model counts it as open: each read passes the rows in their choreography (`RowPlacement`) to
   `TodoEngine.roomPlaced` and `homePlaced`.
@@ -375,12 +388,13 @@ the fill, the hold, the collapse half way, the sun half way, dusk half way and t
 Popups and dialogs are windows of their own, which Paparazzi can't draw, so the overlay shots draw their
 cards in place over the screen, at rest: the shared calendar (`detail_due_calendar`, on a repeating task
 and an undated task in both themes), the priority picker, a step being renamed and a step's
-menu (`step_actions`, with the toast after deleting one), a list's drawer menu, the room menu and the
-rename dialog (`list_menu`), the delete question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
+menu (`step_actions`, with the toast after deleting one), the rename dialog (`list_menu`), the delete
+question, also asked again (`delete_confirmation`), the task menu, Move picker and deleted task with Undo (`task_actions`), the
 reminder picker, set, new and sideways (`reminder_picker`, drawn in UTC+1 with today's ring off), the
-Reminder row set and empty (`reminder_row`), the permission rationale (`reminder_permission`), and the
-drawer with every collection folded, Activity and its agents after Agent activity (`agent_summary`), and
-Settings with the admin link and idle/busy sync (`settings_menu_light`, `settings_menu_dark`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes. The gallery
+Reminder row set and empty (`reminder_row`) and the permission rationale (`reminder_permission`). The
+inline sheets are drawn directly, including the switcher with Activity and its agents (`agent_summary`),
+the room and list actions (`list_menu`), bulk pickers (`multi_selection`), and Settings with idle and
+busy sync and both hand choices (`settings_menu`). The `organize` gallery covers the repeat and tag rows, pickers, confirmations, links, collection actions, undo surfaces and Activity in both themes. The gallery
 is drawn in US English (`en-rUS`) whatever the machine's locale, as the date picker words the month.
 
 Every size, colour, type style and duration comes from `todo-design`. Gradle generates `Tokens.kt`, the icon
@@ -422,13 +436,14 @@ builds `arm64-v8a` and `x86_64`.
 
 The unit tests load a host build of `todo_ffi` from `target/debug`, which Gradle builds first. The
 gallery draws the real screens from invented fixture data (`TodoEngine.fixture`) through the real Rust view
-model, on the cover screen (412 × 920 dp) and the inner screen (900 × 1000 dp), light and dark. It
-includes populated and empty Trash, task detail activity (`GalleryTest.task_activity`), the collapsed
-header, a short window and 1.3× text. Look at it after every UI change; the
+model. The thumb-zone gallery uses Fold7 cover (412 × 960 dp) and inner (876 × 970 dp) configurations;
+older fixtures also use the F2 sizes (412 × 920 and 900 × 1000 dp). It includes reachability, the
+collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. Look at it
+after every UI change; the
 images are in `app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a device or emulator with the software keyboard enabled,
-open the drawer and choose **New → List**. The focused name field must stay fully above the keyboard,
+open **Rooms** and choose **New → List**. The focused name field must stay fully above the keyboard,
 including in landscape. Type a name and press the keyboard's **Done** key to confirm the new list opens.
 
 CI builds the debug APK and runs the unit and screenshot tests. It uses no signing secrets: the debug APK
@@ -457,12 +472,12 @@ because the Keystore key goes with it.
    code into **Approve a device** on a signed-in app, or open the link on a device where you can sign
    in with your passkey (or tap *Open link* to use the phone's browser). Check that the code matches,
    then approve it.
-3. The app moves on by itself. **Unpair this phone**, under the settings button in the drawer's footer,
+3. The app moves on by itself. **Unpair this phone**, under the settings button in the switcher footer,
    forgets the token, the Keystore key and the local cache.
 
 Alternatively [use an invitation](device-pairing.md): scan its QR code on the signed-out screen or
 enter its code with the server address. An already paired phone can also issue invites and approve
-requests from **Settings → Devices…** in the drawer. Camera access is optional and requested only when scanning.
+requests from **Rooms → Settings → Devices…**. Camera access is optional and requested only when scanning.
 
 **Unpairing always asks first.** The question says how many changes haven't reached the server; with any,
 the button reads **Unpair and discard**, and Cancel is the default. The same question guards **Pair again**

@@ -1,5 +1,32 @@
 package app.todoornot.ui
 
+import android.provider.Settings
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.EnterTransition
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.foundation.gestures.draggable
+import androidx.compose.foundation.gestures.rememberDraggableState
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.isImeVisible
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.setValue
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.unit.Dp
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
@@ -113,7 +140,7 @@ fun MenuCard(entries: List<MenuEntry>, onChoose: (MenuAction) -> Unit, modifier:
 
 /** One item: icon, label, an optional hint (`!!!`) and a tick for the current choice. 48 dp to touch. */
 @Composable
-private fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
+internal fun MenuItemRow(item: MenuEntry.Item, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     val ink = when {
         !item.enabled -> r.ink4
@@ -173,8 +200,8 @@ class OverlayState internal constructor(internal val shown: MutableTransitionSta
 }
 
 @Composable
-private fun rememberOverlay(onGone: () -> Unit): OverlayState {
-    val state = remember { OverlayState(MutableTransitionState(false).apply { targetState = true }) }
+private fun rememberOverlay(onGone: () -> Unit, atRest: Boolean = false): OverlayState {
+    val state = remember { OverlayState(MutableTransitionState(atRest).apply { targetState = true }) }
     val s = state.shown
     LaunchedEffect(s.currentState, s.targetState, s.isIdle) {
         if (!s.targetState && !s.currentState && s.isIdle) onGone()
@@ -187,13 +214,14 @@ private fun rememberOverlay(onGone: () -> Unit): OverlayState {
  * or its start for [start], and kept [margin] px inside the window. The card's own padding (room for the
  * shadow) is [inset] px.
  */
-private class MenuPosition(val start: Boolean, val margin: Int, val inset: Int) : PopupPositionProvider {
+private class MenuPosition(val start: Boolean, val margin: Int, val inset: Int, val above: Int? = null) : PopupPositionProvider {
     override fun calculatePosition(anchorBounds: IntRect, windowSize: IntSize, layoutDirection: LayoutDirection, popupContentSize: IntSize): IntOffset {
         val w = popupContentSize.width
         val h = popupContentSize.height
         val x = if (start) anchorBounds.left - inset else anchorBounds.right - w + inset
         val below = anchorBounds.bottom - inset
-        val y = if (below + h <= windowSize.height - margin) below else anchorBounds.top - h + inset
+        val y = if (above != null) anchorBounds.top - h + inset - above
+            else if (below + h <= windowSize.height - margin) below else anchorBounds.top - h + inset
         return IntOffset(
             x.coerceIn(margin - inset, maxOf(margin - inset, windowSize.width - w - margin + inset)),
             y.coerceIn(margin - inset, maxOf(margin - inset, windowSize.height - h - margin + inset)),
@@ -220,12 +248,12 @@ fun MenuPopup(
 
 /** Shared anchor, placement and motion for menus and the calendar popover. */
 @Composable
-fun AnchoredPopup(onDismiss: () -> Unit, start: Boolean = false, content: @Composable (OverlayState) -> Unit) {
+fun AnchoredPopup(onDismiss: () -> Unit, start: Boolean = false, above: Boolean = false, content: @Composable (OverlayState) -> Unit) {
     val overlay = rememberOverlay(onDismiss)
     val density = LocalDensity.current
     val shift = with(density) { M.OVERLAY_SHIFT.dp.roundToPx() }
-    val position = remember(start, density) {
-        with(density) { MenuPosition(start, S.S2.dp.roundToPx(), S.S2.dp.roundToPx()) }
+    val position = remember(start, density, above) {
+        with(density) { MenuPosition(start, S.S2.dp.roundToPx(), S.S2.dp.roundToPx(), if (above) S.S1.dp.roundToPx() else null) }
     }
     val origin = if (start) 0f else 1f
     Popup(
@@ -246,14 +274,123 @@ fun AnchoredPopup(onDismiss: () -> Unit, start: Boolean = false, content: @Compo
     }
 }
 
+private val Phone = Tokens.Metrics.Phone
+
+/** The left pane's live width (including a separating fold's actual position, when present). */
+internal val LocalSheetWidth = staticCompositionLocalOf<Dp?> { null }
+/** Freeze the initial sheet motion at rest for visual fixtures. */
+internal val LocalSheetAtRest = staticCompositionLocalOf { false }
+
+@Composable
+internal fun reducedMotion(): Boolean {
+    val context = LocalContext.current
+    return Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
+}
+
+/** Full-screen layer in the activity, so a task drag can stay captured while the switcher opens. */
+@Composable
+internal fun BottomSheet(
+    title: String,
+    onDismiss: () -> Unit,
+    tall: Boolean = false,
+    color: Color = LocalDesign.current.room.raised,
+    gestureReveal: Float? = null,
+    content: @Composable ColumnScope.(OverlayState) -> Unit,
+) {
+    val overlay = rememberOverlay(onDismiss, atRest = LocalSheetAtRest.current)
+    val d = LocalDesign.current
+    val width = LocalSheetWidth.current
+    val fromGesture = remember { gestureReveal != null }
+    val reduced = reducedMotion()
+    val keyboard = WindowInsets.isImeVisible
+    val duration = if (reduced) 0 else M.PANEL
+    BackHandler(onBack = overlay::close)
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.BottomStart) {
+        AnimatedVisibility(overlay.shown, enter = fadeIn(tween(duration)), exit = fadeOut(tween(duration))) {
+            Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (gestureReveal == null) 1f else (gestureReveal / Phone.HEADER_REACH_EXPAND.dp.toPx()).coerceIn(0f, 1f) }
+                    .background(d.scrim).clickable(
+                remember { MutableInteractionSource() }, indication = null, onClickLabel = "Dismiss $title", onClick = overlay::close,
+            ))
+        }
+        BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().imePadding(), contentAlignment = Alignment.BottomStart) {
+            val viewport = maxHeight
+            // Fit the pinned actions and search results in the reduced space above the IME.
+            val base = if (keyboard) viewport else viewport * Phone.SHEET_DEFAULT_FRACTION
+            val max = if (keyboard) viewport else viewport * Phone.SHEET_MAX_FRACTION
+            var expanded by remember { androidx.compose.runtime.mutableStateOf(false) }
+            var drag by remember(viewport) { mutableFloatStateOf(0f) }
+            var dragging by remember { androidx.compose.runtime.mutableStateOf(false) }
+            val density = LocalDensity.current
+            val roomToGrow = with(density) { (max - base).toPx() }
+            val rest = if (!overlay.open && drag < 0f) drag else if (expanded) roomToGrow else 0f
+            val position by animateFloatAsState(if (dragging) drag else rest,
+                if (dragging) androidx.compose.animation.core.snap() else tween(duration, easing = M.EASE_STANDARD.cubic()),
+                label = "sheet settle")
+            val basePx = with(density) { (if (tall) base else max).toPx() }
+            val revealOffset by animateFloatAsState(if (gestureReveal == null) 0f else (basePx - gestureReveal).coerceAtLeast(0f),
+                if (gestureReveal != null) androidx.compose.animation.core.snap() else tween(duration, easing = M.EASE_ENTER.cubic()),
+                label = "switcher reveal")
+            val shape = RoundedCornerShape(topStart = Tokens.Radius.XL.dp, topEnd = Tokens.Radius.XL.dp)
+            AnimatedVisibility(
+                overlay.shown,
+                modifier = if (width == null) Modifier.fillMaxWidth() else Modifier.width(width),
+                enter = if (fromGesture) EnterTransition.None else slideInVertically(tween(duration, easing = M.EASE_ENTER.cubic())) { it },
+                exit = slideOutVertically(tween(duration, easing = M.EASE_EXIT.cubic())) { it },
+            ) {
+                val delta = with(density) { position.toDp() }
+                Column(Modifier.fillMaxWidth()
+                    .offset { IntOffset(0, ((-position).coerceAtLeast(0f) + revealOffset).toInt()) }
+                    .then(if (tall) Modifier.height((base + delta.coerceAtLeast(0.dp)).coerceAtMost(max)) else Modifier.heightIn(max = max))
+                    .clip(shape).background(color)
+                    .then(if (d.dark) Modifier.border(Tokens.Elevation.HAIRLINE.dp, d.room.lineStrong, shape) else Modifier)
+                    .pointerInput(Unit) { // Keep taps on blank sheet space from reaching the scrim.
+                        awaitEachGesture { awaitFirstDown(requireUnconsumed = false) }
+                    }
+                    .semantics { paneTitle = title }
+                    .navigationBarsPadding(),
+                ) {
+                    Box(Modifier.fillMaxWidth().draggable(
+                        rememberDraggableState { dy -> drag = (drag - dy).coerceAtMost(if (tall) roomToGrow else 0f) },
+                        orientation = Orientation.Vertical,
+                        onDragStarted = { drag = position; dragging = true },
+                        onDragStopped = {
+                            if (drag < -with(density) { Phone.BULK_STATUS_BAR.dp.toPx() }) overlay.close()
+                            else if (tall) expanded = drag >= roomToGrow / 2
+                            dragging = false
+                        },
+                    ).padding(vertical = S.S2.dp), contentAlignment = Alignment.Center) {
+                        Box(Modifier.size(Phone.SHEET_HANDLE_WIDTH.dp, S.S1.dp)
+                            .background(d.room.lineStrong, RoundedCornerShape(Tokens.Radius.SM.dp)))
+                    }
+                    content(overlay)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun ActionSheetContent(entries: List<MenuEntry>, title: String, onChoose: (MenuAction) -> Unit) {
+    val r = LocalDesign.current.room
+    Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(bottom = S.S2.dp)) {
+        Label(title, Tokens.Type.CAPS_LABEL, r.ink3, Modifier.padding(horizontal = S.S3.dp, vertical = S.S2.dp))
+        entries.forEach { entry ->
+            when (entry) {
+                is MenuEntry.Item -> MenuItemRow(entry) { onChoose(entry.action) }
+                MenuEntry.Separator -> Box(Modifier.fillMaxWidth().height(Tokens.Elevation.HAIRLINE.dp).background(r.line))
+            }
+        }
+    }
+}
+
 /**
- * The scrim and the centred card of a modal dialog, at rest. The dialog animates both; the gallery draws
+ * The scrim and the bottom-aligned card of a modal dialog, at rest. The dialog animates both; the gallery draws
  * this as it is.
  */
 @Composable
 fun DialogBackdrop(modifier: Modifier = Modifier, content: @Composable () -> Unit) {
     val d = LocalDesign.current
-    Box(modifier.fillMaxSize().background(d.scrim).systemBarsPadding().padding(S.S4.dp), contentAlignment = Alignment.Center) {
+    Box(modifier.fillMaxSize().background(d.scrim).systemBarsPadding().imePadding().padding(Tokens.Metrics.Phone.DIALOG_INSET.dp), contentAlignment = Alignment.BottomCenter) {
         content()
     }
 }
@@ -265,7 +402,8 @@ fun DialogCard(title: String, modifier: Modifier = Modifier, content: @Composabl
     Column(
         modifier
             .widthIn(max = Tokens.Metrics.Phone.INNER_LIST.dp)
-            .background(r.pane, RoundedCornerShape(Tokens.Radius.LG.dp))
+            .overlay(RoundedCornerShape(Tokens.Radius.XL.dp), LocalDesign.current)
+            .background(r.pane)
             .padding(S.S5.dp)
             .semantics { paneTitle = title },
         verticalArrangement = Arrangement.spacedBy(S.S4.dp),
@@ -284,6 +422,7 @@ fun DialogCard(title: String, modifier: Modifier = Modifier, content: @Composabl
 fun OverlayDialog(
     onDismiss: () -> Unit,
     securePolicy: SecureFlagPolicy = SecureFlagPolicy.Inherit,
+    paneWidth: Dp? = null,
     content: @Composable (OverlayState) -> Unit,
 ) {
     val overlay = rememberOverlay(onDismiss)
@@ -311,16 +450,18 @@ fun OverlayDialog(
                         .clickable(remember { MutableInteractionSource() }, indication = null, onClick = overlay::close),
                 )
             }
-            Box(Modifier.fillMaxSize().systemBarsPadding().padding(S.S4.dp), contentAlignment = Alignment.Center) {
-                AnimatedVisibility(
-                    overlay.shown,
-                    enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) +
-                        scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = M.OVERLAY_FROM_SCALE) +
-                        slideInVertically(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) { rise },
-                    exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) +
-                        slideOutVertically(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) { drop },
+            Box(Modifier.fillMaxSize().systemBarsPadding().imePadding(), contentAlignment = Alignment.BottomStart) {
+                Box((paneWidth?.let { Modifier.width(it) } ?: Modifier.fillMaxWidth()).padding(Phone.DIALOG_INSET.dp),
+                    contentAlignment = Alignment.BottomCenter,
                 ) {
-                    content(overlay)
+                    AnimatedVisibility(
+                        overlay.shown,
+                        enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) +
+                            scaleIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic()), initialScale = M.OVERLAY_FROM_SCALE) +
+                            slideInVertically(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())) { rise },
+                        exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) +
+                            slideOutVertically(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())) { drop },
+                    ) { content(overlay) }
                 }
             }
         }

@@ -81,6 +81,9 @@ internal class DragInput {
     val grips = mutableMapOf<String, Grip>()
     val rows = mutableMapOf<String, Rect>()
     val nav = mutableMapOf<TaskDrop, Rect>()
+    val pills = mutableMapOf<TaskDrop, Rect>()
+    var roomsButton: Rect? = null
+    var openedSwitcher = false
     var list: ScrollPane? = null
     var drawer: ScrollPane? = null
     var picked by mutableStateOf<Picked?>(null)
@@ -89,10 +92,9 @@ internal class DragInput {
 
     fun candidate(drawerVisible: Boolean): TaskDrop? {
         if (drawerVisible) {
-            return if (drawer?.bounds?.contains(position) == true) {
-                nav.entries.firstOrNull { position in it.value }?.key
-            } else null
+            return nav.entries.firstOrNull { position in it.value }?.key
         }
+        pills.entries.firstOrNull { position in it.value }?.let { return it.key }
         if (list?.bounds?.contains(position) != true) return null
         val entry = rows.entries.firstOrNull { position in it.value } ?: return null
         return TaskDrop.Slot(entry.key, position.y >= entry.value.center.y)
@@ -144,6 +146,10 @@ internal fun taskDragInput(
         val edge = with(density) { S.S8.dp.toPx() }
         val step = with(density) { S.S3.dp.toPx() }
         while (input.picked != null) withFrameNanos {
+            if (!drawer && !input.openedSwitcher && input.roomsButton?.contains(input.position) == true) {
+                input.openedSwitcher = true
+                open()
+            }
             input.scroll(drawer, edge, step)
             val target = valid()
             if (target != input.target && target is TaskDrop.Slot) {
@@ -161,7 +167,7 @@ internal fun taskDragInput(
             val grip = input.grips.values.firstOrNull { start in it.bounds } ?: return@awaitEachGesture
             if (drawer) return@awaitEachGesture
             down.consume()
-            var opened = false
+            input.openedSwitcher = false
             try {
                 while (true) {
                     val change = awaitPointerEvent(PointerEventPass.Initial).changes.firstOrNull { it.id == down.id } ?: break
@@ -180,14 +186,11 @@ internal fun taskDragInput(
                         haptic.performHapticFeedback(HapticFeedbackType.LongPress)
                     }
                     change.consume()
-                    if (input.picked != null && !drawer && !opened && input.position.x <= with(density) { S.S5.dp.toPx() }) {
-                        opened = true
-                        open()
-                    }
                 }
             } finally {
                 input.cancel()
-                if (opened) close()
+                if (input.openedSwitcher) close()
+                input.openedSwitcher = false
             }
         }
     }
@@ -203,7 +206,7 @@ internal fun DragGrip(task: TaskRow, manual: Boolean) {
     Box(Modifier.size(P.TOUCH.dp).onGloballyPositioned {
         input?.grips?.set(task.id, DragInput.Grip(task.id, task.title, it.boundsInRoot()))
     }.semantics {
-        contentDescription = if (manual) "Drag to reorder, or drag to the left edge for Lists" else "Drag to the left edge for Lists or My Day"
+        contentDescription = if (manual) "Drag to reorder, or drag down to Rooms" else "Drag down to Rooms or a room pill"
     }, contentAlignment = Alignment.TopCenter) {
         Icon("grip-vertical", r.ink3)
     }
@@ -229,11 +232,12 @@ internal fun taskDragRow(id: String, reorderable: Boolean): Modifier {
 }
 
 @Composable
-internal fun taskDragNav(target: TaskDrop): Pair<Modifier, Boolean> {
+internal fun taskDragNav(target: TaskDrop, inSwitcher: Boolean = true): Pair<Modifier, Boolean> {
     val input = LocalTaskDrag.current
     val fixture = LocalTaskDragFrame.current
-    DisposableEffect(input, target) { onDispose { input?.nav?.remove(target) } }
-    return Modifier.onGloballyPositioned { input?.nav?.set(target, it.boundsInRoot()) } to
+    val bounds = if (inSwitcher) input?.nav else input?.pills
+    DisposableEffect(bounds, target) { onDispose { bounds?.remove(target) } }
+    return Modifier.onGloballyPositioned { bounds?.set(target, it.boundsInRoot()) } to
         ((fixture?.target ?: input?.target) == target)
 }
 

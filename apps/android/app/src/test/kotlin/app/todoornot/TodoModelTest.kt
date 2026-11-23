@@ -926,6 +926,28 @@ class TodoModelTest {
     }
 
     @Test
+    fun choosing_even_the_current_room_clears_the_dock_filter_and_bulk_selection() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val before = m.ui.value.room
+        m.setSearching(true)
+        m.setFilter("priority>=high")
+        s.drain()
+        val filtered = m.ui.value.room
+        assertTrue(filtered.tasks.size < before.tasks.size)
+        assertEquals(before.total, filtered.total)
+        m.toggleBulk(filtered.tasks.first().id, m.ui.value.generation)
+        assertTrue(m.ui.value.bulkIds.isNotEmpty())
+        m.open(before.key)
+        s.drain()
+        assertFalse(m.ui.value.searching)
+        assertEquals("", m.ui.value.filter)
+        assertTrue(m.ui.value.bulkIds.isEmpty())
+        assertEquals(before.tasks.map { it.id }, m.ui.value.room.tasks.map { it.id })
+    }
+
+    @Test
     fun creating_a_list_enters_it_as_opening_a_room_does() {
         val engine = fixtureEngine()
         val s = Stepped(engine) { time }

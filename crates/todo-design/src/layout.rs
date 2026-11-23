@@ -392,8 +392,35 @@ pub mod phone {
     /// Width of the list pane on the inner screen.
     pub const INNER_LIST: f32 = 450.0;
 
+    /// Read-only collapsed room header.
+    pub const COMPACT_HEADER: f32 = 36.0;
+    /// Bottom utility and detail action bars.
+    pub const BOTTOM_BAR: f32 = 52.0;
+    /// Visual height of the selection status strip (the clear target is still 48 dp).
+    pub const BULK_STATUS_BAR: f32 = 44.0;
+    /// Maximum pull-down extension of the sky on cover screens.
+    pub const HEADER_REACH_EXPAND: f32 = 180.0;
+    /// Maximum fraction of the viewport that reachability may add.
+    pub const HEADER_REACH_FRACTION: f32 = 0.28;
+    /// Pull-down distance that latches reachability.
+    pub const HEADER_REACH_LATCH: f32 = 96.0;
+    /// Distance that commits a horizontal task swipe.
+    pub const SWIPE_THRESHOLD: f32 = 72.0;
+    /// Reserved space for system edge gestures.
+    pub const EDGE_GESTURE_INSET: f32 = 24.0;
+    /// Width of a sheet's drag handle.
+    pub const SHEET_HANDLE_WIDTH: f32 = 32.0;
+    /// Minimum smart room tile height.
+    pub const SMART_TILE: f32 = 48.0;
+    /// Margin outside bottom dialog cards.
+    pub const DIALOG_INSET: f32 = 12.0;
+    /// Initial height of the room switcher relative to the viewport.
+    pub const SHEET_DEFAULT_FRACTION: f32 = 0.72;
+    /// Maximum height of a sheet relative to the viewport.
+    pub const SHEET_MAX_FRACTION: f32 = 0.92;
+
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 20] = [
+    pub const ALL: [(&str, f32); 33] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -411,6 +438,19 @@ pub mod phone {
         ("landscape-cover", LANDSCAPE_COVER),
         ("landscape-inner", LANDSCAPE_INNER),
         ("inner-list", INNER_LIST),
+        ("compact-header", COMPACT_HEADER),
+        ("bottom-bar", BOTTOM_BAR),
+        ("bulk-status-bar", BULK_STATUS_BAR),
+        ("header-reach-expand", HEADER_REACH_EXPAND),
+        ("header-reach-fraction", HEADER_REACH_FRACTION),
+        ("header-reach-latch", HEADER_REACH_LATCH),
+        ("swipe-threshold", SWIPE_THRESHOLD),
+        ("edge-gesture-inset", EDGE_GESTURE_INSET),
+        ("sheet-handle-width", SHEET_HANDLE_WIDTH),
+        ("smart-tile", SMART_TILE),
+        ("dialog-inset", DIALOG_INSET),
+        ("sheet-default-fraction", SHEET_DEFAULT_FRACTION),
+        ("sheet-max-fraction", SHEET_MAX_FRACTION),
         ("row-pad-top", ROW_PAD.0),
         ("row-pad-right", ROW_PAD.1),
         ("row-pad-left", ROW_PAD.2),

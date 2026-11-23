@@ -120,6 +120,8 @@ pub const EASINGS: [(&str, CubicBezier); 5] = [
 pub const HOVER: u32 = 90;
 /// Fast in-place crossfade (switching tasks in an open detail pane, room title/eyebrow swap, sync status change).
 pub const CONTENT_SWAP: u32 = 120;
+/// Settle a horizontal task-row swipe back into place.
+pub const SWIPE_SETTLE: u32 = 160;
 /// How long the incoming room title overlaps the departing title, in milliseconds.
 pub const ROOM_TITLE_OVERLAP: u32 = 40;
 /// Opacity the detail body enters from when switching tasks in an already open pane.
@@ -199,9 +201,10 @@ pub const DIALOG_DROP: f32 = 4.0;
 pub const DRAG_TOUCH_SCALE: f32 = 1.01;
 
 /// Named durations in milliseconds, for the exports.
-pub const DURATIONS: [(&str, u32); 24] = [
+pub const DURATIONS: [(&str, u32); 25] = [
     ("hover", HOVER),
     ("content-swap", CONTENT_SWAP),
+    ("swipe-settle", SWIPE_SETTLE),
     ("room-title-overlap", ROOM_TITLE_OVERLAP),
     ("overlay-in", OVERLAY_IN),
     ("overlay-out", OVERLAY_OUT),

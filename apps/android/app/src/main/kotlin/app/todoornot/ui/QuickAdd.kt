@@ -35,7 +35,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
@@ -84,12 +90,14 @@ private val draftSaver = listSaver<QuickAddDraft, Any>(
 
 /** The room's composer, docked above the keyboard. Only submitting sends a command. */
 @Composable
-internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?) {
+internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?, docked: Boolean = false) {
     val r = LocalDesign.current.room
     val requester = remember { FocusRequester() }
+    val ime = LocalSoftwareKeyboardController.current
+    var fieldFocused by remember { mutableStateOf(false) }
     LaunchedEffect(focus != null) {
         if (focus != null) {
-            requester.requestFocus()
+            if (requester.requestFocus()) ime?.show()
             focus()
         }
     }
@@ -108,10 +116,17 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
     }
     Box(
         Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true)
-            .navigationBarsPadding().imePadding()
-            .padding(start = S.S4.dp, end = S.S4.dp, top = S.S3.dp, bottom = if (keyboard) S.S3.dp else S.S4.dp),
+            .then(if (docked) Modifier.padding(horizontal = S.S3.dp, vertical = S.S1.dp)
+                else Modifier.navigationBarsPadding().imePadding()
+                    .padding(start = S.S4.dp, end = S.S4.dp, top = S.S3.dp, bottom = if (keyboard) S.S3.dp else S.S4.dp)),
     ) {
-        Column(Modifier.fillMaxWidth().background(r.raised, shape).border(Tokens.Elevation.HAIRLINE.dp, r.control, shape)) {
+        val focusRing = if (fieldFocused) Modifier.drawBehind {
+            val ring = Tokens.Elevation.FOCUS_RING.dp.toPx()
+            drawRoundRect(r.tint, Offset(-ring, -ring), Size(size.width + ring * 2, size.height + ring * 2),
+                CornerRadius(Tokens.Radius.COMPOSER.dp.toPx() + ring))
+        } else Modifier
+        Column(Modifier.fillMaxWidth().then(focusRing).background(r.raised, shape)
+            .border(Tokens.Elevation.HAIRLINE.dp, if (fieldFocused) r.accent else r.control, shape)) {
             Row(
                 Modifier.fillMaxWidth().heightIn(min = P.COMPOSER.dp).padding(start = S.S3.dp, end = S.S1.dp),
                 verticalAlignment = Alignment.CenterVertically,
@@ -121,14 +136,15 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                 BasicTextField(
                     value = pending.text,
                     onValueChange = { pending = quickAddEdit(pending, it, actions.composerNow()) },
-                    modifier = Modifier.weight(1f).focusRequester(requester).semantics { contentDescription = placeholder },
+                    modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { fieldFocused = it.isFocused }
+                        .semantics { contentDescription = placeholder },
                     textStyle = Tokens.Type.COMPOSER.style(r.ink),
                     singleLine = true,
                     cursorBrush = SolidColor(r.accent),
                     keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
                     keyboardActions = KeyboardActions(onDone = { submit() }),
                     decorationBox = { inner ->
-                        Box(contentAlignment = Alignment.CenterStart) {
+                        Box(Modifier.heightIn(min = P.COMPOSER.dp), contentAlignment = Alignment.CenterStart) {
                             if (pending.text.isEmpty()) Label(placeholder, Tokens.Type.COMPOSER, r.ink3)
                             inner()
                         }

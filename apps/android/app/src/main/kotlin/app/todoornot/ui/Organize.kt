@@ -31,13 +31,15 @@ private val P = Tokens.Metrics.Phone
 
 /** All picker content can scroll on a sideways cover, including with the keyboard visible. */
 @Composable
-internal fun PickerCard(title: String, content: @Composable ColumnScope.() -> Unit) {
-    DialogCard(title) {
-        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+internal fun PickerCard(title: String, inSheet: Boolean = false, content: @Composable ColumnScope.() -> Unit) {
+    val body: @Composable () -> Unit = {
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())
+            .then(if (inSheet) Modifier.padding(S.S4.dp) else Modifier), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(title, Tokens.Type.DETAIL_TITLE_PHONE, LocalDesign.current.room.ink)
             content()
         }
     }
+    if (inSheet) body() else DialogCard(title) { body() }
 }
 
 @Composable
@@ -121,9 +123,9 @@ internal fun RepeatCard(detail: TaskDetail, custom: Boolean, onCustom: () -> Uni
 }
 
 @Composable
-internal fun MoveListCard(home: Home, list: RoomKey.List, choose: (String?) -> Unit, cancel: () -> Unit) {
+internal fun MoveListCard(home: Home, list: RoomKey.List, choose: (String?) -> Unit, cancel: () -> Unit, inSheet: Boolean = false) {
     val current = home.groups.firstOrNull { g -> g.lists.any { it.key == list } }?.collection?.key
-    PickerCard("Move to…") {
+    PickerCard("Move to…", inSheet) {
         home.groups.mapNotNull { it.collection }.forEach { item -> Choice(item.name, item.key == current) { choose((item.key as RoomKey.Collection).id) } }
         Choice("No collection", current == null) { choose(null) }
         Button("Cancel", false, onClick = cancel)
@@ -131,9 +133,9 @@ internal fun MoveListCard(home: Home, list: RoomKey.List, choose: (String?) -> U
 }
 
 @Composable
-internal fun SwatchCard(target: ColorTarget, selected: String, choose: (String) -> Unit, cancel: () -> Unit) {
+internal fun SwatchCard(target: ColorTarget, selected: String, choose: (String) -> Unit, cancel: () -> Unit, inSheet: Boolean = false) {
     val d = LocalDesign.current
-    PickerCard(colourHeading(target)) {
+    PickerCard(colourHeading(target), inSheet) {
         Tokens.swatches.chunked(6).forEach { group -> Row(Modifier.fillMaxWidth()) {
             group.forEach { hue ->
                 val on = hue == selected

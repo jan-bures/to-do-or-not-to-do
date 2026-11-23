@@ -1,11 +1,29 @@
 package app.todoornot.ui
 
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveableStateHolder
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import app.todoornot.session.ThumbHand
+import kotlinx.coroutines.launch
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.core.animate
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.isImeVisible
 import androidx.compose.ui.input.nestedscroll.nestedScroll
@@ -81,7 +99,6 @@ import app.todoornot.design.cubic
 import app.todoornot.design.style
 import kotlinx.coroutines.delay
 import app.todoornot.model.Actions
-import app.todoornot.model.MenuAction
 import app.todoornot.model.roomMenu
 import app.todoornot.model.DuskLook
 import app.todoornot.model.Ghost
@@ -103,10 +120,7 @@ private val M = Tokens.Motion
 private const val MIN_ROWS_TYPING = 4
 
 /**
- * The list pane: header, room pills, the tasks, the toast strip and the composer. The header and the
- * pills give way to the tasks as the list scrolls, and stay out of the way while the keyboard is open or
- * the window is short ([collapsed] forces it, for the gallery). The bar's ⋯ button opens the room's menu
- * (only what applies to the room), whose choice goes to [onRoomMenu].
+ * The sky and task list sit above all room controls. The dock swaps its input or takes over for bulk work.
  */
 @Composable
 fun RoomPane(
@@ -117,8 +131,14 @@ fun RoomPane(
     modifier: Modifier = Modifier,
     draft: String = "",
     collapsed: Boolean = false,
-    onRoomMenu: (MenuAction) -> Unit = {},
+    onRoomMenu: () -> Unit = {},
+    onBulkPicker: (BulkPicker) -> Unit = {},
     composerFocus: (() -> Unit)? = null,
+    wide: Boolean = false,
+    hand: ThumbHand = ThumbHand.RIGHT,
+    sheetOpen: Boolean = false,
+    reachExpanded: Boolean = false,
+    onSwipeRooms: (Float?) -> Unit = {},
 ) {
     val r = LocalDesign.current.room
     val room = state.room
@@ -129,68 +149,141 @@ fun RoomPane(
         // from the window and the keyboard, not from the list, so hiding the bar can't flip it back.
         val keyboardHeight = WindowInsets.ime.asPaddingValues().calculateBottomPadding()
         val statusBar = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-        val composer = Tokens.Elevation.HAIRLINE.dp + S.S3.dp + P.COMPOSER.dp + S.S3.dp
-        val underBar = maxHeight - keyboardHeight - statusBar - P.APP_BAR.dp - composer
+        val nav = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
+        val underBar = maxHeight - maxOf(keyboardHeight, nav) - statusBar - P.COMPACT_HEADER.dp - P.COMPOSER.dp - S.S2.dp
         val bar = !keyboard || underBar >= P.ROW.dp * MIN_ROWS_TYPING
         val force = if (collapsed || keyboard || short) 1f else 0f
-        val collapse = remember(room.key) { HeaderCollapse().also { it.forced = force } }
+        val density = LocalDensity.current
+        val reachLimit = with(density) { minOf(P.HEADER_REACH_EXPAND.dp, maxHeight * P.HEADER_REACH_FRACTION).toPx() }
+        val collapse = remember(state.generation) { HeaderCollapse(if (reachExpanded) reachLimit else 0f).also { it.forced = force } }
+        val scope = rememberCoroutineScope()
+        val reduced = reducedMotion()
+        SideEffect {
+            collapse.reachLimit = if (!wide && force == 0f && !sheetOpen) reachLimit else 0f
+            collapse.reachLatch = with(density) { P.HEADER_REACH_LATCH.dp.toPx() }
+            collapse.reducedMotion = reduced
+        }
         LaunchedEffect(collapse, force) {
-            animate(collapse.forced, force, animationSpec = tween(M.PANEL, easing = M.EASE_STANDARD.cubic())) { v, _ ->
+            animate(collapse.forced, force, animationSpec = tween(if (reduced) 0 else M.PANEL, easing = M.EASE_STANDARD.cubic())) { v, _ ->
                 collapse.forced = v
             }
         }
-        // The model holds the filter and whether its field is open, so the text and the rows agree.
-        Column(Modifier.fillMaxSize().nestedScroll(collapse.connection)) {
-            val selectionHeader: (@Composable () -> Unit)? = if (state.bulk != null) {
-                { BulkSelectionHeader(state.bulk.label, actions::clearBulk) }
-            } else null
-            RoomHeader(room, landscape, collapse, onMenu, bar, selectionHeader) {
-                SyncChip(state.status, actions::nudge)
-                IconButton("search", "Filter", expanded = state.searching) {
-                    actions.setSearching(!state.searching)
-                }
-                val entries = roomMenu(state.home, room.key, state.showCompleted)
-                if (entries.isNotEmpty()) {
-                    var open by remember(room.key) { mutableStateOf(false) }
-                    Box {
-                        IconButton("ellipsis", "Room menu") { open = true }
-                        if (open) MenuPopup(entries, onRoomMenu, onDismiss = { open = false }, title = room.title)
-                    }
-                }
+        LaunchedEffect(collapse, sheetOpen, state.selected, force, wide, state.bulkIds) {
+            if (sheetOpen || state.selected != null || force > 0f || wide || state.bulkIds.isNotEmpty()) collapse.resetReach()
+        }
+        val drag = LocalTaskDrag.current
+        val lifted = drag?.picked != null || LocalTaskDragFrame.current != null
+        val left = hand.mirrors(wide)
+        val holders = rememberSaveableStateHolder()
+        var addingWithFilter by remember(state.generation, state.searching) { mutableStateOf(false) }
+        var focusAdd by remember { mutableStateOf(false) }
+        val filterShown = state.searching && !addingWithFilter
+        Column(Modifier.fillMaxSize().navigationBarsPadding().imePadding()) {
+            val resetReach = { if (collapse.reach > 0f) scope.launch { collapse.resetReach() }; Unit }
+            RoomHeader(room, landscape, collapse, state.status, compact = if (bar) P.COMPACT_HEADER.dp else 0.dp, onResetReach = resetReach)
+            Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true).nestedScroll(collapse.connection)) {
+                androidx.compose.runtime.key(state.generation) { TaskList(state, actions, resetReach) }
             }
-            Box(Modifier.collapsing(collapse, HeaderCollapse.Part.Pills)) {
-                RoomPills(state.home, room.key, actions::open, onMenu)
-            }
-            if (state.searching) FilterField(state.filter, actions::setFilter) { actions.setSearching(false) }
             state.failed.firstOrNull()?.let { f ->
                 Banner("Not saved: ${f.what}. ${f.reason}", "Dismiss") { actions.dismissFailed(f.id) }
             }
             if (state.signedOut) Banner("This phone isn't paired any more.", "Pair again", actions::unpair)
-            Box(Modifier.weight(1f).fillMaxWidth().hairline(r.line, top = true)) {
-                TaskList(state, actions)
-            }
             ToastStrip(state.toast, actions)
-            if (state.bulk != null) BulkSelectionTools(state, actions)
-            else Composer(room.addPlaceholder, draft, keyboard, actions, composerFocus)
+            if (state.bulk != null) {
+                BulkStatusStrip(state.bulk.label, left, actions::clearBulk)
+                if (lifted) BottomRoomBar(state, actions, left, onMenu, onRoomMenu, draggingTask = true)
+                else BulkSelectionTools(state, onBulkPicker, actions::editBulk)
+            } else {
+                AnimatedContent(filterShown, transitionSpec = {
+                    fadeIn(tween(M.CONTENT_SWAP)) togetherWith fadeOut(tween(M.CONTENT_SWAP))
+                }, label = "dock input") { filtering ->
+                    if (filtering) FilterField(state.filter, actions::setFilter,
+                        onClose = { actions.setSearching(false) },
+                        onAdd = if (state.filter.isNotBlank() && !keyboard) {{ addingWithFilter = true; focusAdd = true }} else null,
+                    ) else holders.SaveableStateProvider("composer") {
+                        Composer(room.addPlaceholder, draft, keyboard, actions,
+                            composerFocus ?: if (focusAdd) {{ focusAdd = false }} else null, docked = true)
+                    }
+                }
+                AnimatedVisibility(!keyboard, enter = expandVertically(tween(M.PANEL)), exit = shrinkVertically(tween(M.PANEL, easing = M.EASE_EXIT.cubic()))) {
+                    BottomRoomBar(state, actions, left, onMenu, onRoomMenu, onSwipeRooms = onSwipeRooms,
+                        onFilter = { if (addingWithFilter) addingWithFilter = false else actions.setSearching(!state.searching) })
+                }
+            }
         }
     }
 }
 
+@Composable
+private fun BottomRoomBar(
+    state: UiState,
+    actions: Actions,
+    left: Boolean,
+    onRooms: () -> Unit,
+    onMenu: () -> Unit,
+    draggingTask: Boolean = false,
+    onFilter: () -> Unit = {},
+    onSwipeRooms: (Float?) -> Unit = {},
+) {
+    val r = LocalDesign.current.room
+    val drag = LocalTaskDrag.current
+    val hasMenu = roomMenu(state.home, state.room.key, state.showCompleted).isNotEmpty()
+    val dot = when {
+        state.status.problem != null -> r.danger
+        state.status.state == SyncState.OFFLINE -> r.ink4
+        state.status.pending > 0u -> r.accent
+        else -> null
+    }
+    val roomsAction by rememberUpdatedState(onRooms)
+    val swipeAction by rememberUpdatedState(onSwipeRooms)
+    Row(Modifier.fillMaxWidth().height(P.BOTTOM_BAR.dp).background(r.canvas).hairline(r.line, top = true)
+        .padding(horizontal = S.S1.dp).then(if (!draggingTask) Modifier.pointerInput(Unit) {
+            var up = 0f
+            var revealed = false
+            detectVerticalDragGestures(onDragStart = { up = 0f; revealed = false }, onDragCancel = { swipeAction(null) }, onDragEnd = {
+                if (up >= P.BULK_STATUS_BAR.dp.toPx()) roomsAction()
+                swipeAction(null)
+            }) { change, dy ->
+                change.consume()
+                up = (up - dy).coerceAtLeast(0f)
+                if (up > 0f) revealed = true
+                if (revealed) swipeAction(up)
+            }
+        } else Modifier), verticalAlignment = Alignment.CenterVertically) {
+        val rooms: @Composable () -> Unit = {
+            DisposableEffect(drag) { onDispose { drag?.roomsButton = null } }
+            Box(Modifier.onGloballyPositioned { drag?.roomsButton = it.boundsInRoot() }) {
+                IconButton("menu", "Rooms", onClick = onRooms)
+                dot?.let { Box(Modifier.align(Alignment.TopEnd).padding(top = S.S2.dp, end = S.S2.dp)
+                    .size(Tokens.Metrics.Component.CHIP_DOT.dp).background(it, CircleShape)) }
+            }
+        }
+        val search: @Composable () -> Unit = { if (!draggingTask) IconButton("search", "Filter", expanded = state.searching, onClick = onFilter) }
+        val overflow: @Composable () -> Unit = { if (!draggingTask && hasMenu) IconButton("ellipsis", "Room menu", onClick = onMenu) }
+        if (left) { overflow(); search() } else rooms()
+        RoomPillsStrip(state.home, state.room.key, Modifier.weight(1f).padding(horizontal = S.S1.dp), actions::open)
+        if (left) rooms() else { search(); overflow() }
+    }
+}
+
 /**
- * The filter, under the room pills: the same query language as the desktop's (`tag:docs`, `due<=friday`,
+ * The filter, above the bottom utility bar: the same query language as the desktop's (`tag:docs`, `due<=friday`,
  * `priority>=high`), or plain words to find in titles. The rows narrow as you type; the progress doesn't.
  */
 @Composable
-private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () -> Unit) {
+private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () -> Unit, onAdd: (() -> Unit)?) {
     val r = LocalDesign.current.room
     val focus = remember { FocusRequester() }
     var focused by remember { mutableStateOf(false) }
-    LaunchedEffect(Unit) { if (text.isEmpty()) runCatching { focus.requestFocus() } }
+    val keyboard = LocalSoftwareKeyboardController.current
+    LaunchedEffect(Unit) { if (text.isEmpty() && focus.requestFocus()) keyboard?.show() }
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
-    Box(Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S4.dp, vertical = S.S2.dp)) {
+    Row(Modifier.fillMaxWidth().background(r.pane).hairline(r.line, top = true).padding(horizontal = S.S3.dp, vertical = S.S1.dp),
+        verticalAlignment = Alignment.CenterVertically) {
+        onAdd?.let { IconButton("plus", "Add a task without clearing the filter", onClick = it) }
         Row(
             Modifier
-                .fillMaxWidth()
+                .weight(1f)
                 .heightIn(min = P.TOUCH.dp)
                 .clip(shape)
                 .background(r.wash)
@@ -209,9 +302,9 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
                 singleLine = true,
                 cursorBrush = SolidColor(r.accent),
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search, autoCorrectEnabled = false),
-                keyboardActions = KeyboardActions(onSearch = { }),
+                keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
                 decorationBox = { inner ->
-                    Box(contentAlignment = Alignment.CenterStart) {
+                    Box(Modifier.heightIn(min = P.TOUCH.dp), contentAlignment = Alignment.CenterStart) {
                         if (text.isEmpty()) Label("Filter: words, or tag:docs", Tokens.Type.SUMMARY, r.ink3)
                         inner()
                     }
@@ -224,11 +317,12 @@ private fun FilterField(text: String, onChange: (String) -> Unit, onClose: () ->
 
 /** 48 dp touch target around an 18 dp icon. */
 @Composable
-fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, enabled: Boolean = true, expanded: Boolean? = null, modifier: Modifier = Modifier, onClick: () -> Unit) {
+fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.Color? = null, enabled: Boolean = true,
+    expanded: Boolean? = null, modifier: Modifier = Modifier, highlight: Boolean = expanded == true, onClick: () -> Unit) {
     val r = LocalDesign.current.room
     Box(
         modifier.size(P.TOUCH.dp).clip(CircleShape)
-            .then(if (expanded == true) Modifier.background(r.wash) else Modifier)
+            .then(if (highlight) Modifier.background(r.wash) else Modifier)
             .clickable(enabled = enabled, onClick = onClick)
             .semantics {
                 contentDescription = label
@@ -236,7 +330,7 @@ fun IconButton(icon: String, label: String, tint: androidx.compose.ui.graphics.C
             },
         contentAlignment = Alignment.Center,
     ) {
-        Icon(icon, if (enabled) tint ?: if (expanded == true) r.accentStrong else r.ink2 else r.ink4)
+        Icon(icon, if (enabled) tint ?: if (highlight) r.accentStrong else r.ink2 else r.ink4)
     }
 }
 
@@ -295,7 +389,7 @@ internal fun Banner(text: String, action: String, onAction: () -> Unit) {
  * [generation] the rows were read in.
  */
 @Composable
-private fun TaskList(state: UiState, actions: Actions) {
+private fun TaskList(state: UiState, actions: Actions, onTouchTask: () -> Unit) {
     val room = state.room
     val showDone = state.showCompleted
     val r = LocalDesign.current.room
@@ -323,7 +417,7 @@ private fun TaskList(state: UiState, actions: Actions) {
             item("empty") { Empty(room.emptyLine) }
         }
         // The rows; the Completed and Agent activity smart lists show their done tasks here too.
-        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, state, actions, motion, swap = s.row.id in swapping) }
+        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, state, actions, motion, onTouchTask, swap = s.row.id in swapping) }
         room.tomorrow?.let { tomorrow(it, state, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
         if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
@@ -347,7 +441,7 @@ private fun TaskList(state: UiState, actions: Actions) {
             }
             if (showDone) {
                 items(withGhosts(room.completed, ghosts, Section.COMPLETED), key = { "done-" + it.row.id }) { s ->
-                    MovingRow(s, Section.COMPLETED, state, actions, motion)
+                    MovingRow(s, Section.COMPLETED, state, actions, motion, onTouchTask)
                 }
             }
         }
@@ -366,6 +460,7 @@ private fun LazyItemScope.MovingRow(
     state: UiState,
     actions: Actions,
     motion: MotionFrame,
+    onTouchTask: () -> Unit,
     swap: Boolean = false,
 ) {
     val t = s.row
@@ -380,11 +475,11 @@ private fun LazyItemScope.MovingRow(
         { DragGrip(t, manual) }
     } else null
     val dragRow = taskDragRow(t.id, manual && section == Section.ROWS && !done && !s.ghost)
-    val toggle = { if (!s.ghost && l?.gone != true) actions.toggleBulk(t.id, state.generation) }
+    val toggle = { if (!s.ghost && l?.gone != true) { onTouchTask(); actions.toggleBulk(t.id, state.generation) } }
     TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
-        onCheck = { if (!s.ghost) actions.setDone(t.id, it, state.generation) },
-        onImportant = { if (!s.ghost) actions.setImportant(t.id, it) },
-        onOpen = { if (selecting) toggle() else if (!s.ghost) actions.select(t.id) },
+        onCheck = { if (!s.ghost) { onTouchTask(); actions.setDone(t.id, it, state.generation) } },
+        onImportant = { if (!s.ghost) { onTouchTask(); actions.setImportant(t.id, it) } },
+        onOpen = { if (selecting) toggle() else if (!s.ghost) { onTouchTask(); actions.select(t.id) } },
         onActions = toggle, look = l, inert = s.ghost, selecting = selecting, dragHandle = dragHandle,
         modifier = dragRow.animateItem(
             fadeInSpec = if (l == null) tween(M.ROW_ENTER, easing = M.EASE_ENTER.cubic()) else null,

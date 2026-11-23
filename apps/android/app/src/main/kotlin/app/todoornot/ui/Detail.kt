@@ -651,7 +651,10 @@ internal fun SourceCard(s: SourceLink, remove: () -> Unit) {
 @Composable
 fun NoDetail(modifier: Modifier = Modifier, selection: String? = null) {
     val r = LocalDesign.current.room
-    Box(modifier.fillMaxSize().background(r.pane).padding(S.S8.dp), contentAlignment = Alignment.Center) {
-        Label(selection ?: "Pick a task to see it here.", Tokens.Type.EYEBROW_DAY, if (selection == null) r.ink3 else r.accentStrong)
+    Column(modifier.fillMaxSize().background(r.pane).padding(S.S8.dp)) {
+        if (selection != null) Spacer(Modifier.weight(2f))
+        Box(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+            Label(selection ?: "Pick a task to see it here.", Tokens.Type.EYEBROW_DAY, if (selection == null) r.ink3 else r.accentStrong)
+        }
     }
 }

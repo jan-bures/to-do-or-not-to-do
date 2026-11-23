@@ -24,6 +24,13 @@ import androidx.compose.material3.adaptive.currentWindowAdaptiveInfoV2
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.ui.platform.LocalDensity
+import androidx.window.layout.FoldingFeature
+import androidx.window.layout.WindowInfoTracker
+import app.todoornot.session.PrefsKeyValues
+import app.todoornot.session.ThumbHandPreference
+import app.todoornot.ui.PaneFold
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.window.core.layout.WindowSizeClass
@@ -145,6 +152,14 @@ class MainActivity : ComponentActivity() {
         val dark = isSystemInDarkTheme()
         // Unfolded (medium width and up): list and detail side by side.
         val wide = currentWindowAdaptiveInfoV2().windowSizeClass.isWidthAtLeastBreakpoint(WindowSizeClass.WIDTH_DP_MEDIUM_LOWER_BOUND)
+        val layout by remember { WindowInfoTracker.getOrCreate(this).windowLayoutInfo(this) }
+            .collectAsStateWithLifecycle(initialValue = null)
+        val density = LocalDensity.current
+        val fold = layout?.displayFeatures?.filterIsInstance<FoldingFeature>()?.firstOrNull {
+            it.isSeparating && it.orientation == FoldingFeature.Orientation.VERTICAL
+        }?.bounds?.let { bounds -> with(density) { PaneFold(bounds.left.toDp(), bounds.right.toDp()) } }
+        val thumbPreference = remember { ThumbHandPreference(PrefsKeyValues(this, "appearance")) }
+        var hand by remember { mutableStateOf(thumbPreference.load()) }
         val loaded by graph.loaded.collectAsStateWithLifecycle()
         val model by graph.model.collectAsStateWithLifecycle()
         val host by graph.host.state.collectAsStateWithLifecycle()
@@ -163,6 +178,7 @@ class MainActivity : ComponentActivity() {
                         MainScreen(
                             ui, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
                             composerFocus = if (focus != null) ::clearComposerRequest else null,
+                            hand = hand, onHand = { hand = it; thumbPreference.save(it) }, fold = fold,
                         )
                     }
                 }

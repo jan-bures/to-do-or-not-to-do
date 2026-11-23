@@ -108,10 +108,25 @@ pub fn quick_add_pick_priority(draft: QuickAddDraft, level: u8, now: LocalNow) -
     draft.into()
 }
 
-#[derive(Debug, uniffi::Record)]
+#[derive(Debug, PartialEq, Eq, uniffi::Record)]
 pub struct QuickAddPreset {
     pub label: String,
     pub date: Option<String>,
+}
+
+#[uniffi::export]
+pub fn quick_add_presets(now: LocalNow) -> Vec<QuickAddPreset> {
+    presets(Now::new(now).today())
+}
+
+fn presets(today: Date) -> Vec<QuickAddPreset> {
+    calendar::presets(today)
+        .into_iter()
+        .map(|preset| QuickAddPreset {
+            label: preset.label.into(),
+            date: preset.date.map(|d| d.to_string()),
+        })
+        .collect()
 }
 
 #[derive(Debug, uniffi::Record)]
@@ -172,13 +187,7 @@ pub fn quick_add_month(
             .collect(),
         previous: month.shifted(-1).map(|m| m.cursor.to_string()),
         next: month.shifted(1).map(|m| m.cursor.to_string()),
-        presets: calendar::presets(today)
-            .into_iter()
-            .map(|preset| QuickAddPreset {
-                label: preset.label.into(),
-                date: preset.date.map(|d| d.to_string()),
-            })
-            .collect(),
+        presets: presets(today),
     }
 }
 
@@ -208,6 +217,22 @@ fn calendar_cursor_crosses_month_boundaries() {
         Some("2026-11-24")
     );
     assert_eq!(calendar_move_days("not a date".into(), 1), None);
+}
+
+#[cfg(test)]
+#[test]
+fn standalone_presets_match_the_calendar_in_device_time() {
+    let now = LocalNow {
+        epoch_ms: 0,
+        utc_offset_secs: -18_000,
+        zone_id: "America/New_York".into(),
+        local_day: None,
+    };
+    let calendar = quick_add_month(now.clone(), None, Some("1971-01-01".into()));
+    let presets = quick_add_presets(now);
+    assert_eq!(presets, calendar.presets);
+    assert_eq!(presets[0].date.as_deref(), Some("1969-12-31"));
+    assert_eq!(presets[1].date.as_deref(), Some("1970-01-01"));
 }
 
 #[derive(Debug, uniffi::Record)]

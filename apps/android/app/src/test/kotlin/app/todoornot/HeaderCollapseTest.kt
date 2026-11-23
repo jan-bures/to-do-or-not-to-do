@@ -2,76 +2,67 @@ package app.todoornot
 
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.unit.dp
 import app.todoornot.ui.HeaderCollapse
-import app.todoornot.ui.HeaderCollapse.Part
+import app.todoornot.ui.PaneFold
+import app.todoornot.ui.listPaneWidth
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Test
 
 class HeaderCollapseTest {
-    private fun header(body: Int = 200, pills: Int = 50) = HeaderCollapse().apply {
-        this.body = body
-        this.pills = pills
+    private fun header(cover: Boolean = true) = HeaderCollapse().apply {
+        body = 200
+        compact = 36
+        reachLimit = if (cover) 180f else 0f
+        reachLatch = 96f
     }
 
-    private val drag = NestedScrollSource.UserInput
+    private val finger = NestedScrollSource.UserInput
 
-    @Test
-    fun scrolling_up_collapses_the_header_before_the_list_moves() {
+    @Test fun the_sky_collapses_one_to_one_before_the_list_moves() {
         val h = header()
-        val used = h.connection.onPreScroll(Offset(0f, -120f), drag)
-        assertEquals(-120f, used.y, 0f)
-        assertEquals(120, h.hiddenOf(Part.Body))
-        assertEquals(0, h.hiddenOf(Part.Pills))
-
-        // The rest of a long drag: the body goes, then the pills, then the list gets what's left.
-        val more = h.connection.onPreScroll(Offset(0f, -200f), drag)
-        assertEquals(-130f, more.y, 0f)
-        assertEquals(200, h.hiddenOf(Part.Body))
-        assertEquals(50, h.hiddenOf(Part.Pills))
+        assertEquals(-120f, h.connection.onPreScroll(Offset(0f, -120f), finger).y, 0f)
+        assertEquals(120f, h.hidden, 0f)
+        assertEquals(-44f, h.connection.onPreScroll(Offset(0f, -100f), finger).y, 0f)
+        assertEquals(36f, h.body - h.hidden, 0f)
         assertEquals(1f, h.fraction, 0f)
-        assertEquals(Offset.Zero, h.connection.onPreScroll(Offset(0f, -40f), drag))
     }
 
-    @Test
-    fun scrolling_down_expands_only_once_the_list_is_back_at_its_top() {
+    @Test fun reach_starts_only_after_the_list_and_header_are_back_at_the_top() {
         val h = header()
-        h.connection.onPreScroll(Offset(0f, -250f), drag)
-        // Downward scroll goes to the list first: pre-scroll leaves it alone.
-        assertEquals(Offset.Zero, h.connection.onPreScroll(Offset(0f, 80f), drag))
-        assertEquals(1f, h.fraction, 0f)
-        // What the list couldn't use (it's at the top) opens the header, pills first.
-        val used = h.connection.onPostScroll(Offset.Zero, Offset(0f, 30f), drag)
-        assertEquals(30f, used.y, 0f)
-        assertEquals(20, h.hiddenOf(Part.Pills))
-        assertEquals(200, h.hiddenOf(Part.Body))
-        h.connection.onPostScroll(Offset.Zero, Offset(0f, 1000f), drag)
+        h.consume(-164f)
+        assertEquals(Offset.Zero, h.connection.onPreScroll(Offset(0f, 100f), finger))
+        assertEquals(0f, h.reach, 0f)
+        h.connection.onPostScroll(Offset.Zero, Offset(0f, 200f), finger)
         assertEquals(0f, h.fraction, 0f)
+        assertEquals(36f, h.reach, 0f)
+        assertEquals(0f, h.reachRest(), 0f)
+        h.connection.onPostScroll(Offset.Zero, Offset(0f, 60f), finger)
+        assertEquals(180f, h.reachRest(), 0f)
+        h.consume(500f)
+        assertEquals(180f, h.reach, 0f)
+        h.consume(-210f)
+        assertEquals(0f, h.reach, 0f)
+        assertEquals(30f, h.hidden, 0f)
     }
 
-    @Test
-    fun the_keyboard_or_a_short_window_forces_it_closed_whatever_the_scroll() {
-        val h = header()
+    @Test fun no_reach_on_inner_keyboard_or_fling() {
+        val h = header(false)
+        assertEquals(0f, h.consume(1000f), 0f)
+        h.reachLimit = 180f
+        assertEquals(Offset.Zero, h.connection.onPostScroll(Offset.Zero, Offset(0f, 200f), NestedScrollSource.SideEffect))
         h.forced = 1f
+        assertEquals(0f, h.consume(200f), 0f)
         assertEquals(1f, h.fraction, 0f)
-        assertEquals(200, h.hiddenOf(Part.Body))
-        assertEquals(50, h.hiddenOf(Part.Pills))
-        // Halfway through the animation, scrolling can still hide more but not less.
-        h.forced = 0.5f
-        assertEquals(125f, h.hidden, 0f)
-        h.connection.onPreScroll(Offset(0f, -200f), drag)
-        assertEquals(200f, h.hidden, 0f)
-        h.forced = 0f
+        h.compact = 0
         assertEquals(200f, h.hidden, 0f)
     }
 
-    @Test
-    fun a_smaller_header_never_hides_more_than_it_has() {
-        val h = header()
-        h.connection.onPreScroll(Offset(0f, -250f), drag)
-        h.body = 100
-        h.pills = 40
-        assertEquals(1f, h.fraction, 0f)
-        assertEquals(100, h.hiddenOf(Part.Body))
-        assertEquals(40, h.hiddenOf(Part.Pills))
+    @Test fun pane_and_sheet_share_the_left_edge_of_the_hinge() {
+        assertNull(listPaneWidth(412.dp, false, null))
+        assertEquals(437.5.dp, listPaneWidth(876.dp, true, null))
+        assertEquals(421.dp, listPaneWidth(908.dp, true, PaneFold(421.dp, 443.dp)))
+        assertEquals(450.dp, listPaneWidth(908.dp, true, PaneFold(908.dp, 910.dp)))
     }
 }

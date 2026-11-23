@@ -143,6 +143,7 @@
   --drop-wash-alpha: 0.4;
   --duration-hover: 90ms;
   --duration-content-swap: 120ms;
+  --duration-swipe-settle: 160ms;
   --duration-room-title-overlap: 40ms;
   --duration-overlay-in: 150ms;
   --duration-overlay-out: 120ms;
@@ -246,6 +247,19 @@
   --phone-landscape-cover: 36px;
   --phone-landscape-inner: 40px;
   --phone-inner-list: 450px;
+  --phone-compact-header: 36px;
+  --phone-bottom-bar: 52px;
+  --phone-bulk-status-bar: 44px;
+  --phone-header-reach-expand: 180px;
+  --phone-header-reach-fraction: 0.28px;
+  --phone-header-reach-latch: 96px;
+  --phone-swipe-threshold: 72px;
+  --phone-edge-gesture-inset: 24px;
+  --phone-sheet-handle-width: 32px;
+  --phone-smart-tile: 48px;
+  --phone-dialog-inset: 12px;
+  --phone-sheet-default-fraction: 0.72px;
+  --phone-sheet-max-fraction: 0.92px;
   --phone-row-pad-top: 11px;
   --phone-row-pad-right: 12px;
   --phone-row-pad-left: 20px;

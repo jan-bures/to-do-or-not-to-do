@@ -181,6 +181,40 @@ pub struct Home {
     pub agents: Vec<AgentSummary>,
 }
 
+/// Filter navigation once per query, preserving the original ordering and the parent of a matching list.
+#[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
+pub struct RoomSwitcherMatches {
+    pub home: Home,
+    pub activity: bool,
+    pub trash: bool,
+}
+
+#[uniffi::export]
+pub fn filter_room_switcher(mut home: Home, query: String) -> RoomSwitcherMatches {
+    let filter = todo_client::room_switcher::Filter::new(&query);
+    home.smart.retain(|item| filter.matches(&item.name));
+    home.groups.retain_mut(|group| {
+        if group
+            .collection
+            .as_ref()
+            .is_some_and(|room| filter.matches(&room.name))
+        {
+            return true;
+        }
+        group.lists.retain(|item| filter.matches(&item.name));
+        !group.lists.is_empty()
+    });
+    let activity = filter.matches("Activity");
+    if !activity {
+        home.agents.retain(|agent| filter.matches(&agent.mark.name));
+    }
+    RoomSwitcherMatches {
+        home,
+        activity,
+        trash: filter.matches(&crate::engine::trash::trash_title()),
+    }
+}
+
 /// The small line above a room's title.
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Enum)]
 pub enum Eyebrow {

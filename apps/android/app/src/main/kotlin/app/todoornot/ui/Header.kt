@@ -1,15 +1,17 @@
 package app.todoornot.ui
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.expandVertically
-import androidx.compose.animation.shrinkVertically
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.semantics
+import app.todoornot.core.SyncState
+import app.todoornot.core.SyncStatus
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -29,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.unit.Dp
-import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.Eyebrow
 import app.todoornot.core.RoomSummary
@@ -40,7 +41,6 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Scene
 import app.todoornot.design.TodoTheme
 import app.todoornot.design.Tokens
-import app.todoornot.design.cubic
 import app.todoornot.model.DuskLook
 
 private val S = Tokens.Space
@@ -54,18 +54,17 @@ private val S = Tokens.Space
  * fades in over the room's, the landscape grows into the dusk scene, and the text switches to the night's
  * ink at its cue. Reopening a task lifts it again, more briskly.
  *
- * The bar (menu, [actions]) stays unless [bar] is false (typing in a short window). Everything under it
- * collapses with [collapse], and the room's name fades into the bar as it does.
+ * The compact read-only strip replaces the full scene as it collapses. It can disappear entirely
+ * when the keyboard would otherwise leave too little room for tasks.
  */
 @Composable
 fun RoomHeader(
     room: RoomView,
     landscape: Dp,
     collapse: HeaderCollapse,
-    onMenu: () -> Unit,
-    bar: Boolean = true,
-    selection: (@Composable () -> Unit)? = null,
-    actions: @Composable RowScope.() -> Unit,
+    status: SyncStatus,
+    compact: Dp = Tokens.Metrics.Phone.COMPACT_HEADER.dp,
+    onResetReach: () -> Unit,
 ) {
     val outer = LocalDesign.current
     val motion = LocalMotion.current
@@ -75,7 +74,7 @@ fun RoomHeader(
     val sun: () -> Float? = remember(room.key, motion) { { motion.sun(room.key) } }
     val nightInk by remember(dusk) { derivedStateOf { dusk().nightInk } }
     TodoTheme(dark = outer.dark || nightInk, roomHue = outer.roomHue) {
-        HeaderBody(room, landscape, collapse, onMenu, bar, outer, dusk, sun, selection, actions)
+        HeaderBody(room, landscape, collapse, status, compact, onResetReach, outer, dusk, sun)
     }
 }
 
@@ -84,13 +83,12 @@ private fun HeaderBody(
     room: RoomView,
     landscape: Dp,
     collapse: HeaderCollapse,
-    onMenu: () -> Unit,
-    bar: Boolean,
+    status: SyncStatus,
+    compact: Dp,
+    onResetReach: () -> Unit,
     outer: Design,
     dusk: () -> DuskLook,
     sun: () -> Float?,
-    selection: (@Composable () -> Unit)?,
-    actions: @Composable RowScope.() -> Unit,
 ) {
     val d = LocalDesign.current
     val r = d.room
@@ -102,38 +100,50 @@ private fun HeaderBody(
         if (scene < 1f) drawRect(daySky)
         if (scene > 0f) drawRect(duskSky, alpha = scene)
     }
-    val motion = tween<IntSize>(Tokens.Motion.PANEL, easing = Tokens.Motion.EASE_STANDARD.cubic())
-    Column(sky.fillMaxWidth().statusBarsPadding()) {
-        if (selection != null) {
-            selection()
-        } else AnimatedVisibility(bar, enter = expandVertically(motion), exit = shrinkVertically(motion)) {
-            Row(
-                Modifier.fillMaxWidth().height(Tokens.Metrics.Phone.APP_BAR.dp).padding(horizontal = S.S2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                IconButton("menu", "Rooms", onClick = onMenu)
-                // The name fades in over the second half of the collapse, once the big title has slid away.
-                Label(
-                    room.title,
-                    Tokens.Type.ROOM_TITLE_BAR,
-                    r.ink,
-                    Modifier
-                        .weight(1f)
-                        .padding(start = S.S1.dp, end = S.S2.dp)
-                        .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) },
-                )
-                actions()
-            }
-        }
-        Column(Modifier.collapsing(collapse, HeaderCollapse.Part.Body)) {
-            Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, bottom = S.S1.dp)) {
-                EyebrowLine(room.eyebrow)
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
-                    Label(room.title, Tokens.Type.ROOM_TITLE_PHONE, r.ink, Modifier.weight(1f).padding(end = S.S3.dp))
-                    Summary(room, Modifier.padding(bottom = S.S2.dp))
+    val density = LocalDensity.current
+    val quiet = when {
+        status.problem != null -> "Sync error"
+        status.state == SyncState.OFFLINE && status.pending > 0u -> "Offline · ${status.pending}"
+        status.state == SyncState.OFFLINE -> "Offline"
+        status.pending > 0u -> "${status.pending} pending"
+        else -> null
+    }
+    val stretched = collapse.reach > 0f && collapse.forced == 0f
+    Column(sky.fillMaxWidth().statusBarsPadding().then(if (stretched) Modifier.clickable(
+        remember { MutableInteractionSource() }, indication = null, onClickLabel = "Reset header reach", onClick = onResetReach,
+    ) else Modifier)) {
+        if (stretched) Spacer(Modifier.height(with(density) { collapse.reach.toDp() }))
+        Box(Modifier.fillMaxWidth()) {
+            Column(Modifier.collapsing(collapse, with(density) { compact.roundToPx() }).semantics {
+                if (collapse.fraction > 0.5f) hideFromAccessibility()
+            }) {
+                Column(Modifier.padding(start = S.S5.dp, end = S.S5.dp, top = S.S2.dp, bottom = S.S1.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(Modifier.weight(1f)) { EyebrowLine(room.eyebrow) }
+                        quiet?.let { Label(it, Tokens.Type.SUMMARY_FIGURES, r.ink2) }
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.Bottom) {
+                        Label(room.title, Tokens.Type.ROOM_TITLE_PHONE, r.ink, Modifier.weight(1f).padding(end = S.S3.dp))
+                        Summary(room, Modifier.padding(bottom = S.S2.dp))
+                    }
                 }
+                Landscape(Scene(room.done.toInt(), room.total.toInt(), room.finished), landscape, design = outer, sun = sun, dusk = dusk)
             }
-            Landscape(Scene(room.done.toInt(), room.total.toInt(), room.finished), landscape, design = outer, sun = sun, dusk = dusk)
+            if (compact > 0.dp) Row(
+                Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(compact)
+                    .semantics { if (collapse.fraction <= 0.5f) hideFromAccessibility() }
+                    .graphicsLayer { alpha = ((collapse.fraction - 0.5f) * 2f).coerceIn(0f, 1f) }
+                    .then(sky).hairline(r.line).padding(horizontal = S.S5.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(S.S2.dp),
+            ) {
+                Label(room.title, Tokens.Type.ROOM_TITLE_BAR, r.ink, Modifier.weight(1f))
+                if (room.total > 0u) {
+                    if (room.done > 0u) Box(Modifier.size(Tokens.Radius.LG.dp).background(r.sunInk, CircleShape))
+                    Label("${room.done}/${room.total}", Tokens.Type.SUMMARY_FIGURES, r.ink2)
+                }
+                quiet?.let { Label(it, Tokens.Type.SUMMARY_FIGURES, r.ink2) }
+            }
         }
     }
 }

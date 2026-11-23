@@ -2,15 +2,30 @@ package app.todoornot.ui
 
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
+import app.todoornot.design.cubic
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
-import androidx.compose.material3.DrawerValue
-import androidx.compose.material3.ModalNavigationDrawer
-import androidx.compose.material3.rememberDrawerState
+import androidx.compose.ui.semantics.hideFromAccessibility
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.unit.Dp
+import app.todoornot.core.NavItem
+import app.todoornot.model.MenuEntry
+import app.todoornot.model.drawerMenu
+import app.todoornot.model.roomMenu
+import app.todoornot.session.ThumbHand
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
@@ -18,7 +33,6 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -37,13 +51,21 @@ import app.todoornot.model.UiState
 import app.todoornot.model.renameTitle
 import app.todoornot.model.swappedWith
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
+
+data class PaneFold(val start: Dp, val end: Dp)
+
+internal fun listPaneWidth(width: Dp, wide: Boolean, fold: PaneFold?): Dp? {
+    if (!wide) return null
+    val edge = Tokens.Metrics.Phone.TOUCH.dp
+    val divider = Tokens.Elevation.HAIRLINE.dp
+    val separating = fold?.takeIf { it.start >= edge && it.end >= it.start && it.end <= width - edge }
+    return separating?.start ?: minOf(Tokens.Metrics.Phone.INNER_LIST.dp, (width - divider) / 2)
+}
 
 /** Keeps a list's or a collection's room across a recreation (a rename dialog's target). */
 private val OrganizeSaver = Saver<MenuAction?, String>(
     save = { action -> when (action) {
         is MenuAction.MoveList -> "move:${action.room.id}"
-        is MenuAction.DeleteCollection -> "delete:${action.room.id}"
         is MenuAction.Colour -> when (val room = action.room) {
             is RoomKey.List -> "list:${room.id}"
             is RoomKey.Collection -> "collection:${room.id}"
@@ -53,7 +75,6 @@ private val OrganizeSaver = Saver<MenuAction?, String>(
     } },
     restore = { saved -> val id = saved.substringAfter(':'); when (saved.substringBefore(':')) {
         "move" -> MenuAction.MoveList(RoomKey.List(id))
-        "delete" -> MenuAction.DeleteCollection(RoomKey.Collection(id))
         "list" -> MenuAction.Colour(RoomKey.List(id))
         "collection" -> MenuAction.Colour(RoomKey.Collection(id))
         else -> null
@@ -94,10 +115,22 @@ fun MainScreen(
     collapsed: Boolean = false,
     motion: MotionFrame = MotionFrame.Rest,
     composerFocus: (() -> Unit)? = null,
+    hand: ThumbHand = ThumbHand.RIGHT,
+    onHand: (ThumbHand) -> Unit = {},
+    fold: PaneFold? = null,
+    switcherFilter: String = "",
+    settingsOpen: Boolean = false,
+    roomMenuOpen: Boolean = false,
+    navMenuOpen: NavItem? = null,
+    reachExpanded: Boolean = false,
 ) {
     LaunchedEffect(motion) { motion.drive() }
     CompositionLocalProvider(LocalMotion provides motion) {
-        Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus)
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val paneWidth = listPaneWidth(maxWidth, wide, fold)
+            Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus,
+                hand, onHand, fold, paneWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded)
+        }
     }
 }
 
@@ -112,18 +145,39 @@ private fun Screen(
     drawerOpen: Boolean,
     collapsed: Boolean,
     composerFocus: (() -> Unit)?,
+    hand: ThumbHand,
+    onHand: (ThumbHand) -> Unit,
+    fold: PaneFold?,
+    paneWidth: Dp?,
+    switcherFilter: String,
+    settingsOpen: Boolean,
+    roomMenuOpen: Boolean,
+    navMenuOpen: NavItem?,
+    reachExpanded: Boolean,
 ) {
     TodoTheme(dark, state.room.hue) {
         val r = LocalDesign.current.room
-        val drawer = rememberDrawerState(if (drawerOpen) DrawerValue.Open else DrawerValue.Closed)
-        val scope = rememberCoroutineScope()
-        fun open(key: RoomKey) {
-            actions.open(key)
-            scope.launch { drawer.close() }
+        var switcher by rememberSaveable { mutableStateOf(drawerOpen) }
+        var reveal by remember { mutableStateOf<Float?>(null) }
+        var returningGesture by remember { mutableStateOf(false) }
+        val reduced = reducedMotion()
+        LaunchedEffect(returningGesture) {
+            if (returningGesture) {
+                animate(reveal ?: 0f, 0f,
+                    animationSpec = tween(if (reduced) 0 else Tokens.Motion.PANEL, easing = Tokens.Motion.EASE_EXIT.cubic()),
+                ) { value, _ -> reveal = value }
+                reveal = null
+                returningGesture = false
+            }
         }
-        val menu = { scope.launch { drawer.open() }; Unit }
+        val switcherVisible = switcher || reveal != null
+        val menu = { switcher = true }
+        var roomActionsOpen by remember(state.generation) { mutableStateOf(roomMenuOpen) }
+        var navMenu by remember { mutableStateOf(navMenuOpen) }
+        var bulkPicker by remember(state.generation, state.bulkIds) { mutableStateOf<BulkPicker?>(null) }
+        val sheetOpen = switcherVisible || roomActionsOpen || bulkPicker != null
         state.unpairing?.let { q -> UnpairDialog(q.unsent, actions::cancelUnpair, { actions.confirmUnpair(q.unsent) }, q.changed) }
-        // The list and collection menus (the drawer's long press, the room's ⋯): rename and delete ask in a
+        // Room and switcher actions: rename and delete ask in a
         // dialog; a move glides the rows it swaps.
         var renaming by rememberSaveable(stateSaver = RoomSaver) { mutableStateOf<RoomKey?>(null) }
         var deleting by rememberSaveable { mutableStateOf<String?>(null) }
@@ -134,32 +188,17 @@ private fun Screen(
                 moving = emptySet()
             }
         }
-        var organize by rememberSaveable(stateSaver = OrganizeSaver) { mutableStateOf<MenuAction?>(null) }
+        var deleteCollection by rememberSaveable { mutableStateOf<String?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
-        if (newCollection) OverlayDialog({ newCollection = false }) { overlay ->
-            RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); scope.launch { drawer.close() } } }, overlay::close)
+        if (newCollection) OverlayDialog({ newCollection = false }, paneWidth = paneWidth) { overlay ->
+            RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); switcher = false } }, overlay::close)
         }
-        organize?.let { action -> OverlayDialog({ organize = null }) { overlay ->
-            when (action) {
-                is MenuAction.DeleteCollection -> ConfirmOrganize(ColorTarget.Collection(action.room.id), actions, overlay)
-                is MenuAction.MoveList -> MoveListCard(state.home, action.room, { id -> overlay.choose { actions.organize(OrganizeEdit.MoveList(action.room.id, id)) } }, overlay::close)
-                is MenuAction.Colour -> {
-                    val item = state.home.groups.flatMap { listOfNotNull(it.collection) + it.lists }.find { it.key == action.room }
-                    val target = when (val k = action.room) {
-                        is RoomKey.Collection -> ColorTarget.Collection(k.id)
-                        is RoomKey.List -> ColorTarget.List(k.id)
-                        else -> null
-                    }
-                    if (item == null || target == null) SideEffect { overlay.close() } else SwatchCard(target, item.hue, { hue ->
-                        overlay.choose { actions.organize(OrganizeEdit.Color(target, hue)) }
-                    }, overlay::close)
-                }
-                else -> Unit
-            }
+        deleteCollection?.let { id -> OverlayDialog({ deleteCollection = null }, paneWidth = paneWidth) { overlay ->
+            ConfirmOrganize(ColorTarget.Collection(id), actions, overlay)
         } }
         val onRoomMenu: (MenuAction) -> Unit = { a ->
             when (a) {
-                is MenuAction.MoveList, is MenuAction.DeleteCollection, is MenuAction.Colour -> organize = a
+                is MenuAction.DeleteCollection -> deleteCollection = a.room.id
                 is MenuAction.Rename -> renaming = a.room
                 is MenuAction.Move -> {
                     swappedWith(state.home, a.room, a.by)?.let { moving = setOf(a.room, it) }
@@ -176,7 +215,7 @@ private fun Screen(
             if (name == null) {
                 SideEffect { renaming = null }
             } else {
-                OverlayDialog(onDismiss = { renaming = null }) { overlay ->
+                OverlayDialog(onDismiss = { renaming = null }, paneWidth = paneWidth) { overlay ->
                     RenameCard(renameTitle(room), name, onSave = { n -> overlay.choose { actions.renameRoom(room, n) } }, onCancel = overlay::close)
                 }
             }
@@ -191,7 +230,7 @@ private fun Screen(
             if (asked == null) {
                 SideEffect { deleting = null }
             } else {
-                OverlayDialog(onDismiss = { deleting = null }) { overlay ->
+                OverlayDialog(onDismiss = { deleting = null }, paneWidth = paneWidth) { overlay ->
                     DeleteListCard(
                         asked,
                         onDelete = {
@@ -200,9 +239,9 @@ private fun Screen(
                                 actions.deleteList(id, asked) { again ->
                                     busy = false
                                     if (again == null) {
-                                        // Done: the toast with Undo is on the room, so the drawer makes way.
+                                        // Make room for the Undo toast.
                                         overlay.close()
-                                        scope.launch { drawer.close() }
+                                        switcher = false
                                     } else {
                                         question = again
                                         changed = true
@@ -217,64 +256,100 @@ private fun Screen(
                 }
             }
         }
-        val drawerVisible = drawer.currentValue == DrawerValue.Open || drawer.targetValue == DrawerValue.Open
-        val drawerSurface = if (drawerVisible) state else state.copy(toast = null)
-        val paneSurface = if (drawerVisible) state.copy(toast = null) else state
+        val paneSurface = if (switcherVisible) state.copy(toast = null) else state
         val drag = remember(state.generation) { DragInput() }
-        val dragModifier = taskDragInput(drag, actions, state.generation, drawerVisible, menu, { scope.launch { drawer.close() } })
+        val dragModifier = taskDragInput(drag, actions, state.generation, switcherVisible, menu, { switcher = false })
         TaskDragSurface(drag, dragModifier) {
-            ModalNavigationDrawer(
-                drawerState = drawer,
-                gesturesEnabled = drag.picked == null,
-                scrimColor = r.toast.copy(alpha = 0.32f),
-                drawerContent = {
-                    RoomDrawer(
-                        drawerSurface,
-                        server,
-                        actions,
-                        ::open,
-                        onNewList = { name ->
-                            actions.createList(name)
-                            scope.launch { drawer.close() }
-                        },
-                        onMenu = onRoomMenu,
-                        moving = moving,
-                        onNewCollection = { newCollection = true },
-                        onActivity = { agent -> actions.openActivity(agent); scope.launch { drawer.close() } },
-                    )
-                },
-            ) {
+            Box(Modifier.fillMaxSize()) {
+                val divider = Tokens.Elevation.HAIRLINE.dp
+                val separated = fold?.takeIf { wide && it.start == paneWidth && it.end > it.start }
                 val detail = state.detail
                 val feed = state.activity
-                BackHandler(enabled = drawer.isClosed && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
-                if (feed != null) {
-                    BackHandler(enabled = drawer.isClosed) { actions.open(state.room.key) }
-                    ActivityRoom(paneSurface, actions, menu)
-                } else if (state.room.key == RoomKey.Trash) {
-                    BackHandler(enabled = drawer.isClosed) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
-                    TrashRoom(paneSurface, actions, menu, wide)
-                } else if (wide) {
-                    Row(Modifier.fillMaxSize().background(r.pane)) {
-                        RoomPane(
-                            paneSurface, actions, Tokens.Landscape.HEIGHT_INNER.dp, menu, Modifier.width(Tokens.Metrics.Phone.INNER_LIST.dp), draft, collapsed,
-                            composerFocus = composerFocus,
-                            onRoomMenu = onRoomMenu,
-                        )
-                        Box(Modifier.fillMaxHeight().width(Tokens.Elevation.HAIRLINE.dp).background(r.line))
-                        if (detail != null) {
-                            DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
-                        } else {
-                            NoDetail(Modifier.weight(1f), selection = state.bulk?.label)
+                BackHandler(enabled = !sheetOpen && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
+                @Composable
+                fun Tasks(modifier: Modifier) {
+                    RoomPane(
+                        if (wide || detail == null) paneSurface else paneSurface.copy(toast = null),
+                        actions, (if (wide) Tokens.Landscape.HEIGHT_INNER else Tokens.Landscape.HEIGHT_COVER).dp,
+                        menu, modifier, draft, collapsed, onRoomMenu = { roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
+                        composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
+                        reachExpanded = reachExpanded, onSwipeRooms = { progress ->
+                            if (progress == null && !switcher && reveal != null) returningGesture = true
+                            else { returningGesture = false; reveal = progress }
+                        },
+                    )
+                }
+                Box(Modifier.fillMaxSize().background(r.pane)
+                    .then(if (sheetOpen) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier)) {
+                    if (feed != null) {
+                        BackHandler(enabled = !sheetOpen) { actions.open(state.room.key) }
+                        ActivityRoom(paneSurface, actions, menu)
+                    } else if (state.room.key == RoomKey.Trash) {
+                        BackHandler(enabled = !sheetOpen) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
+                        TrashRoom(paneSurface, actions, menu, wide)
+                    } else if (paneWidth != null) {
+                        Row(Modifier.fillMaxSize()) {
+                            Tasks(Modifier.width(paneWidth))
+                            Spacer(Modifier.fillMaxHeight().width(separated?.let { it.end - it.start } ?: divider).background(r.line))
+                            if (detail != null) DetailPane(paneSurface, actions, standalone = false, Modifier.weight(1f).statusBarsPadding())
+                            else NoDetail(Modifier.weight(1f).navigationBarsPadding(), selection = state.bulk?.label)
                         }
-                    }
-                } else {
-                    Box(Modifier.fillMaxSize().background(r.pane)) {
-                        RoomPane(if (detail == null) paneSurface else paneSurface.copy(toast = null), actions, Tokens.Landscape.HEIGHT_COVER.dp, menu, Modifier.fillMaxSize(), draft, collapsed,
-                            onRoomMenu = onRoomMenu, composerFocus = composerFocus)
+                    } else {
+                        Tasks(Modifier.fillMaxSize())
                         if (detail != null) {
-                            BackHandler { actions.select(null) }
+                            BackHandler(enabled = !sheetOpen) { actions.select(null) }
                             DetailPane(paneSurface, actions, standalone = true)
                         }
+                    }
+                }
+                CompositionLocalProvider(LocalSheetWidth provides paneWidth) {
+                    if (switcherVisible) Box(if (navMenu != null) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier) {
+                        BottomRoomSwitcherSheet(
+                            state, server, actions, hand, wide, onHand, { switcher = false; reveal = null; returningGesture = false },
+                            onMenu = { navMenu = it }, moving = moving, onNewCollection = { newCollection = true },
+                            initialFilter = switcherFilter, initialSettings = settingsOpen, gestureReveal = reveal,
+                        )
+                    }
+                    navMenu?.let { item -> RoomActionsSheet(item.name, drawerMenu(state.home, item.key), state, actions,
+                        onRoomMenu, close = { navMenu = null }) }
+                    if (roomActionsOpen) RoomActionsSheet(state.room.title, roomMenu(state.home, state.room.key, state.showCompleted), state, actions,
+                        onRoomMenu, close = { roomActionsOpen = false })
+                    bulkPicker?.let { BulkSelectionPicker(it, state, actions) { bulkPicker = null } }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RoomActionsSheet(title: String, entries: List<MenuEntry>, state: UiState, actions: Actions,
+    onChoose: (MenuAction) -> Unit, close: () -> Unit,
+) {
+    var page by rememberSaveable(stateSaver = OrganizeSaver) { mutableStateOf<MenuAction?>(null) }
+    BottomSheet(title, close) { overlay ->
+        BackHandler(enabled = page != null) { page = null }
+        AnimatedContent(page, modifier = Modifier.weight(1f, fill = false), transitionSpec = {
+            fadeIn(tween(Tokens.Motion.CONTENT_SWAP)) togetherWith fadeOut(tween(Tokens.Motion.CONTENT_SWAP))
+        }, label = "room action") { showing ->
+            when (showing) {
+                is MenuAction.MoveList -> MoveListCard(state.home, showing.room,
+                    { id -> overlay.choose { actions.organize(OrganizeEdit.MoveList(showing.room.id, id)) } }, { page = null }, inSheet = true)
+                is MenuAction.Colour -> {
+                    val item = state.home.groups.asSequence().flatMap { listOfNotNull(it.collection) + it.lists }.firstOrNull { it.key == showing.room }
+                    val target = when (val k = showing.room) {
+                        is RoomKey.Collection -> ColorTarget.Collection(k.id)
+                        is RoomKey.List -> ColorTarget.List(k.id)
+                        else -> null
+                    }
+                    if (item == null || target == null) SideEffect { overlay.close() }
+                    else SwatchCard(target, item.hue, { hue ->
+                        overlay.choose { actions.organize(OrganizeEdit.Color(target, hue)) }
+                    }, { page = null }, inSheet = true)
+                }
+                else -> ActionSheetContent(entries, title) { action ->
+                    if (overlay.open) when (action) {
+                        is MenuAction.MoveList, is MenuAction.Colour -> page = action
+                        else -> overlay.choose { onChoose(action) }
                     }
                 }
             }

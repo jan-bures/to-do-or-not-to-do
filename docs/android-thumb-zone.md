@@ -438,6 +438,15 @@ cd apps/web/e2e && npm ci && cd ../../.. && node docs/mockups/render.mjs
 
 ## 7. Prioritized implementation plan
 
+Implementation checklist for the first Android delivery:
+
+- [x] Phase 1: generated tokens, shared room lookup and calendar presets, bottom sheets and bottom dialogs.
+- [x] Phase 2: read-only sky and cover reachability, thumb dock, room actions, and bulk sheets.
+- [x] Phase 3: room switcher, pane/hinge alignment, list/collection actions, and the local hand preference.
+- [x] Phase 5 dependency: existing task drag can drop on sibling pills or open Rooms for other destinations.
+- [x] Gallery subset: Fold7 cover and inner configurations and the Phase 1–3 states in both themes.
+- [ ] Phases 4–6 follow-up: detail controls and editors, row swipes, secondary rooms, and full emulator checks.
+
 ### Phase 1 — Design tokens & shared primitives *(foundation, low risk)*
 
 - **`crates/todo-design/src/layout.rs` & `motion.rs` & `export.rs`:** Add the 12 new tokens listed in §5.2; run `TODO_DESIGN_BLESS=1 cargo test -p todo-design --test generated` and verify `cargo test -p todo-design`, wasm32, and Android target checks.

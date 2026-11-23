@@ -104,11 +104,11 @@ fun TaskActionsAnchor(
 
 /** Filter stays in place above a scrollable list, even with the keyboard open. */
 @Composable
-fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<DestinationGroup>?, onChoose: (String) -> Unit, cancel: () -> Unit, focus: Boolean = false) {
+fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<DestinationGroup>?, onChoose: (String) -> Unit, cancel: () -> Unit, focus: Boolean = false, inSheet: Boolean = false) {
     val design = LocalDesign.current
     val r = design.room
     val s = Tokens.Space
-    TaskPickerCard("Move to…", "Filter lists", filter, onFilter, cancel, focus) { body ->
+    TaskPickerCard("Move to…", "Filter lists", filter, onFilter, cancel, focus, inSheet) { body ->
         Column(body.verticalScroll(rememberScrollState())) {
             if (groups != null && groups.isEmpty()) Label("No list matches “${filter.trim()}”.", Tokens.Type.BODY, r.ink3, maxLines = 2)
             groups.orEmpty().forEach { group ->
@@ -133,15 +133,16 @@ fun MoveTaskCard(filter: String, onFilter: (String) -> Unit, groups: List<Destin
 @Composable
 private fun TaskPickerCard(
     title: String, prompt: String, filter: String, onFilter: (String) -> Unit,
-    cancel: () -> Unit, focus: Boolean, content: @Composable (Modifier) -> Unit,
+    cancel: () -> Unit, focus: Boolean, inSheet: Boolean = false, content: @Composable (Modifier) -> Unit,
 ) {
     // Open ready to type, as the desktop's picker does. The gallery leaves it unfocused: no cursor.
     val field = remember { FocusRequester() }
     if (focus) LaunchedEffect(Unit) { runCatching { field.requestFocus() } }
     val r = LocalDesign.current.room
     val s = Tokens.Space
-    DialogCard(title, Modifier.imePadding()) {
+    val body: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit = {
         Label(title, Tokens.Type.DETAIL_TITLE_PHONE, r.ink)
+        if (inSheet) content(Modifier.weight(1f, fill = false))
         BasicTextField(
             value = filter, onValueChange = onFilter, singleLine = true,
             modifier = Modifier.fillMaxWidth().border(Tokens.Elevation.HAIRLINE.dp, r.control, RoundedCornerShape(Tokens.Radius.MD.dp))
@@ -154,9 +155,11 @@ private fun TaskPickerCard(
                 }
             },
         )
-        content(Modifier.weight(1f, fill = false))
+        if (!inSheet) content(Modifier.weight(1f, fill = false))
         Button("Cancel", primary = false, onClick = cancel)
     }
+    if (inSheet) Column(Modifier.fillMaxWidth().padding(s.S4.dp), verticalArrangement = Arrangement.spacedBy(s.S3.dp), content = body)
+    else DialogCard(title, Modifier.imePadding(), content = body)
 }
 
 @Composable

@@ -51,9 +51,7 @@ import app.todoornot.model.PairingState
 import app.todoornot.model.TodoModel
 import app.todoornot.model.UiState
 import app.todoornot.session.EngineHost
-import app.todoornot.model.drawerMenu
 import app.todoornot.model.priorityMenu
-import app.todoornot.model.roomMenu
 import app.todoornot.model.stepMenu
 import app.todoornot.model.taskMenu
 import app.todoornot.ui.ActivityRoom
@@ -81,7 +79,10 @@ import app.todoornot.ui.Button
 import app.todoornot.ui.DeviceInviteContent
 import app.todoornot.ui.DeviceReviewContent
 import app.todoornot.ui.Label
-import app.todoornot.ui.SettingsMenuContent
+import app.todoornot.session.ThumbHand
+import app.todoornot.ui.LocalSheetAtRest
+import app.todoornot.ui.BulkPicker
+import app.todoornot.ui.BulkSelectionPicker
 import app.todoornot.ui.overlay
 import app.todoornot.ui.DialogBackdrop
 import app.todoornot.ui.DialogCard
@@ -104,6 +105,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -121,6 +123,8 @@ private val COVER_SIDEWAYS = COVER.copy(screenWidth = 1840, screenHeight = 824, 
 
 /** A foldable's inner screen, 900 × 1000 dp (the F2 inner mockup). */
 private val INNER = DeviceConfig.PIXEL_5.copy(screenWidth = 1800, screenHeight = 2000, xdpi = 320, ydpi = 320, density = Density.XHIGH, locale = LOCALE)
+private val FOLD7_COVER = COVER.copy(screenWidth = 824, screenHeight = 1920)
+private val FOLD7_INNER = INNER.copy(screenWidth = 1752, screenHeight = 1940)
 
 /**
  * The screenshot gallery: the main states on the cover and inner screens, light and dark, drawn from the
@@ -168,10 +172,19 @@ class GalleryTest {
         dark: Boolean,
         drawer: Boolean = false,
         collapsed: Boolean = false,
-        wide: Boolean = device === INNER,
+        wide: Boolean = device === INNER || device === FOLD7_INNER,
         motion: MotionFrame = MotionFrame.Rest,
+        hand: ThumbHand = ThumbHand.RIGHT,
+        switcherFilter: String = "",
+        settings: Boolean = false,
+        roomMenu: Boolean = false,
+        reach: Boolean = false,
     ) = shot(name, device) {
-        MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer, collapsed = collapsed, motion = motion)
+        CompositionLocalProvider(LocalSheetAtRest provides true) {
+            MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer,
+                collapsed = collapsed, motion = motion, hand = hand, switcherFilter = switcherFilter,
+                settingsOpen = settings, roomMenuOpen = roomMenu, reachExpanded = reach)
+        }
     }
 
     /**
@@ -225,8 +238,8 @@ class GalleryTest {
     @Test
     fun cover_my_day() {
         val s = state(fixtureEngine())
-        main("cover_my_day_light", COVER, s, dark = false)
-        main("cover_my_day_dark", COVER, s, dark = true)
+        main("cover_my_day_light", FOLD7_COVER, s, dark = false)
+        main("cover_my_day_dark", FOLD7_COVER, s, dark = true)
     }
 
     @Test
@@ -356,11 +369,11 @@ class GalleryTest {
     @Test
     fun collapsed_header() {
         val s = state(fixtureEngine())
-        main("cover_collapsed_light", COVER, s, dark = false, collapsed = true)
-        main("cover_collapsed_dark", COVER, s, dark = true, collapsed = true)
+        main("cover_collapsed_light", FOLD7_COVER, s, dark = false, collapsed = true)
+        main("cover_collapsed_dark", FOLD7_COVER, s, dark = true, collapsed = true)
         val e = fixtureEngine()
         val personal = e.collection("Personal")
-        main("inner_collapsed_dark", INNER, state(e, personal, select = e.taskId(personal, "Renew passport appointment")), dark = true, collapsed = true)
+        main("inner_collapsed_dark", FOLD7_INNER, state(e, personal, select = e.taskId(personal, "Renew passport appointment")), dark = true, collapsed = true)
     }
 
     /**
@@ -391,25 +404,44 @@ class GalleryTest {
     }
 
     @Test
-    fun cover_drawer() {
-        main("cover_drawer_light", COVER, state(fixtureEngine()), dark = false, drawer = true)
+    fun cover_room_switcher() {
         val e = fixtureEngine()
         val personal = (e.collection("Personal") as RoomKey.Collection).id
-        main("cover_drawer_folded_dark", COVER, state(e, fold = listOf(personal)), dark = true, drawer = true)
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            val expanded = state(e, fold = if (dark) listOf(personal) else emptyList()).let {
+                it.copy(status = it.status.copy(state = SyncState.ONLINE), syncedAt = FIXTURE_NOW)
+            }
+            val inner = state(e, e.collection("Personal"), select = e.taskId(e.list("Admin"), "Renew passport appointment"))
+            main("cover_switcher_$theme", FOLD7_COVER, expanded, dark, drawer = true)
+            main("cover_switcher_filtered_$theme", FOLD7_COVER, expanded.copy(collapsed = setOf(personal)), dark, drawer = true, switcherFilter = "errands")
+            main("inner_switcher_$theme", FOLD7_INNER, inner, dark, drawer = true)
+        }
     }
 
     @Test
-    fun drawer_footer_offline() {
+    fun switcher_footer_offline() {
         val state = state(fixtureEngine())
         val offline = state.copy(status = state.status.copy(state = SyncState.OFFLINE, pending = 3u))
-        main("cover_drawer_footer_offline", COVER, offline, dark = false, drawer = true)
+        main("cover_switcher_footer_offline", FOLD7_COVER, offline, dark = false, drawer = true)
     }
 
-    /** The filter under the pills: the query language narrows the rows, the sun still counts the room. */
+    @Test
+    fun cover_reach_and_left_hand() {
+        val e = fixtureEngine()
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            main("cover_reach_pull_$theme", FOLD7_COVER, state(e, e.list("Errands")), dark, reach = true)
+            main("cover_handedness_left_$theme", FOLD7_COVER, state(e), dark, hand = ThumbHand.LEFT)
+            main("cover_switcher_left_$theme", FOLD7_COVER, state(e), dark, hand = ThumbHand.LEFT, drawer = true)
+        }
+    }
+
+    /** The dock filter narrows the rows; the sun still counts the whole room. */
     @Test
     fun cover_filter() {
-        main("cover_filter_light", COVER, state(fixtureEngine(), filter = "priority>=high"), dark = false)
-        main("cover_filter_nothing_dark", COVER, state(fixtureEngine(), filter = "dentist tomorrow"), dark = true)
+        main("cover_filter_light", FOLD7_COVER, state(fixtureEngine(), filter = "priority>=high"), dark = false)
+        main("cover_filter_nothing_dark", FOLD7_COVER, state(fixtureEngine(), filter = "dentist tomorrow"), dark = true)
     }
 
     @Test
@@ -417,8 +449,8 @@ class GalleryTest {
         val e = fixtureEngine()
         val personal = e.collection("Personal")
         val s = state(e, personal, select = e.taskId(personal, "Renew passport appointment"))
-        main("inner_personal_dark", INNER, s, dark = true)
-        main("inner_personal_light", INNER, s, dark = false)
+        main("inner_personal_dark", FOLD7_INNER, s, dark = true)
+        main("inner_personal_light", FOLD7_INNER, s, dark = false)
     }
 
     @Test
@@ -580,37 +612,22 @@ class GalleryTest {
         overlay: @Composable () -> Unit,
     ) = shot(name, device) {
         Box(Modifier.fillMaxSize()) {
-            MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer)
+            CompositionLocalProvider(LocalSheetAtRest provides true) {
+                MainScreen(state, Actions.None, dark, wide, server = "https://todo.example.com", drawerOpen = drawer)
+            }
             TodoTheme(dark, state.room.hue) { overlay() }
         }
     }
 
     @Test
     fun settings_menu() {
-        val server = "https://todo.example.com:8443"
         val state = state(fixtureEngine())
-        val s = Tokens.Space
-        val d = Tokens.Metrics.Desktop
-        val touch = Tokens.Metrics.Phone.TOUCH.dp
         for (dark in listOf(false, true)) {
             val theme = if (dark) "dark" else "light"
             val status = if (dark) SyncState.SYNCING else SyncState.ONLINE
             val ui = state.copy(status = state.status.copy(state = status))
-            shot("settings_menu_$theme", COVER) {
-                Box(Modifier.fillMaxSize()) {
-                    MainScreen(ui, Actions.None, dark, wide = false, server = server, drawerOpen = true)
-                    TodoTheme(dark, ui.room.hue) {
-                        Box(Modifier.width(d.SIDEBAR.dp + s.S10.dp).fillMaxHeight().navigationBarsPadding()) {
-                            Column(Modifier.align(Alignment.BottomEnd).padding(end = s.S2.dp, bottom = touch)
-                                .width(d.MENU.dp).overlay(RoundedCornerShape(Tokens.Radius.LG.dp), LocalDesign.current)
-                                .padding(vertical = s.S2.dp)) {
-                                SettingsMenuContent(server, dark, null, onDismiss = {}, onAdmin = {},
-                                    onSync = {}, onDevices = {}, onUnpair = {})
-                            }
-                        }
-                    }
-                }
-            }
+            main("settings_menu_$theme", FOLD7_COVER, ui, dark, drawer = true, settings = true,
+                hand = if (dark) ThumbHand.LEFT else ThumbHand.RIGHT)
         }
     }
 
@@ -803,7 +820,13 @@ class GalleryTest {
             val s = m.ui.value
             s.room.tasks.take(3).forEach { m.toggleBulk(it.id, s.generation) }
             check(m.ui.value.bulkIds.size == 3)
-            main("multi_select_$theme", COVER, m.ui.value, dark)
+            main("multi_select_$theme", FOLD7_COVER, m.ui.value, dark)
+            val destinations = runBlocking { m.bulkDestinations(m.ui.value.bulkIds, "") }
+            for (picker in BulkPicker.entries) overlaid("bulk_${picker.name.lowercase()}_$theme", FOLD7_COVER, m.ui.value, dark) {
+                CompositionLocalProvider(LocalSheetAtRest provides true) {
+                    BulkSelectionPicker(picker, m.ui.value, m, destinations) {}
+                }
+            }
         }
     }
 
@@ -826,7 +849,7 @@ class GalleryTest {
                 "drag_destination" to DragFrame(first.title, selected.bulkIds, TaskDrop.List(destination.id), 170f, 680f),
             )
             for ((label, frame) in frames) shot("${label}_$theme", COVER) {
-                CompositionLocalProvider(LocalTaskDragFrame provides frame) {
+                CompositionLocalProvider(LocalTaskDragFrame provides frame, LocalSheetAtRest provides true) {
                     MainScreen(selected, Actions.None, dark, wide = false, drawerOpen = frame.target is TaskDrop.List)
                 }
             }
@@ -853,26 +876,21 @@ class GalleryTest {
         }
     }
 
-    /** A list's long-press menu in the drawer, and the room's ⋯ menu in a list. */
+    /** A list's long-press sheet in the switcher, and a room's ⋯ sheet. */
     @Test
     fun list_menu() {
-        for (dark in listOf(false, true)) {
-            val e = fixtureEngine()
-            val s = state(e)
-            val errands = e.list("Errands")
-            overlaid("list_menu_${if (dark) "dark" else "light"}", COVER, s, dark, drawer = true) {
-                Box(Modifier.fillMaxSize().padding(start = Tokens.Space.S3.dp, bottom = Tokens.Space.S4.dp), contentAlignment = Alignment.BottomStart) {
-                    MenuCard(drawerMenu(s.home, errands), {})
-                }
-            }
-        }
         val e = fixtureEngine()
         val errands = e.list("Errands")
         val s = state(e, errands)
-        overlaid("room_menu_light", COVER, s, dark = false) {
-            Box(Modifier.fillMaxSize().padding(top = 48.dp, end = 10.dp), contentAlignment = Alignment.TopEnd) {
-                MenuCard(roomMenu(s.home, errands, s.showCompleted), {})
+        val item = s.home.groups.flatMap { it.lists }.first { it.key == errands }
+        for (dark in listOf(false, true)) {
+            val theme = if (dark) "dark" else "light"
+            shot("list_menu_$theme", FOLD7_COVER) {
+                CompositionLocalProvider(LocalSheetAtRest provides true) {
+                    MainScreen(s, Actions.None, dark, wide = false, drawerOpen = true, navMenuOpen = item)
+                }
             }
+            main("room_menu_$theme", FOLD7_COVER, s, dark, roomMenu = true)
         }
         overlaid("rename_list_light", COVER, s, dark = false) {
             DialogBackdrop { RenameCard("Rename list", "Errands", {}, {}, focus = false) }
