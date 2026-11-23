@@ -628,6 +628,9 @@ compiled into them. The Rust release build remaps Cargo (`/cargo`), Rustup/sysro
 (`/src`), Gradle and SDK/NDK paths. The signing script scans the raw APK (including its signing block),
 decompressed entries and nested ZIPs/JARs for local build paths, temp paths, home paths and user-directory
 prefixes such as `C:\Users` and `/home/`, as well as local usernames, Git identity and machine hostname.
+Failures identify the matched category, not the value. Shared system directories such as `/tmp` match
+only as path prefixes, not as standalone library defaults. Add any one- or two-character local identity
+that needs scanning to the explicit denylist.
 Set `TODO_ANDROID_DENYLIST` to a private UTF-8 file with more names, paths or values to reject, one per line.
 Blank lines and `#` comments are ignored; publishing requires at least one active line. Dry runs warn if
 no denylist is set. Review release assets and certificate subjects even if the scan passes. Never upload

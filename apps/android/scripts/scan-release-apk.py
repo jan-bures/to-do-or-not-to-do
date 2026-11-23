@@ -17,6 +17,11 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 CHUNK_SIZE = 1024 * 1024
 MAX_NESTING = 8
 MAX_EXPANDED = 512 * 1024 * 1024
+# Toolchains and native libraries may contain public fallback directory names. Scan children
+# of these shared roots, not the bare names or substrings of unrelated paths.
+GENERIC_SYSTEM_DIRS = {"/tmp", "/var/tmp", "/private/tmp", "/private/var/tmp", "/usr", "/var", "/run", "/opt"}
+IDENTITY_TOKENS = {"local user name", "git author name", "machine hostname"}
+MIN_IDENTITY_LENGTH = 3
 
 
 def spellings(value):
@@ -36,26 +41,35 @@ def command_value(root, args, optional=False):
 def path_needles(root):
     home = Path.home()
     paths = {
-        root, home / ".cargo", home / ".rustup", home / ".gradle", Path(tempfile.gettempdir()),
-        Path(command_value(root, ["rustc", "--print", "sysroot"])),
+        "workspace root": [root],
+        "CARGO_HOME": [home / ".cargo"],
+        "RUSTUP_HOME": [home / ".rustup"],
+        "GRADLE_USER_HOME": [home / ".gradle"],
+        "temp dir": [Path(tempfile.gettempdir())],
     }
+    if sysroot := command_value(root, ["rustc", "--print", "sysroot"]):
+        paths["Rust sysroot"] = [Path(sysroot)]
     for key in ("CARGO_HOME", "RUSTUP_HOME", "GRADLE_USER_HOME", "ANDROID_HOME", "ANDROID_SDK_ROOT",
                 "ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "TMP", "TEMP", "TMPDIR"):
         if value := os.getenv(key):
-            paths.add(Path(value))
+            category = "temp dir" if key in {"TMP", "TEMP", "TMPDIR"} else key
+            paths.setdefault(category, []).append(Path(value))
     # Gradle can get its SDK from local.properties even when the environment is empty.
     properties = root / "apps" / "android" / "local.properties"
     if properties.is_file():
         for line in properties.read_text(encoding="utf-8-sig").splitlines():
             if found := re.fullmatch(r"\s*(?:sdk|ndk)\.dir\s*[=:]\s*(.+?)\s*", line):
-                paths.add(Path(re.sub(r"\\([\\ :])", r"\1", found[1])))
+                paths.setdefault("Android SDK/NDK (local.properties)", []).append(Path(re.sub(r"\\([\\ :])", r"\1", found[1])))
     values = set()
-    for path in paths:
-        path = path if path.is_absolute() else root / path
-        for absolute in (path.absolute(), path.resolve()):
-            if absolute != Path(absolute.anchor):
-                values.update(spellings(str(absolute)))
-    return values
+    for category, directories in paths.items():
+        for path in directories:
+            path = path if path.is_absolute() else root / path
+            for absolute in (path.absolute(), path.resolve()):
+                if absolute != Path(absolute.anchor):
+                    generic = absolute.as_posix().lower() in GENERIC_SYSTEM_DIRS
+                    values.update((spelling.lower(), category, generic) for spelling in spellings(str(absolute)))
+    # Report the most specific path first, e.g. the sysroot rather than its RUSTUP_HOME parent.
+    return sorted(values, key=lambda value: (-len(value[0]), value[1], value[0]))
 
 
 def denylist_values(path):
@@ -72,20 +86,27 @@ def needles(root=REPO_ROOT):
         "home path": {form for path in paths if path for form in spellings(path)},
         "local user name": {getpass.getuser(), os.getenv("USERNAME", ""), os.getenv("USER", "")},
         "user directory prefix": spellings(r"C:\Users") | spellings("/home/") | spellings("/Users/"),
-        "build path": path_needles(root),
         "git author name": {command_value(root, ["git", "config", "--get", "user.name"], optional=True)},
         "git author email": {command_value(root, ["git", "config", "--get", "user.email"], optional=True)},
         "machine hostname": {socket.gethostname(), os.getenv("COMPUTERNAME", ""), os.getenv("HOSTNAME", "")},
     }
     if denylist := os.getenv("TODO_ANDROID_DENYLIST"):
         values["private denylist"] = denylist_values(denylist)
+    encodings = ("utf-8", "utf-16le", "utf-16be")
+    for text, category, generic in path_needles(root):
+        for encoding in encodings:
+            yield pattern(text, encoding, category, path_prefix=generic)
     for reason, strings in values.items():
         for text in sorted({value.lower() for value in strings if value}):
-            for encoding in ("utf-8", "utf-16le", "utf-16be"):
+            # One- and two-character machine/account names are too ambiguous as standalone
+            # binary tokens. Concrete paths and explicit denylist entries have no length floor.
+            if reason in IDENTITY_TOKENS and len(text) < MIN_IDENTITY_LENGTH:
+                continue
+            for encoding in encodings:
                 yield pattern(text, encoding, reason)
 
 
-def pattern(text, encoding, reason):
+def pattern(text, encoding, reason, path_prefix=False):
     raw = text.encode(encoding).lower()
     width = len(raw)
     expression = re.escape(raw)
@@ -97,15 +118,24 @@ def pattern(text, encoding, reason):
                               else re.escape(next(iter(parts))) for parts in choices)
         width = sum(max(map(len, parts)) for parts in choices)
     # An identity is a token, not the suffix of e.g. ApiCallRunner.
-    bounded = reason in {"local user name", "git author name", "machine hostname"}
-    if bounded:
-        word = b"[a-z0-9_]"
+    bounded = reason in IDENTITY_TOKENS
+
+    def code_unit(ascii_class):
         if encoding == "utf-16le":
-            word += b"\x00"
-        elif encoding == "utf-16be":
-            word = b"\x00" + word
+            return ascii_class + b"\x00"
+        if encoding == "utf-16be":
+            return b"\x00" + ascii_class
+        return ascii_class
+
+    if path_prefix:
+        # Left boundary excludes relative paths and longer prefixes (e.g. /var/tmp for /tmp).
+        preceding = code_unit(rb"[a-z0-9_./\\-]")
+        separator = code_unit(rb"[/\\]")
+        expression = b"(?<!" + preceding + b")" + expression + b"(?=" + separator + b")"
+    elif bounded:
+        word = code_unit(b"[a-z0-9_]")
         expression = b"(?<!" + word + b")" + expression + b"(?!" + word + b")"
-    return (raw if text.isascii() else None), reason, (re.compile(expression) if bounded or not text.isascii() else None), width
+    return (raw if text.isascii() else None), reason, (re.compile(expression) if path_prefix or bounded or not text.isascii() else None), width
 
 
 def scan(apk, patterns, cert_info=b""):
