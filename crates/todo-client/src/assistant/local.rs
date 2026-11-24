@@ -1,14 +1,18 @@
 //! Native, owner-configured Chat Completions transport. Building a provider is entirely offline.
 //! This client has no access to the todo server, device credentials, sync, or write authority.
 
-pub use super::provider::TailnetInterface;
 use super::{
+    endpoint,
     openai::payload,
     provider::{
         BillingClass, Cancel, Capabilities, DataClass, Message, Model, Provider, ProviderError,
         RoundMode, RoundRequest, StreamEvent, ToolDefinition,
     },
     wire::RoundDecoder,
+};
+pub use super::{
+    endpoint::{Destination, is_tailnet_ip},
+    provider::TailnetInterface,
 };
 use futures_util::{Stream, StreamExt, future::AbortHandle, stream};
 use reqwest::{
@@ -21,13 +25,12 @@ use serde_json::Value;
 use serde_json::json;
 use std::{
     collections::{BTreeMap, VecDeque},
-    net::IpAddr,
     pin::Pin,
     sync::Arc,
     time::Duration,
 };
 use unicode_general_category::{GeneralCategory, get_general_category};
-use url::{Host, Url};
+use url::Url;
 use zeroize::Zeroizing;
 
 const CONNECT: Duration = Duration::from_secs(4);
@@ -61,36 +64,6 @@ enum Cleartext {
     Tailnet,
 }
 
-/// Classifies an address, not its route. The platform check separately looks for an up interface.
-pub fn is_tailnet_ip(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => {
-            let [a, b, ..] = ip.octets();
-            a == 100 && (64..=127).contains(&b)
-        }
-        IpAddr::V6(ip) => ip.segments()[..3] == [0xfd7a, 0x115c, 0xa1e0],
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Destination {
-    ThisDevice,
-    Tailscale,
-    YourServer,
-    NotPrivate,
-}
-
-impl Destination {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::ThisDevice => "This device",
-            Self::Tailscale => "Tailscale",
-            Self::YourServer => "Your server",
-            Self::NotPrivate => "Not private",
-        }
-    }
-}
-
 #[derive(Clone, Copy, Debug)]
 pub struct EndpointInfo {
     pub destination: Destination,
@@ -105,35 +78,8 @@ pub fn endpoint_info(input: &str, attested: bool) -> Result<EndpointInfo, SetupE
 }
 
 fn base(input: &str, attested: bool) -> Result<(Url, Destination, Option<Cleartext>), SetupError> {
-    let input = input.trim();
-    let (_, location) = input.split_once("://").ok_or(SetupError::Address)?;
-    let authority = location.split(['/', '?', '#']).next().unwrap_or_default();
-    if input.len() > 2048
-        || input
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
-        || authority.is_empty()
-        || authority.contains('@')
-        || authority.ends_with(':')
-    {
-        return Err(SetupError::Address);
-    }
-    let mut url = Url::parse(input).map_err(|_| SetupError::Address)?;
-    if url.query().is_some() || url.fragment().is_some() || url.port() == Some(0) {
-        return Err(SetupError::Address);
-    }
-    let destination = match url.host().ok_or(SetupError::Address)? {
-        Host::Domain(host) if host.trim_end_matches('.') == "localhost" => Destination::ThisDevice,
-        Host::Ipv4(ip) if ip.is_loopback() => Destination::ThisDevice,
-        Host::Ipv6(ip) if ip.is_loopback() => Destination::ThisDevice,
-        Host::Domain(host) if host.trim_end_matches('.').ends_with(".ts.net") => {
-            Destination::Tailscale
-        }
-        Host::Ipv4(ip) if is_tailnet_ip(ip.into()) => Destination::Tailscale,
-        Host::Ipv6(ip) if is_tailnet_ip(ip.into()) => Destination::Tailscale,
-        _ if attested => Destination::YourServer,
-        _ => Destination::NotPrivate,
-    };
+    let mut url = endpoint::address(input).ok_or(SetupError::Address)?;
+    let destination = endpoint::classify(url.host().ok_or(SetupError::Address)?, attested);
     let policy = match (url.scheme(), destination) {
         ("https", _) => None,
         ("http", Destination::ThisDevice) => Some(Cleartext::Loopback),
@@ -215,13 +161,10 @@ impl LocalProvider {
     /// `attested` must come from an explicit owner decision for this exact configured URL.
     pub fn configured(address: &str, key: &str, attested: bool) -> Result<Self, SetupError> {
         let (base, destination, cleartext) = base(address, attested)?;
-        let key = key.trim();
+        let key = endpoint::bearer_key(key).ok_or(SetupError::Credential)?;
         let auth = if key.is_empty() {
             None
         } else {
-            if key.len() > 4096 || !key.bytes().all(|b| b.is_ascii_graphic()) {
-                return Err(SetupError::Credential);
-            }
             let bearer = Zeroizing::new(format!("Bearer {key}"));
             let mut header = HeaderValue::from_str(&bearer).map_err(|_| SetupError::Credential)?;
             header.set_sensitive(true);

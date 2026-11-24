@@ -134,7 +134,8 @@ The page gets its own CSP:
 
 ```
 default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:;
-connect-src 'self' https: http://127.0.0.1:*; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self';
+connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self';
+frame-ancestors 'none'; base-uri 'none'; form-action 'self';
 object-src 'none'
 ```
 
@@ -153,20 +154,37 @@ its own resizable divider and remembers the width in this browser. It opens as a
 and as a bottom sheet on phones. Enter sends, Shift+Enter inserts a newline, and **Stop** aborts the reply.
 Closing the panel preserves the chat until reload. Settings are also available under **Settings → AI assistant…**.
 
-**Your own server** supports an OpenAI-compatible Chat Completions endpoint with tool calling. Enter a
-base URL (for example `https://todo.example.com/v1`) and your server's model name. The browser sends
-`POST …/v1/chat/completions` directly, never through `todo-server`. The endpoint must answer the browser's
-CORS preflight (`OPTIONS`), allow the exact app origin, `POST`, and the `Content-Type` header, and include
-`Access-Control-Allow-Origin` on the reply, including its stream. No redirects, cookies, referrer,
-To-do credentials or API key are sent. Browsers may also request permission to access a locally hosted model.
-ChatGPT account sign-in and browser storage of model credentials are not supported.
+**Your own server** supports OpenAI-compatible Chat Completions with tool calling. Enter the base URL and
+model name. Use `http://localhost:11434` or `http://127.0.0.1:11434` for a model on the browser's device.
+For another device on your tailnet, enable HTTPS certificates in Tailscale and use **Tailscale Serve**,
+not Funnel. On the model host, for example:
 
-Only `127.0.0.1` is classified as **This device**; it may use HTTP or HTTPS. Everything else must use HTTPS
-and is treated as **Cloud**, including private host names that the browser cannot verify. Saving a Cloud
-endpoint requires explicit consent. Each list defaults to **Hidden**; **Private only** is excluded from Cloud,
-and **All models** opts in to both. Lists inherit the collection rule unless overridden. The shared assistant
-projects the confirmed replica before answering tools, and scope or provider changes clear the conversation.
-Settings and pane width are browser-local; conversation text is not persisted or synced.
+```sh
+tailscale serve --bg http://127.0.0.1:11434
+```
+
+Enter the `https://<device>.<tailnet>.ts.net` URL printed by Serve (standard HTTPS port 443). The browser blocks plain HTTP to the
+tailnet from the HTTPS app; other origins are not supported. Serve handles TLS, not your model's CORS policy.
+The model or its local reverse proxy must answer unauthenticated `OPTIONS` requests, allow the exact app
+origin (for example `https://todo.example.com`), `POST`, and `Content-Type` plus `Authorization` if using an
+API key. Send `Access-Control-Allow-Origin` on both the preflight and the actual response, including errors
+and streams. Browsers may ask permission to access your local network; if a browser sends
+`Access-Control-Request-Private-Network: true`, accept it for the configured app origin with
+`Access-Control-Allow-Private-Network: true` on the preflight.
+
+The browser posts to `…/v1/chat/completions` directly, never through `todo-server`. It sends an optional
+**API key** as a Bearer header to the configured endpoint only; redirects, cookies, referrer, and To-do
+credentials are not sent. The key is held in memory unless you select **Remember in this tab**, which uses
+`sessionStorage` to survive reloads in that tab. It is not stored in `localStorage`. Model settings are scoped
+by the signed-in owner. A key is bound to that sign-in and endpoint; signing out, changing owner, or
+disconnecting the model clears it. ChatGPT account sign-in is not supported.
+
+Each list defaults to **Hidden**. **Private only** allows reads by models on this device or over Tailscale
+Serve. **All models** is equivalent on web because web has no Cloud provider. Lists inherit the collection
+rule unless overridden. Only use a model you trust: the browser cannot verify what runs at the configured
+address or whether it forwards requests. The shared assistant projects the confirmed replica before tool reads.
+Changing the access rules or provider clears the conversation. Pane width is browser-local; conversation text
+is not persisted or synced.
 
 Model output cannot submit commands. **Approve** submits the exact reviewed effects through the same durable
 sync, digest and confirmed-revision checks as desktop; **Reject** submits nothing. Confirmed changes appear
@@ -217,7 +235,9 @@ failure and is retried later; a 401 from it means signed out. The page uses the 
 its raw body and reuses its `attachment_id` if it has to send it again. The attachment arrives in the
 replica over the event stream, not through a separate local edit.
 
-`GET /auth/session` (cookie only, `{"csrf": "..."}`, a 401 without a session) answers this origin only: it
+`GET /auth/session` (cookie only, `{"csrf": "...", "owner_scope": "..."}`, a 401 without a session)
+answers this origin only. The owner scope is a non-secret browser storage namespace, also in the app page;
+a refresh for a different owner is treated as signed out. The endpoint it
 refuses a request whose `Sec-Fetch-Site` is anything but `same-origin` (so `same-site`, `cross-site` and a
 typed-in `none` too) or whose `Origin`, if present, isn't the server's. And it never counts as activity: it
 looks the session up without touching it, so a sibling origin or a forgotten tab can't keep an idle session
@@ -653,7 +673,8 @@ The status bar shows shortcuts only when their actions are available.
   and reload, rescheduling and removal, and fallback actions. The docked splitter
   tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
   and viewport changes, and wide-detail text and list layout. Assistant tests cover focus, responsive layout,
-  a real streaming fetch and Stop, and exact outbound bodies for the model's list-access gate. Settings tests use the keyboard to open
+  a real streaming fetch and Stop, Tailscale Serve and loopback validation, Bearer versus session headers,
+  per-owner storage, and exact outbound bodies for the model's list-access gate. Settings tests use the keyboard to open
   the same-origin admin pages from the desktop sidebar and phone drawer. Set `FIXTURE_PORT` to change the port
   from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with

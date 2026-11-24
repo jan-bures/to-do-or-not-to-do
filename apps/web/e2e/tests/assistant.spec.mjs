@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { expect, test } from "@playwright/test";
 import { open, watch } from "./helpers.mjs";
-import { aiSettings, call, chunk, configure, modelRoute, panel, prompt, send, toolResults, words } from "./assistant-helpers.mjs";
+import { MODEL_ORIGIN, aiSettings, call, chunk, configure, modelRoute, panel, prompt, send, toolResults, words } from "./assistant-helpers.mjs";
 
 const trigger = (page) => page.getByRole("button", { name: "Ask AI", exact: true });
 
@@ -99,6 +99,7 @@ test("task links keep both panes visible and only dock detail from 1600 px", asy
   const task = "Prepare the November board update";
   const link = panel(page).getByRole("button", { name: new RegExp(task) });
   await expect(link).toBeVisible();
+  await expect(panel(page).getByText(/Read 1 task ·/)).toBeVisible();
   await link.click();
   const detail = page.locator("#task-detail");
   await expect(detail).toHaveCSS("position", "fixed");
@@ -156,11 +157,117 @@ test("streams an unfinished reply and Stop aborts its fetch", async ({ page }) =
   }
 });
 
-test("collection inheritance and the cloud gate filter list and task tool results", async ({ page }) => {
+test("settings reject plain HTTP on the tailnet and HTTPS outside the allowlist", async ({ page }) => {
   const w = watch(page);
   await open(page);
   await trigger(page).click();
-  await configure(page, { Work: "private", Planning: "all" });
+  await page.locator("#assistant-settings").click();
+  const settings = aiSettings(page);
+  await settings.getByLabel("Model", { exact: true }).fill("example-model");
+  const address = settings.getByLabel("Base URL");
+  const save = settings.getByRole("button", { name: "Save", exact: true });
+  for (const url of [MODEL_ORIGIN.replace("https:", "http:"), "http://100.64.0.1:11434"]) {
+    await address.fill(url);
+    await save.click();
+    await expect(settings.getByRole("alert")).toContainText(/Tailscale Serve \(HTTPS\).*CORS/);
+  }
+  await address.fill("https://todo.example.com");
+  await save.click();
+  await expect(settings.getByRole("alert")).toContainText("or an HTTPS Tailscale Serve URL ending in .ts.net");
+  await address.fill("http://localhost:11434");
+  await save.click();
+  await expect(panel(page).locator(".ai-model")).toHaveText("This device · example-model");
+  await w.check();
+});
+
+test("a tab can remember a scoped key; Disconnect invalidates it", async ({ page, context }) => {
+  const w = watch(page);
+  const apiKey = "unit-test-bearer";
+  // Install a cookie eligible for this cross-site route. It must still not be sent.
+  await context.addCookies([{ name: "__Host-todo_session", value: "synthetic-not-a-session", url: MODEL_ORIGIN, sameSite: "None", secure: true }]);
+  expect(await context.cookies(MODEL_ORIGIN)).toEqual(expect.arrayContaining([expect.objectContaining({ name: "__Host-todo_session" })]));
+  await open(page);
+  await trigger(page).click();
+  await configure(page, {}, MODEL_ORIGIN, { apiKey, remember: true });
+  expect(await page.evaluate(() => Object.values(localStorage))).not.toContainEqual(expect.stringContaining(apiKey));
+  await page.reload();
+  await trigger(page).click();
+  const requests = await modelRoute(page, () => words("Key worked."), { apiKey });
+  await send(page, "Check my connection");
+  await expect(panel(page).getByText("Key worked.")).toBeVisible();
+  expect(JSON.stringify(requests)).not.toContain(apiKey);
+  await page.locator("#assistant-settings").click();
+  await expect(aiSettings(page).getByLabel("API key", { exact: true })).toHaveValue("");
+  await aiSettings(page).getByRole("button", { name: "Disconnect model" }).click();
+  await expect(prompt(page)).toBeDisabled();
+  expect(await page.evaluate(() => Object.keys(sessionStorage).some((key) => key.startsWith("todo.assistant.api-key:")))).toBe(false);
+  await w.check();
+});
+
+test("a new login in the same tab preserves the profile, not the previous login's key", async ({ page }) => {
+  await open(page);
+  await trigger(page).click();
+  await configure(page, {}, MODEL_ORIGIN, { apiKey: "login-binding-test", remember: true });
+  await page.route("**/app", async (route) => {
+    const response = await route.fetch();
+    await route.fulfill({ response, body: (await response.text()).replace("gallery-csrf", "another-fixture-csrf") });
+  });
+  await page.reload();
+  await trigger(page).click();
+  await expect(prompt(page)).toBeEnabled();
+  await page.locator("#assistant-settings").click();
+  const settings = aiSettings(page);
+  await expect(settings.getByLabel("Base URL")).toHaveValue(MODEL_ORIGIN);
+  await expect(settings.getByLabel("API key", { exact: true })).toHaveAttribute("placeholder", "Optional");
+});
+
+test("switching owner scopes does not load the previous owner's assistant profile or key", async ({ page }) => {
+  await open(page);
+  await trigger(page).click();
+  await configure(page, { Inbox: "all" }, MODEL_ORIGIN, { apiKey: "account-scope-test", remember: true });
+  await page.route("**/app", async (route) => {
+    const response = await route.fetch();
+    const body = (await response.text()).replace(/(<meta name="todo-owner-scope" content=")[a-f\d]{64}("\s*>)/, (_, before, after) => `${before}${"2".repeat(64)}${after}`);
+    await route.fulfill({ response, body });
+  });
+  await page.reload();
+  await trigger(page).click();
+  await expect(prompt(page)).toBeDisabled();
+  await page.locator("#assistant-settings").click();
+  const settings = aiSettings(page);
+  await expect(settings.getByLabel("Base URL")).toHaveValue("");
+  await expect(settings.getByLabel("API key", { exact: true })).toHaveAttribute("placeholder", "Optional");
+  await expect(settings.getByRole("combobox", { name: "Inbox", exact: true })).toHaveValue("hidden");
+  expect(await page.evaluate(() => Object.keys(sessionStorage).some((key) => key.startsWith("todo.assistant.api-key:")))).toBe(false);
+});
+
+test("the same document restores its model on a signed-in update, without restoring its key", async ({ page }) => {
+  await open(page);
+  await trigger(page).click();
+  await configure(page, {}, MODEL_ORIGIN, { apiKey: "signout-key-test", remember: true });
+  await page.evaluate(() => { window.__sameDocument = true; });
+  // A 204 holds the existing document and session, letting the live-state path see a signed-in
+  // update after the sign-out gesture without changing the replica's one-way revocation latch.
+  await page.route("**/auth/logout", (route) => route.fulfill({ status: 204 }));
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("menuitem", { name: "Sign out", exact: true }).click();
+  await expect(prompt(page)).toBeDisabled();
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  await add.fill("Trigger a signed-in state update");
+  await add.press("Enter");
+  await expect(prompt(page)).toBeEnabled();
+  expect(await page.evaluate(() => window.__sameDocument)).toBe(true);
+  await modelRoute(page, () => words("The model was restored."));
+  await send(page, "Check restored model");
+  await expect(panel(page).getByText("The model was restored.")).toBeVisible();
+});
+
+test("Tailscale Serve is private, and collection inheritance keeps hidden lists out of requests", async ({ page }) => {
+  const w = watch(page);
+  await open(page);
+  await trigger(page).click();
+  await configure(page, { Work: "private", Planning: "hidden" });
+  await expect(panel(page).locator(".ai-model")).toHaveText("Tailscale · example-model");
   await page.locator("#assistant-settings").click();
   const settings = aiSettings(page);
   await expect(settings.getByRole("combobox", { name: "Work", exact: true })).toHaveValue("");
@@ -178,12 +285,11 @@ test("collection inheritance and the cloud gate filter list and task tool result
   await expect(panel(page).getByText("I checked the permitted lists.")).toBeVisible();
   expect(requests).toHaveLength(3);
   const bodies = JSON.stringify(requests);
-  expect(bodies).toContain("Planning");
-  expect(bodies).toContain("Prepare the November board update");
-  expect(bodies).not.toContain("Finance");
-  expect(bodies).not.toContain("Team");
-  expect(bodies).not.toContain("Pay the December supplier invoices");
+  expect(bodies).toContain("Finance");
+  expect(bodies).toContain("Pay the December supplier invoices");
+  expect(bodies).not.toContain("Planning");
+  expect(bodies).not.toContain("Prepare the November board update");
   expect(bodies).not.toContain("Book train tickets to Brno");
-  expect(toolResults(requests[2])[0].items.map(({ name }) => name)).toEqual(["Planning"]);
+  expect(toolResults(requests[2])[0].items.map(({ name }) => name).sort()).toEqual(["Finance", "Team"]);
   await w.check();
 });

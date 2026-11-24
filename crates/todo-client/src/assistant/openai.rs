@@ -1,35 +1,42 @@
 //! Shared Chat Completions request encoding. The controller owns history and egress policy.
 
-use super::provider::{DataClass, Message, RoundMode, RoundRequest};
+use super::{
+    endpoint::{self, Destination},
+    provider::{Message, RoundMode, RoundRequest},
+};
 use serde_json::{Value, json};
 use url::{Host, Url};
 
-/// Normalize the browser's Chat Completions URL and classify it without trusting a hostname
-/// or asking the browser to attest to its network route. Only exact loopback literals in the
-/// application CSP are local; every other allowed address uses the cloud projection.
-pub fn browser_endpoint(input: &str) -> Option<(Url, DataClass)> {
-    let input = input.trim();
-    let (_, rest) = input.split_once("://")?;
-    let authority = rest.split(['/', '?', '#']).next()?;
-    if input.len() > 2048
-        || input
-            .chars()
-            .any(|c| c.is_whitespace() || c.is_control() || c == '\\')
-        || authority.is_empty()
-        || authority.contains('@')
-        || authority.ends_with(':')
-    {
-        return None;
-    }
-    let mut url = Url::parse(input).ok()?;
-    if url.query().is_some() || url.fragment().is_some() || url.port() == Some(0) {
-        return None;
-    }
-    let local = matches!(url.host()?, Host::Ipv4(ip) if ip == std::net::Ipv4Addr::LOCALHOST);
-    match url.scheme() {
-        "https" => {}
-        "http" if local => {}
-        _ => return None,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum BrowserEndpointError {
+    #[error("Enter a model server URL without credentials, a query, or a fragment.")]
+    Address,
+    #[error(
+        "For a tailnet server, use Tailscale Serve (HTTPS) and allow this site in CORS. The browser blocks plain HTTP to the tailnet."
+    )]
+    TailnetHttp,
+    #[error(
+        "Use HTTP at localhost or 127.0.0.1, or an HTTPS Tailscale Serve URL ending in .ts.net on port 443."
+    )]
+    Destination,
+    #[error("Choose a model server on a different origin from this app.")]
+    SameOrigin,
+}
+
+/// Keep the browser rule in step with the app page's `connect-src`. The browser cannot pin DNS
+/// answers to specific interfaces like the native client, so only HTTPS tailnet hostnames pass.
+pub fn browser_endpoint(input: &str) -> Result<(Url, Destination), BrowserEndpointError> {
+    let mut url = endpoint::address(input).ok_or(BrowserEndpointError::Address)?;
+    let host = url.host().ok_or(BrowserEndpointError::Address)?;
+    let destination = endpoint::classify(host.clone(), false);
+    match (url.scheme(), destination, host) {
+        ("http", Destination::ThisDevice, Host::Domain("localhost")) => {}
+        ("http", Destination::ThisDevice, Host::Ipv4(ip))
+            if ip == std::net::Ipv4Addr::LOCALHOST => {}
+        ("https", Destination::Tailscale, Host::Domain(host))
+            if host.ends_with(".ts.net") && url.port().is_none() => {}
+        ("http", Destination::Tailscale, _) => return Err(BrowserEndpointError::TailnetHttp),
+        _ => return Err(BrowserEndpointError::Destination),
     }
     let path = url.path().trim_end_matches('/');
     let path = if path.ends_with("/v1/chat/completions") {
@@ -40,14 +47,7 @@ pub fn browser_endpoint(input: &str) -> Option<(Url, DataClass)> {
         format!("{path}/v1/chat/completions")
     };
     url.set_path(&path);
-    Some((
-        url,
-        if local {
-            DataClass::Local
-        } else {
-            DataClass::Cloud
-        },
-    ))
+    Ok((url, destination))
 }
 
 #[cfg(test)]
@@ -55,43 +55,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn browser_endpoints_are_normalized_and_classified_conservatively() {
+    fn browser_endpoints_match_the_web_csp() {
         for (input, expected, class) in [
             (
                 "http://127.0.0.1:11434",
                 "http://127.0.0.1:11434/v1/chat/completions",
-                DataClass::Local,
+                Destination::ThisDevice,
             ),
             (
-                "http://127.0.0.1:11434/v1/",
-                "http://127.0.0.1:11434/v1/chat/completions",
-                DataClass::Local,
+                "http://localhost:11434/v1/",
+                "http://localhost:11434/v1/chat/completions",
+                Destination::ThisDevice,
             ),
             (
-                "https://todo.example.com/model/v1/chat/completions",
-                "https://todo.example.com/model/v1/chat/completions",
-                DataClass::Cloud,
-            ),
-            (
-                "https://localhost/v1",
-                "https://localhost/v1/chat/completions",
-                DataClass::Cloud,
+                "https://todo.example.ts.net/model/v1/chat/completions",
+                "https://todo.example.ts.net/model/v1/chat/completions",
+                Destination::Tailscale,
             ),
         ] {
-            let (url, data_class) = browser_endpoint(input).unwrap();
+            let (url, destination) = browser_endpoint(input).unwrap();
             assert_eq!(url.as_str(), expected);
-            assert_eq!(data_class, class);
+            assert_eq!(destination, class);
         }
         for invalid in [
-            "https://you@todo.example.com",
-            "https://todo.example.com?token=one",
-            "https://todo.example.com/#fragment",
-            "http://todo.example.com",
+            "https://you@todo.example.ts.net",
+            "https://todo.example.ts.net?token=one",
+            "https://todo.example.ts.net/#fragment",
+            "https://todo.example.com",
+            "https://todo.example.ts.net.example.com",
+            "https://todo.example.ts.net:8443",
+            "https://localhost",
             "file:///tmp/model",
             "http://127.0.0.2",
             "http://127.0.0.1:0",
         ] {
-            assert!(browser_endpoint(invalid).is_none(), "{invalid}");
+            assert!(browser_endpoint(invalid).is_err(), "{invalid}");
+        }
+        for cleartext in ["http://todo.example.ts.net", "http://100.64.0.1"] {
+            assert_eq!(
+                browser_endpoint(cleartext),
+                Err(BrowserEndpointError::TailnetHttp)
+            );
         }
     }
 }

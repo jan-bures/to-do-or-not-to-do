@@ -268,7 +268,12 @@ test("assistant edits and selected batch items only sync after approval; reject 
   const page = await openApp();
   const problems = watch(page);
   await page.getByRole("button", { name: "Ask AI", exact: true }).click();
-  await configure(page, { Inbox: "all" });
+  // Different port, same cookie host: omitting fetch credentials must suppress the actual
+  // signed-in session even for this otherwise eligible local model request.
+  const modelOrigin = `http://localhost:${PORT === 11434 ? 11435 : 11434}`;
+  const apiKey = "live-test-bearer";
+  expect((await context.cookies(page.url())).some((cookie) => cookie.name === "__Host-todo_session")).toBe(true);
+  await configure(page, { Inbox: "all" }, modelOrigin, { apiKey });
   const create = "Assistant draft: Water the seedlings";
   const skipped = "Assistant draft: Catalog the seed packets";
   const edited = "Assistant edit: Water the patio plants";
@@ -288,7 +293,7 @@ test("assistant edits and selected batch items only sync after approval; reject 
       return call("edit", "update_task", { task_id: task.id, title: edited });
     }
     return words("I drafted a title change.");
-  });
+  }, { apiKey, origin: modelOrigin });
   const log = async () => (await serverLog(page)).body;
   async function assertSettled() {
     await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
@@ -347,7 +352,10 @@ test("assistant edits and selected batch items only sync after approval; reject 
   await expect(row(other, remote)).toHaveCount(0);
   await expect(other.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
   await other.close();
-  await page.evaluate(() => localStorage.removeItem("todo.assistant.settings"));
+  await page.evaluate(() => {
+    const scope = document.querySelector('meta[name="todo-owner-scope"]').content;
+    localStorage.removeItem(`todo.assistant.settings:${scope}`);
+  });
   await page.close();
 });
 

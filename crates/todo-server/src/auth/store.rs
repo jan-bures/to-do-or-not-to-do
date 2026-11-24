@@ -294,7 +294,9 @@ pub(crate) fn reset_owner(
     revoke_agents: bool,
     revoke_shares: bool,
 ) -> Result<super::service::OwnerResetCounts> {
-    use super::service::{META_OWNER_READY, META_RECOVERY_CODE, OwnerResetCounts, audit};
+    use super::service::{
+        META_OWNER_READY, META_OWNER_USER, META_RECOVERY_CODE, OwnerResetCounts, audit,
+    };
 
     let tx = conn.transaction()?;
     let sessions_removed = tx.execute("DELETE FROM sessions", [])?;
@@ -304,7 +306,10 @@ pub(crate) fn reset_owner(
         [now],
     )?;
     tx.execute("DELETE FROM ceremonies", [])?;
-    tx.execute("DELETE FROM auth_meta WHERE key = ?1", [META_OWNER_READY])?;
+    tx.execute(
+        "DELETE FROM auth_meta WHERE key IN (?1, ?2)",
+        [META_OWNER_READY, META_OWNER_USER],
+    )?;
     tx.execute(
         "INSERT INTO auth_meta (key, value) VALUES (?1, ?2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         params![META_RECOVERY_CODE, format!("{now}:{setup_hash}")],

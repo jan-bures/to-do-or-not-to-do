@@ -54,7 +54,7 @@ pub const MAX_CODE_LOOKUPS: u32 = 10;
 
 pub(super) const META_OWNER_READY: &str = "owner_ready";
 pub(super) const META_RECOVERY_CODE: &str = "recovery_code_sha256";
-const META_OWNER_USER: &str = "owner_user_id";
+pub(crate) const META_OWNER_USER: &str = "owner_user_id";
 
 /// Audit event kinds.
 pub mod audit {
@@ -962,6 +962,12 @@ impl AuthService {
         } else {
             Err("wrong")
         }
+    }
+
+    /// A browser storage namespace, not a credential or the passkey user handle itself.
+    pub(crate) fn browser_owner_scope(&self) -> Result<String, ApiError> {
+        self.owner_user_id()
+            .map(|id| secret::digest_hex(&format!("browser-owner-scope-v1:{id}")))
     }
 
     fn owner_user_id(&self) -> Result<Uuid, ApiError> {

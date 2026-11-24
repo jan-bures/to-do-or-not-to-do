@@ -1,18 +1,17 @@
 import { expect } from "@playwright/test";
 
-const ORIGIN = "https://todo.example.com";
+export const MODEL_ORIGIN = "https://todo.example.ts.net";
 export const panel = (page) => page.locator("#assistant-panel");
 export const prompt = (page) => page.getByRole("textbox", { name: "Message the assistant" });
 export const aiSettings = (page) => page.getByRole("dialog", { name: "AI assistant", exact: true }).filter({ has: page.getByLabel("Base URL") });
 
-export async function configure(page, rules = {}, address = ORIGIN) {
+export async function configure(page, rules = {}, address = MODEL_ORIGIN, { apiKey, remember = false } = {}) {
   await page.locator("#assistant-settings").click();
   const settings = aiSettings(page);
   await settings.getByLabel("Base URL").fill(address);
   await settings.getByLabel("Model", { exact: true }).fill("example-model");
-  if (address.startsWith("https:")) {
-    await settings.getByRole("checkbox", { name: /send prompts/i }).check();
-  }
+  if (apiKey) await settings.getByLabel("API key", { exact: true }).fill(apiKey);
+  if (remember) await settings.getByRole("checkbox", { name: "Remember in this tab" }).check();
   for (const [name, access] of Object.entries(rules)) {
     await settings.getByRole("combobox", { name, exact: true }).selectOption(access);
   }
@@ -32,20 +31,22 @@ export const words = (content) => chunk({ content }) + chunk({}, "stop") + done;
 export const call = (id, name, args) => chunk({ tool_calls: [{ index: 0, id, type: "function", function: { name, arguments: JSON.stringify(args) } }] }) + chunk({}, "tool_calls") + done;
 export const toolResults = (req) => req.messages.filter((m) => m.role === "tool").map((m) => JSON.parse(m.content));
 
-export async function modelRoute(page, reply) {
+export async function modelRoute(page, reply, { apiKey, origin = MODEL_ORIGIN } = {}) {
   const requests = [];
-  await page.route(`${ORIGIN}/v1/chat/completions`, async (route) => {
+  await page.route(`${origin}/v1/chat/completions`, async (route) => {
     const r = route.request();
-    const headers = { "access-control-allow-origin": "*", "access-control-allow-headers": "content-type", "access-control-allow-methods": "POST, OPTIONS" };
+    const headers = { "access-control-allow-origin": "*", "access-control-allow-headers": "authorization, content-type", "access-control-allow-methods": "POST, OPTIONS" };
     if (r.method() === "OPTIONS") {
       await route.fulfill({ status: 204, headers });
       return;
     }
     expect(r.method()).toBe("POST");
-    expect(r.headers()).not.toHaveProperty("cookie");
-    expect(r.headers()).not.toHaveProperty("authorization");
-    expect(r.headers()).not.toHaveProperty("x-csrf-token");
-    expect(r.headers()).not.toHaveProperty("referer");
+    const sent = await r.allHeaders();
+    expect(sent).not.toHaveProperty("cookie");
+    if (apiKey) expect(sent.authorization).toBe(`Bearer ${apiKey}`);
+    else expect(sent).not.toHaveProperty("authorization");
+    expect(sent).not.toHaveProperty("x-csrf-token");
+    expect(sent).not.toHaveProperty("referer");
     const body = r.postDataJSON();
     requests.push(body);
     await route.fulfill({ status: 200, contentType: "text/event-stream", headers, body: reply(body) });

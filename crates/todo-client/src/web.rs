@@ -98,7 +98,7 @@ use web_sys::{
 /// The header carrying the session's CSRF token.
 pub const CSRF_HEADER: &str = "X-CSRF-Token";
 
-/// Where the session's current CSRF token is read (`GET`, the cookie only: `{"csrf": "..."}`).
+/// Where the session's current CSRF token and owner scope are read (`GET`, the cookie only).
 pub const CSRF_PATH: &str = "/auth/session";
 
 pub use crate::session::CsrfToken;
@@ -122,6 +122,7 @@ fn window() -> Result<web_sys::Window, TransportError> {
 #[derive(Clone)]
 pub struct FetchTransport {
     csrf: CsrfToken,
+    owner_scope: Option<String>,
     max_frame_bytes: usize,
 }
 
@@ -139,8 +140,16 @@ impl FetchTransport {
     pub fn new(csrf: CsrfToken) -> Self {
         Self {
             csrf,
+            owner_scope: None,
             max_frame_bytes: DEFAULT_MAX_FRAME_BYTES,
         }
+    }
+
+    /// The signed-in owner of this document. A token for a different owner must not revive it.
+    #[must_use]
+    pub fn with_owner_scope(mut self, owner_scope: Option<String>) -> Self {
+        self.owner_scope = owner_scope;
+        self
     }
 
     /// Uploads a browser file as a raw body, without buffering its bytes in wasm memory or queuing
@@ -180,12 +189,25 @@ impl FetchTransport {
         )
         .await?;
         match res.status {
-            200 => serde_json::from_slice::<serde_json::Value>(&res.body)
-                .ok()
-                .and_then(|v| v.get("csrf")?.as_str().map(str::to_owned))
-                .filter(|t| !t.is_empty())
-                .map(Fresh::Token)
-                .ok_or_else(|| TransportError::Protocol("unreadable session token".into())),
+            200 => {
+                let body: serde_json::Value = serde_json::from_slice(&res.body)
+                    .map_err(|_| TransportError::Protocol("unreadable session token".into()))?;
+                if let Some(expected) = &self.owner_scope
+                    && body.get("owner_scope").and_then(serde_json::Value::as_str)
+                        != Some(expected.as_str())
+                {
+                    return Ok(Fresh::SignedOut(Response {
+                        status: 401,
+                        body: Vec::new(),
+                        retry_after: None,
+                    }));
+                }
+                body.get("csrf")
+                    .and_then(serde_json::Value::as_str)
+                    .filter(|t| !t.is_empty())
+                    .map(|token| Fresh::Token(token.to_owned()))
+                    .ok_or_else(|| TransportError::Protocol("unreadable session token".into()))
+            }
             401 => Ok(Fresh::SignedOut(res)),
             s => Err(TransportError::Network(format!(
                 "could not refresh the session token ({s})"

@@ -204,11 +204,11 @@ impl Ctx {
         // The revocation latch also covers Activity and attachments. Only this path navigates:
         // a second location change could cancel the first before the login document commits.
         // Wait for local writes first, so the beforeunload guard cannot cancel our one attempt.
+        self.ai.sync(s.signed_out);
         if s.signed_out && !self.sign_in_started.get_value() && !backend::unsaved() {
             self.sign_in_started.set_value(true);
             platform::sign_in(&platform::path());
         }
-        self.ai.sync(s.signed_out);
         self.sync.set(s);
         self.failures.set(backend::failures());
         let revision = backend::activity_revision();
@@ -833,9 +833,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         viewport.set(platform::viewport_width())
     });
     let _ai_settings = window_event_listener(leptos::ev::storage, move |ev| {
-        if assistant::is_profile_key(ev.key().as_deref()) {
-            ai.reload_profile();
-        }
+        ai.storage_changed(ev.key().as_deref());
     });
     let _folds = window_event_listener(leptos::ev::storage, move |ev| {
         if platform::is_fold_key(ev.key().as_deref())

@@ -152,6 +152,15 @@ pub fn csrf() -> Option<String> {
     (!token.is_empty()).then_some(token)
 }
 
+/// Non-secret namespace for the signed-in owner, minted by the app server.
+pub fn owner_scope() -> Option<String> {
+    let value = document()?
+        .query_selector("meta[name=todo-owner-scope]")
+        .ok()??
+        .get_attribute("content")?;
+    (value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())).then_some(value)
+}
+
 fn media(query: &str) -> Option<web_sys::MediaQueryList> {
     window()?.match_media(query).ok()?
 }

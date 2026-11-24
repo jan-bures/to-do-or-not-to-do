@@ -1,93 +1,123 @@
 //! Browser-local configuration and the shared collection/individual visibility rules.
 
-use super::{BrowserProvider, CHAT, class_label, ctx, html, icon, platform};
+mod store;
+
+use super::{BrowserProvider, CHAT, ctx, html, icon, platform};
 use crate::app::glyph;
 use crate::model;
 use leptos::prelude::*;
-use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use todo_client::assistant::{AccessRules, ListAccess, Selection, provider::DataClass};
+use todo_client::assistant::{AccessRules, ListAccess, Selection, endpoint::bearer_key};
 use todo_core::{
     State,
     ids::{CollectionId, ListId},
 };
 use todo_design::{Glyph, Icon};
 
-pub(super) const KEY: &str = "todo.assistant.settings";
+use store::login_fingerprint;
+pub(super) use store::{Credential, Profile, Scope};
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(default)]
-pub(super) struct Profile {
-    address: String,
-    model: String,
-    consent: bool,
-    access: AccessRules,
+fn valid_model(model: &str) -> bool {
+    !model.is_empty() && model.len() <= 256 && !model.chars().any(char::is_control)
 }
 
-impl Profile {
-    pub(super) fn load() -> Self {
-        platform::local_storage()
-            .and_then(|storage| storage.get_item(KEY).ok().flatten())
-            .and_then(|text| serde_json::from_str(&text).ok())
-            .unwrap_or_default()
-    }
+pub(super) fn load(scope: Option<&Scope>) -> (Profile, Credential) {
+    let Some(scope) = scope.filter(|scope| scope.active()) else {
+        return Default::default();
+    };
+    let profile = Profile::load(scope);
+    let epoch = scope.epoch();
+    let mut key = scope.remembered(&profile.address, epoch);
+    // Keep the revision even when keyless, so revocation still resets/aborts the controller.
+    key.address.clone_from(&profile.address);
+    key.epoch = epoch;
+    key.login = login_fingerprint();
+    (profile, key)
+}
 
-    fn save(&self) -> bool {
-        serde_json::to_string(self).ok().is_some_and(|text| {
-            platform::local_storage().is_some_and(|storage| storage.set_item(KEY, &text).is_ok())
-        })
-    }
-
-    fn provider(&self) -> Option<BrowserProvider> {
-        BrowserProvider::new(&self.address)
-    }
-
-    fn valid_model(&self) -> bool {
-        let model = self.model.trim();
-        !model.is_empty() && model.len() <= 256 && !model.chars().any(char::is_control)
-    }
-
-    pub(super) fn apply(&self, old: Option<&Self>) {
-        if old == Some(self) {
-            return;
-        }
-        let expected = self.clone();
-        let selection = self
-            .provider()
-            .filter(|provider| {
-                self.valid_model() && (provider.class == DataClass::Local || self.consent)
-            })
-            .map(|provider| Selection {
-                provider: Arc::new(provider.bind(move || Profile::load() == expected)),
-                model: self.model.clone(),
-                allow_billed: self.consent,
+pub(super) fn configure(
+    scope: Option<Scope>,
+    profile: &Profile,
+    credential: &Credential,
+) -> Option<&'static str> {
+    let mut route = None;
+    let selection = scope
+        .filter(Scope::active)
+        .filter(|_| valid_model(&profile.model))
+        .and_then(|scope| {
+            let provider = BrowserProvider::new(&profile.address).ok()?;
+            route = Some(provider.destination.label());
+            let epoch = scope.epoch();
+            let key = if credential.matches(&profile.address, epoch) {
+                credential.value.clone()
+            } else {
+                String::new()
+            };
+            let expected = profile.clone();
+            let login = login_fingerprint();
+            Some(Selection {
+                provider: Arc::new(provider.bind(key, move || {
+                    scope.active()
+                        && scope.epoch() == epoch
+                        && login_fingerprint() == login
+                        && Profile::load(&scope) == expected
+                })),
+                model: profile.model.clone(),
+                allow_billed: false,
                 billed_list_scope: None,
-                access: self.access.clone(),
-            });
-        CHAT.with(|chat| chat.configure(selection));
-    }
+                access: profile.access.clone(),
+            })
+        });
+    CHAT.with(|chat| chat.configure(selection));
+    route
 }
 
 impl super::Ui {
-    pub(in crate::app) fn reload_profile(self) -> bool {
-        let loaded = Profile::load();
+    pub(in crate::app) fn storage_changed(self, key: Option<&str>) {
+        if self
+            .scope
+            .with_value(|scope| scope.as_ref().is_some_and(|s| s.relevant(key)))
+        {
+            self.reload_profile();
+        }
+    }
+
+    pub(super) fn reload_profile(self) -> bool {
+        if self.signed_out.get_value() {
+            return true;
+        }
+        let scope = self.scope.get_value();
+        if scope.as_ref().is_some_and(|s| !s.active()) {
+            self.sign_out();
+            return true;
+        }
+        let (loaded, remembered) = load(scope.as_ref());
         let old = self.profile.get_value();
-        if loaded == old {
+        let key = self.credential.get_value();
+        let key = if scope
+            .as_ref()
+            .is_some_and(|scope| key.matches(&loaded.address, scope.epoch()))
+        {
+            key
+        } else {
+            remembered
+        };
+        if loaded == old && key == self.credential.get_value() {
             return false;
         }
-        self.use_profile(loaded, &old);
+        self.use_profile(loaded, key);
         true
     }
 
-    fn use_profile(self, profile: Profile, old: &Profile) {
-        profile.apply(Some(old));
-        if &profile != old {
-            self.error.set(None);
-            self.draft.set(String::new());
-            self.approvals.set(Default::default());
-            self.profile.set_value(profile);
-            self.refresh();
-        }
+    fn use_profile(self, profile: Profile, credential: Credential) {
+        self.route
+            .set(configure(self.scope.get_value(), &profile, &credential));
+        self.profile.set_value(profile);
+        self.credential.set_value(credential);
+        self.error.set(None);
+        self.draft.set(String::new());
+        self.approvals.set(Default::default());
+        self.refresh();
     }
 }
 
@@ -99,69 +129,155 @@ pub(in super::super) fn Settings() -> impl IntoView {
     let body = NodeRef::<html::Div>::new();
     let draft = RwSignal::new(Profile::default());
     let baseline = StoredValue::new(Profile::default());
+    let baseline_epoch = StoredValue::new(None);
+    let baseline_login = StoredValue::new(None);
     let return_focus = StoredValue::new("assistant-trigger");
-    let error = RwSignal::new(None::<&'static str>);
-    let live_cloud = Memo::new(move |_| {
-        draft.with(|p| p.provider().is_some_and(|p| p.class == DataClass::Cloud))
+    let error = RwSignal::new(None::<String>);
+    let key_input = NodeRef::<html::Input>::new();
+    let has_key = RwSignal::new(false);
+    let remember_key = RwSignal::new(false);
+    let destination = Memo::new(move |_| {
+        draft.with(|p| BrowserProvider::new(&p.address).ok().map(|p| p.destination))
     });
+    let clear_input = move || {
+        if let Some(input) = key_input.get_untracked() {
+            input.set_value("");
+        }
+    };
     Effect::new(move |_| {
-        if let (Some(from), Some(el)) = (ai.settings.get(), dialog.get())
-            && !el.open()
-        {
+        let (from, Some(el)) = (ai.settings.get(), dialog.get()) else {
+            return;
+        };
+        if let Some(from) = from.filter(|_| !el.open()) {
             return_focus.set_value(from);
             ai.reload_profile();
             let profile = ai.profile.get_value();
+            let credential = ai.credential.get_value();
             draft.set(profile.clone());
             baseline.set_value(profile);
+            baseline_epoch.set_value(
+                ai.scope
+                    .with_value(|scope| scope.as_ref().and_then(Scope::epoch)),
+            );
+            baseline_login.set_value(login_fingerprint());
+            has_key.set(!credential.value.is_empty());
+            remember_key.set(credential.remember);
+            clear_input();
             error.set(None);
             if el.show_modal().is_err() {
                 ai.settings.set(None);
             } else if let Some(body) = body.get_untracked() {
                 body.set_scroll_top(0);
             }
+        } else if from.is_none() && el.open() {
+            clear_input();
+            el.close();
         }
     });
     let save = move |disconnect: bool| {
+        let Some(scope) = ai
+            .scope
+            .get_value()
+            .filter(Scope::active)
+            .filter(|_| !ai.signed_out.get_value())
+        else {
+            error.set(Some("Couldn’t save assistant settings for this sign-in. Reload the app or sign in again.".into()));
+            return;
+        };
         let mut next = draft.get_untracked();
         next.address = next.address.trim().into();
         next.model = next.model.trim().into();
+        let raw_key = key_input
+            .get_untracked()
+            .map_or_else(String::new, |input| input.value());
         if disconnect {
             next.address.clear();
             next.model.clear();
-            next.consent = false;
-        } else if !next.address.is_empty() || !next.model.is_empty() {
-            let Some(provider) = next.provider() else {
-                error.set(Some("Enter an HTTPS model server URL, or HTTP at 127.0.0.1. It must not be this app’s origin or contain credentials, a query, or a fragment."));
-                return;
-            };
-            if !next.valid_model() {
-                error.set(Some("Enter a valid model name."));
+        } else if !next.address.is_empty() || !next.model.is_empty() || !raw_key.is_empty() {
+            if let Err(problem) = BrowserProvider::new(&next.address) {
+                error.set(Some(problem.to_string()));
                 return;
             }
-            if provider.class == DataClass::Cloud && !next.consent {
-                error.set(Some(
-                    "Confirm what can be sent to this destination before saving.",
-                ));
+            if !valid_model(&next.model) {
+                error.set(Some("Enter a valid model name.".into()));
                 return;
             }
         }
-        let old = Profile::load();
-        if old != baseline.get_value() {
+        let old = Profile::load(&scope);
+        let reviewed_epoch = baseline_epoch.get_value();
+        let login = baseline_login.get_value();
+        if old != baseline.get_value()
+            || scope.epoch() != reviewed_epoch
+            || login_fingerprint() != login
+        {
             ai.reload_profile();
-            error.set(Some("Settings changed in another tab. Close this dialog and reopen it to review the new settings."));
-        } else if next.save() {
-            ai.use_profile(next, &old);
-            if let Some(el) = dialog.get_untracked() {
-                el.close();
+            error.set(Some("Settings changed in another tab. Close this dialog and reopen it to review the new settings.".into()));
+            return;
+        }
+        let previous_key = ai.credential.get_value();
+        let value = if disconnect || next.address.is_empty() {
+            String::new()
+        } else if let Some(key) = bearer_key(&raw_key) {
+            if key.is_empty()
+                && has_key.get_untracked()
+                && previous_key.matches(&next.address, reviewed_epoch)
+            {
+                previous_key.value.clone()
+            } else {
+                key.to_owned()
             }
         } else {
-            error.set(Some("This browser couldn’t save the assistant settings."));
+            error.set(Some(
+                "The API key contains unsupported characters or is too long.".into(),
+            ));
+            return;
+        };
+        if !next.save(&scope) {
+            error.set(Some(
+                "This browser couldn’t save the assistant settings.".into(),
+            ));
+            return;
+        }
+        let epoch = if disconnect
+            || next.address != old.address
+            || (!previous_key.value.is_empty() && previous_key.value != value)
+        {
+            scope.revoke().or(reviewed_epoch)
+        } else {
+            reviewed_epoch
+        };
+        let mut key = Credential {
+            address: next.address.clone(),
+            epoch,
+            login,
+            remember: !value.is_empty() && remember_key.get_untracked(),
+            value,
+        };
+        scope.forget();
+        let remember_failed = key.remember && !scope.remember(&key);
+        if remember_failed {
+            key.remember = false;
+        }
+        has_key.set(!key.value.is_empty());
+        ai.use_profile(next.clone(), key);
+        clear_input();
+        if remember_failed {
+            remember_key.set(false);
+            baseline.set_value(next);
+            baseline_epoch.set_value(scope.epoch());
+            error.set(Some(
+                "This browser couldn’t remember the key. It’s available until you leave this page."
+                    .into(),
+            ));
+        } else if let Some(el) = dialog.get_untracked() {
+            el.close();
         }
     };
     view! {
         <dialog id="assistant-settings-dialog" class="room-dialog ai-settings" aria-labelledby="ai-settings-title" node_ref=dialog
             on:keydown=move |ev| platform::contain_tab("assistant-settings-dialog", &ev)
             on:close=move |_| {
+                clear_input();
                 ai.settings.set(None);
                 let focus = return_focus.get_value();
                 if !platform::focus(focus) && ai.open.get_untracked() { ai.focus_composer(); }
@@ -177,31 +293,41 @@ pub(in super::super) fn Settings() -> impl IntoView {
                     <section class="ai-provider" aria-label="Your own server">
                         <div class="ai-provider-heading">
                             {icon(Icon::Settings)}<h3>"Your own server"</h3>
-                            <span>{move || draft.with(|p| p.provider().map(|p| class_label(p.class)))}</span>
+                            <span>{move || destination.get().map(|d| d.label())}</span>
                         </div>
-                        <p>"The browser connects directly to an OpenAI-compatible server. It must allow this site in CORS."</p>
-                        <Show when=move || draft.with(|p| p.provider().is_some_and(|p| p.class == DataClass::Local))>
-                            <p>"Use a locally running model, not a server that forwards requests to another provider."</p>
-                        </Show>
+                        <p>"Connect directly to an OpenAI-compatible server that allows this site in CORS. Use a model you trust: the browser can’t verify what runs at that address or whether it forwards requests."</p>
                         <label for="ai-base-url">"Base URL"</label>
                         <input id="ai-base-url" type="url" spellcheck="false" autocomplete="off" autofocus
-                            placeholder="https://todo.example.com/v1" prop:value=move || draft.with(|p| p.address.clone())
-                            on:input=move |ev| draft.update(|p| { p.address = event_target_value(&ev); p.consent = false; })/>
+                            placeholder="https://<device>.<tailnet>.ts.net/v1" prop:value=move || draft.with(|p| p.address.clone())
+                            on:input=move |ev| {
+                                draft.update(|p| { p.address = event_target_value(&ev); });
+                                clear_input();
+                                has_key.set(false);
+                                remember_key.set(false);
+                            }/>
                         <label for="ai-model">"Model"</label>
                         <input id="ai-model" type="text" maxlength="256" autocomplete="off" spellcheck="false"
                             placeholder="Model name" prop:value=move || draft.with(|p| p.model.clone())
-                            on:input=move |ev| draft.update(|p| { p.model = event_target_value(&ev); p.consent = false; })/>
-                        <Show when=move || live_cloud.get()>
+                            on:input=move |ev| draft.update(|p| { p.model = event_target_value(&ev); })/>
+                        <label for="ai-api-key">"API key"</label>
+                        <input id="ai-api-key" type="password" autocomplete="off" spellcheck="false" maxlength="4096"
+                            node_ref=key_input placeholder=move || if has_key.get() { "Key saved · enter to replace" } else { "Optional" }/>
+                        <div class="ai-credential-controls">
                             <label class="ai-consent">
-                                <input type="checkbox" prop:checked=move || draft.with(|p| p.consent)
-                                    on:change=move |ev| draft.update(|p| p.consent = event_target_checked(&ev))/>
-                                <span>"Send prompts and data from All models lists to this server. Provider charges may apply."</span>
+                                <input type="checkbox" prop:checked=move || remember_key.get()
+                                    on:change=move |ev| remember_key.set(event_target_checked(&ev))/>
+                                <span>"Remember in this tab"</span>
                             </label>
-                        </Show>
+                            <Show when=move || has_key.get()>
+                                <button type="button" class="ai-link" on:click=move |_| {
+                                    clear_input(); has_key.set(false); remember_key.set(false);
+                                }>"Remove key"</button>
+                            </Show>
+                        </div>
                     </section>
                     <section class="ai-access" aria-labelledby="ai-access-title">
                         <h3 id="ai-access-title">"Lists the assistant can see"</h3>
-                        <p>"Hidden lists are never sent. Private only lists go only to a model at 127.0.0.1. Lists inherit their collection’s rule unless overridden."</p>
+                        <p>"Hidden lists are never sent. Private only lists can go to a model on this device or over Tailscale Serve. Lists inherit their collection’s rule unless overridden."</p>
                         {move || c.state.with(|state| {
                             let mut rows = Vec::new();
                             for group in model::collections(state) {

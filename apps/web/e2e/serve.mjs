@@ -44,7 +44,7 @@ export function serve(dir, port) {
   const csp = appCsp();
   const index = readFileSync(join(base, "index.html"), "utf8").replace(
     "<!--todo-session-->",
-    '<meta name="csrf-token" content="gallery-csrf">',
+    `<meta name="csrf-token" content="gallery-csrf"><meta name="todo-owner-scope" content="${"1".repeat(64)}">`,
   );
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");

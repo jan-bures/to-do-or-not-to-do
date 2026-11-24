@@ -9,7 +9,7 @@ use leptos::prelude::*;
 use std::{collections::BTreeMap, time::Duration};
 use todo_client::assistant::{
     Approval, AssistantView, Composer, Controller, SendIntent, StepKind, StepStatus, TaskRef,
-    ToolKind, TurnView, provider::DataClass,
+    ToolKind, TurnView, provider::ProviderError,
 };
 use todo_client::web::{BrowserClock, BrowserEntropy};
 use todo_core::ids::TaskId;
@@ -27,7 +27,11 @@ pub(super) struct Ui {
     pub(super) four_wide: Memo<bool>,
     pub(super) settings: RwSignal<Option<&'static str>>,
     view: RwSignal<AssistantView>,
+    scope: StoredValue<Option<settings::Scope>>,
     profile: StoredValue<settings::Profile>,
+    credential: StoredValue<settings::Credential>,
+    signed_out: StoredValue<bool>,
+    route: RwSignal<Option<&'static str>>,
     sequence: StoredValue<u64>,
     draft: RwSignal<String>,
     error: RwSignal<Option<String>>,
@@ -39,8 +43,9 @@ pub(super) struct Ui {
 impl Ui {
     pub(super) fn new(viewport: RwSignal<i32>, narrow: RwSignal<bool>) -> Self {
         let open = RwSignal::new(false);
-        let profile = settings::Profile::load();
-        profile.apply(None);
+        let scope = settings::Scope::activate();
+        let (profile, credential) = settings::load(scope.as_ref());
+        let route = settings::configure(scope.clone(), &profile, &credential);
         let view = RwSignal::new(CHAT.with(Controller::view));
         leptos::task::spawn_local(async move {
             let mut seen = CHAT.with(Controller::view_version);
@@ -58,7 +63,11 @@ impl Ui {
             four_wide: Memo::new(move |_| viewport.get() >= desktop::FOUR_PANE_MIN as i32),
             settings: RwSignal::new(None),
             view,
+            scope: StoredValue::new(scope),
             profile: StoredValue::new(profile),
+            credential: StoredValue::new(credential),
+            signed_out: StoredValue::new(false),
+            route: RwSignal::new(route),
             sequence: StoredValue::new(0),
             draft: RwSignal::new(String::new()),
             error: RwSignal::new(None),
@@ -69,17 +78,43 @@ impl Ui {
     }
 
     pub(super) fn sync(self, signed_out: bool) {
-        if signed_out {
+        let scope = self.scope.get_value();
+        if signed_out || scope.as_ref().is_some_and(|scope| !scope.active()) {
             self.sign_out();
         } else {
+            if self.signed_out.get_value() {
+                // A sign-in on the same document reuses this owner's model and access rules,
+                // but never restores a key or a conversation from the ended session.
+                self.signed_out.set_value(false);
+                let (profile, credential) = settings::load(scope.as_ref());
+                self.route
+                    .set(settings::configure(scope, &profile, &credential));
+                self.profile.set_value(profile);
+                self.credential.set_value(credential);
+                self.refresh();
+            }
             CHAT.with(|chat| chat.update_snapshot(backend::assistant_snapshot()));
         }
     }
 
     pub(super) fn sign_out(self) {
+        if self.signed_out.get_value() {
+            return;
+        }
+        self.signed_out.set_value(true);
+        self.scope.with_value(|scope| {
+            if let Some(scope) = scope {
+                let _ = scope.revoke();
+            }
+        });
         CHAT.with(Controller::sign_out);
+        self.settings.set(None);
+        self.credential.set_value(Default::default());
+        self.route.set(None);
         self.draft.set(String::new());
+        self.error.set(None);
         self.approvals.set(BTreeMap::new());
+        self.refresh();
     }
 
     fn refresh(self) {
@@ -322,7 +357,7 @@ pub(super) fn Panel() -> impl IntoView {
                 {mark(&assistant_mark())}
                 <div class="ai-heading">
                     <h2>{move || ai.view.with(|v| v.turns.first().map_or_else(|| "New chat".into(), |t| t.prompt.lines().next().unwrap_or_default().to_owned()))}</h2>
-                    <span>{move || model.with(|m| m.as_ref().map_or("No model chosen", |m| class_label(m.capabilities.data_class)))}</span>
+                    <span>{move || ai.route.get().unwrap_or("No model chosen")}</span>
                 </div>
                 <button type="button" class="icon-button" title="New chat" aria-label="New chat"
                     disabled=move || empty.get() on:click=move |_| ai.new_chat()>{icon(Icon::Plus)}</button>
@@ -357,7 +392,7 @@ pub(super) fn Panel() -> impl IntoView {
                 </div>
                 <button type="button" class="ai-privacy" id="assistant-privacy" aria-haspopup="dialog"
                     on:click=move |_| ai.settings.set(Some("assistant-privacy"))>
-                    <span class="ai-model">{move || model.with(|m| m.as_ref().map_or_else(|| "Choose a model".into(), |m| format!("{} · {}", class_label(m.capabilities.data_class), m.model)))}</span>
+                    <span class="ai-model">{move || model.with(|m| m.as_ref().zip(ai.route.get()).map_or_else(|| "Choose a model".into(), |(m, route)| format!("{route} · {}", m.model)))}</span>
                     <span>{icon(Icon::EyeOff)}{move || {
                         c.state.track();
                         ai.view.track();
@@ -402,11 +437,9 @@ pub(super) fn Panel() -> impl IntoView {
     }
 }
 
-fn class_label(class: DataClass) -> &'static str {
-    match class {
-        DataClass::Local => "This device",
-        DataClass::Cloud => "Cloud",
-    }
+fn quantity(count: usize, singular: &str) -> String {
+    let suffix = if count == 1 { "" } else { "s" };
+    format!("{count} {singular}{suffix}")
 }
 
 #[component]
@@ -525,7 +558,7 @@ fn Turn(id: Uuid) -> impl IntoView {
             </Show>
             <Show when=move || !active.get() && logs.with(|l| l.as_ref().is_some_and(|(_, steps)| !steps.is_empty()))>
                 <details class="ai-steps">
-                    <summary>{move || logs.with(|l| l.as_ref().map(|(s, _)| format!("Checked {} lists · Read {} tasks · {} hidden", s.lists_checked, s.tasks_read, s.private_lists)))}</summary>
+                    <summary>{move || logs.with(|l| l.as_ref().map(|(s, _)| format!("Checked {} · Read {} · {} hidden", quantity(s.lists_checked, "list"), quantity(s.tasks_read, "task"), s.private_lists)))}</summary>
                     <ul>{move || logs.with(|l| l.as_ref().map(|(_, steps)| steps.iter().map(|s| {
                         let elapsed = match s.status { StepStatus::Done { elapsed, .. } => Some(format!("{} ms", elapsed.as_millis())), _ => None };
                         view! { <li>{step_label(s.kind)}<span>{elapsed}</span></li> }
@@ -537,8 +570,10 @@ fn Turn(id: Uuid) -> impl IntoView {
             <review::Proposal turn=id/>
             {move || error.get().map(|error| view! {
                 <div class="ai-error" role="status"><p>{match error {
-                    todo_client::assistant::AssistantError::Provider(todo_client::assistant::provider::ProviderError::Unavailable) =>
+                    todo_client::assistant::AssistantError::Provider(ProviderError::Unavailable) =>
                         "Couldn’t reach your model. Check the address, connection, and the provider’s browser access (CORS).".to_owned(),
+                    todo_client::assistant::AssistantError::Provider(ProviderError::Unauthorized) =>
+                        "API key required or invalid. Check the key in AI settings.".to_owned(),
                     _ => format!("{}.", capitalize(error.to_string())),
                 }}</p>
                 <div class="ai-error-actions">
@@ -584,10 +619,6 @@ fn assistant_mark() -> crate::model::AgentMark {
         key: Some("assistant"),
         name: "Assistant".into(),
     }
-}
-
-pub(super) fn is_profile_key(key: Option<&str>) -> bool {
-    key.is_none_or(|key| key == settings::KEY)
 }
 
 pub(super) use settings::Settings;

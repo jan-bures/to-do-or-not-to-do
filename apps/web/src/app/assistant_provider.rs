@@ -4,7 +4,8 @@ use futures_util::{Stream, stream};
 use js_sys::{Reflect, Uint8Array};
 use std::{collections::VecDeque, pin::Pin};
 use todo_client::assistant::{
-    openai,
+    endpoint::Destination,
+    openai::{self, BrowserEndpointError},
     provider::{
         BillingClass, Cancel, Capabilities, DataClass, Model, Provider, ProviderError,
         RoundRequest, StreamEvent,
@@ -20,25 +21,35 @@ use web_sys::{
 
 pub(super) struct BrowserProvider {
     url: String,
-    pub(super) class: DataClass,
+    pub(super) destination: Destination,
+    key: String,
     still_allowed: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 impl BrowserProvider {
-    pub(super) fn new(address: &str) -> Option<Self> {
-        let (url, class) = openai::browser_endpoint(address)?;
+    pub(super) fn new(address: &str) -> Result<Self, BrowserEndpointError> {
+        let (url, destination) = openai::browser_endpoint(address)?;
         // The provider is never allowed to address the authenticated app itself.
-        if url.origin().ascii_serialization() == web_sys::window()?.location().origin().ok()? {
-            return None;
+        let origin = web_sys::window()
+            .and_then(|w| w.location().origin().ok())
+            .ok_or(BrowserEndpointError::Address)?;
+        if url.origin().ascii_serialization() == origin {
+            return Err(BrowserEndpointError::SameOrigin);
         }
-        Some(Self {
+        Ok(Self {
             url: url.into(),
-            class,
+            destination,
+            key: String::new(),
             still_allowed: None,
         })
     }
 
-    pub(super) fn bind(mut self, still_allowed: impl Fn() -> bool + Send + Sync + 'static) -> Self {
+    pub(super) fn bind(
+        mut self,
+        key: String,
+        still_allowed: impl Fn() -> bool + Send + Sync + 'static,
+    ) -> Self {
+        self.key = key;
         self.still_allowed = Some(Box::new(still_allowed));
         self
     }
@@ -74,12 +85,8 @@ impl Provider for BrowserProvider {
             max_output_tokens: Some(2048),
             usage: true,
             model_listing: false,
-            data_class: self.class,
-            billing: if self.class == DataClass::Cloud {
-                BillingClass::Metered
-            } else {
-                BillingClass::NoPerTokenCharge
-            },
+            data_class: DataClass::Local,
+            billing: BillingClass::NoPerTokenCharge,
         }
     }
 
@@ -110,6 +117,11 @@ impl Provider for BrowserProvider {
         req.headers()
             .set("Accept", "text/event-stream, application/json")
             .map_err(|_| ProviderError::Unavailable)?;
+        if !self.key.is_empty() {
+            req.headers()
+                .set("Authorization", &format!("Bearer {}", self.key))
+                .map_err(|_| ProviderError::Unauthorized)?;
+        }
         let window = web_sys::window().ok_or(ProviderError::Unavailable)?;
         let response = JsFuture::from(window.fetch_with_request(&req))
             .await

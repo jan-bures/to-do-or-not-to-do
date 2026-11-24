@@ -590,6 +590,11 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
 
     let b = env.owner().await;
     let csrf = b.csrf.clone().unwrap();
+    let session = b.get("/auth/session").await.json();
+    let scope = session["owner_scope"].as_str().unwrap();
+    assert_eq!(scope.len(), 64);
+    assert!(scope.bytes().all(|byte| byte.is_ascii_hexdigit()));
+    assert_ne!(scope, csrf);
     for path in ["/app", "/app/", "/app/list/abc", "/app/task/abc/steps"] {
         let p = b.get(path).await;
         assert_eq!(p.status, StatusCode::OK, "{path}");
@@ -601,11 +606,31 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
             "{}",
             p.body
         );
+        assert!(p.body.contains(&format!(
+            "<meta name=\"todo-owner-scope\" content=\"{scope}\">"
+        )));
         assert!(!p.body.contains(SESSION_MARKER));
     }
-    // The CSP allows wasm compilation but no inline script or style, and only this origin.
+    // A different session for the same owner sees the same scope but a different CSRF token.
+    let mut other = b;
+    other.login().await;
+    assert_ne!(other.csrf.as_deref(), Some(csrf.as_str()));
+    assert_eq!(
+        other.get("/auth/session").await.json()["owner_scope"],
+        scope
+    );
+    let b = other;
+    // The CSP allows wasm compilation but no inline script or style, and limits connections.
     assert!(APP_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
-    assert!(APP_CSP.contains("connect-src 'self' https: http://127.0.0.1:*;"));
+    assert!(
+        APP_CSP
+            .contains("connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*;")
+    );
+    assert!(
+        !APP_CSP
+            .split_ascii_whitespace()
+            .any(|source| source == "https:")
+    );
     assert!(!APP_CSP.contains("unsafe-inline"));
     assert!(APP_CSP.contains("frame-ancestors 'none'"));
 

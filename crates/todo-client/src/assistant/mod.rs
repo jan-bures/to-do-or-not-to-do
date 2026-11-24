@@ -13,6 +13,7 @@ macro_rules! opaque_debug {
 }
 
 mod access;
+pub mod endpoint;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;

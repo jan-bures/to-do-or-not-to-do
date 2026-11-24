@@ -52,9 +52,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 
-/// The web app permits direct HTTPS and loopback model connections. Other assets stay same-origin.
+/// Direct model connections are limited to Tailscale Serve HTTPS and HTTP loopback.
+/// Other assets stay same-origin. Keep in sync with the browser's model endpoint validation.
 pub const APP_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https: http://127.0.0.1:*; font-src 'self'; \
+style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self'; \
 frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 
 /// The marker in `index.html` that is replaced with the session's CSRF meta tag.
@@ -226,19 +227,25 @@ impl WebApp {
         Ok(Self { index, files })
     }
 
-    /// The page for a session: `index.html` with the CSRF token.
+    /// The page for a session: `index.html` with the CSRF token and browser storage scope.
     #[must_use]
-    pub fn page(&self, csrf: &str) -> String {
+    pub fn page(&self, csrf: &str, owner_scope: &str) -> String {
         format!(
-            "{}<meta name=\"csrf-token\" content=\"{}\">{}",
+            "{}<meta name=\"csrf-token\" content=\"{}\"><meta name=\"todo-owner-scope\" content=\"{}\">{}",
             self.index.0,
             crate::web::html::esc(csrf),
+            crate::web::html::esc(owner_scope),
             self.index.1
         )
     }
 }
 
-fn page_response(app: &WebApp, session: &OwnerSession) -> Response {
+async fn page_response(app: &AppState, web: &WebApp, session: &OwnerSession) -> Response {
+    let owner_scope =
+        match crate::auth::session::blocking(&app.authsvc, |svc| svc.browser_owner_scope()).await {
+            Ok(Ok(scope)) => scope,
+            Ok(Err(error)) | Err(error) => return error.into_response(),
+        };
     (
         [
             (
@@ -248,7 +255,7 @@ fn page_response(app: &WebApp, session: &OwnerSession) -> Response {
             (CONTENT_SECURITY_POLICY, HeaderValue::from_static(APP_CSP)),
             (CACHE_CONTROL, HeaderValue::from_static(NO_STORE)),
         ],
-        app.page(&session.row.csrf),
+        web.page(&session.row.csrf, &owner_scope),
     )
         .into_response()
 }
@@ -316,8 +323,8 @@ fn file_response(f: &File, headers: &HeaderMap) -> Response {
     res
 }
 
-/// `GET /auth/session`: `{"csrf": "<token>"}` for the session, or 401 `signed_out` without one (never
-/// a redirect: only the app's `fetch` asks). Same-origin requests only, and the session is not
+/// `GET /auth/session`: the session's CSRF token and owner scope, or 401 `signed_out` without a
+/// session (never a redirect: only the app's `fetch` asks). Same-origin requests only, and the session is not
 /// touched (see the module docs).
 pub async fn session_token(State(app): State<AppState>, headers: HeaderMap) -> Response {
     use crate::api::error::ApiError;
@@ -338,21 +345,26 @@ pub async fn session_token(State(app): State<AppState>, headers: HeaderMap) -> R
     let Some(cookie) = cookie_value(&headers) else {
         return signed_out();
     };
-    match blocking(&app.authsvc, move |svc| svc.peek_session(&cookie)).await {
-        Ok(Ok(Some(row))) => axum::Json(serde_json::json!({ "csrf": row.csrf })).into_response(),
-        Ok(Ok(None)) => signed_out(),
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "session lookup failed");
-            ApiError::internal().into_response()
+    match blocking(&app.authsvc, move |svc| {
+        svc.peek_session(&cookie)?
+            .map(|row| svc.browser_owner_scope().map(|scope| (row, scope)))
+            .transpose()
+    })
+    .await
+    {
+        Ok(Ok(Some((row, scope)))) => {
+            axum::Json(serde_json::json!({ "csrf": row.csrf, "owner_scope": scope }))
+                .into_response()
         }
-        Err(e) => e.into_response(),
+        Ok(Ok(None)) => signed_out(),
+        Ok(Err(e)) | Err(e) => e.into_response(),
     }
 }
 
 /// `GET /app`.
 pub async fn root(State(app): State<AppState>, session: OwnerSession) -> Response {
     match &app.web {
-        Some(web) => page_response(web, &session),
+        Some(web) => page_response(&app, web, &session).await,
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -375,7 +387,7 @@ pub async fn path(
     if last.contains('.') {
         return StatusCode::NOT_FOUND.into_response();
     }
-    page_response(web, &session)
+    page_response(&app, web, &session).await
 }
 
 #[cfg(test)]
@@ -388,8 +400,8 @@ mod tests {
         assert!(WebApp::from_parts(&format!("{SESSION_MARKER}{SESSION_MARKER}"), []).is_err());
         let app = WebApp::from_parts(&format!("<head>{SESSION_MARKER}</head>"), []).unwrap();
         assert_eq!(
-            app.page("a\"b"),
-            "<head><meta name=\"csrf-token\" content=\"a&quot;b\"></head>"
+            app.page("a\"b", "scope\"value"),
+            "<head><meta name=\"csrf-token\" content=\"a&quot;b\"><meta name=\"todo-owner-scope\" content=\"scope&quot;value\"></head>"
         );
     }
 

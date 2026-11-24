@@ -49,6 +49,10 @@ pub const DEVICE: &str = "web";
 
 type Client = SyncClient<FetchTransport, BrowserClock>;
 
+fn session_transport(csrf: CsrfToken) -> FetchTransport {
+    FetchTransport::new(csrf).with_owner_scope(crate::platform::owner_scope())
+}
+
 enum Backend {
     Live(Client),
     #[cfg(feature = "fixtures")]
@@ -217,7 +221,7 @@ pub async fn open_live(csrf: String, blocked: Rc<dyn Fn(bool)>) -> Result<Opened
     })?;
     let token = CsrfToken::new(csrf);
     let client = SyncClient::new(
-        FetchTransport::new(token.clone()),
+        session_transport(token.clone()),
         BrowserClock,
         BrowserEntropy,
         storage.clone(),
@@ -576,7 +580,7 @@ pub async fn wait_for_attachments(ids: &[AttachmentId]) -> bool {
 
 /// Authenticated transport for the owner-only pairing settings.
 pub fn pairing_transport() -> Option<FetchTransport> {
-    CSRF.with(|c| c.borrow().clone()).map(FetchTransport::new)
+    CSRF.with(|c| c.borrow().clone()).map(session_transport)
 }
 
 /// Uploads directly; the file is not an offline edit. The live replica sees the result through SSE.
@@ -590,7 +594,7 @@ pub async fn upload_attachment(
     let id = AttachmentId::from_uuid(new_uuid());
     let csrf = CSRF.with(|c| c.borrow().clone());
     if let Some(csrf) = csrf {
-        let result = FetchTransport::new(csrf)
+        let result = session_transport(csrf)
             .upload_attachment(task, id, &file)
             .await
             .map_err(|_| UploadError::failed())?;
