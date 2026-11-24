@@ -214,12 +214,12 @@ impl ShellView {
         let address = if name == "ai-blocked" {
             "https://mac.tailnet.example/v1"
         } else {
-            "http://100.64.0.1:11434/v1"
+            "http://127.0.0.1:11434/v1"
         };
         self.ai.profile.url = address.into();
         self.ai.profile.model = "local-model".into();
         self.ai.profile.enabled = true;
-        let capabilities = LocalProvider::new(address, "")
+        let capabilities = todo_client::assistant::local::LocalProvider::new(address, "")
             .map(|p| {
                 p.with_support("local-model".into(), Support::StreamingTools)
                     .capabilities("local-model")
@@ -251,6 +251,7 @@ impl ShellView {
                 | "ai-settings-testing"
                 | "ai-settings-unreachable"
                 | "ai-chatgpt-signed-out"
+                | "ai-chatgpt-device-code"
                 | "ai-chatgpt-signed-in"
                 | "ai-chatgpt-consent"
         ) {
@@ -275,16 +276,17 @@ impl ShellView {
             if name.starts_with("ai-chatgpt-") {
                 self.ai.profile.cloud = true;
                 self.ai.cloud.fixture_enabled = true;
-                let signed_in = name != "ai-chatgpt-signed-out";
+                let signed_in = !matches!(name, "ai-chatgpt-signed-out" | "ai-chatgpt-device-code");
+                if name == "ai-chatgpt-device-code" {
+                    self.ai.cloud.code = Some("EXAMPLE-1".into());
+                }
                 if signed_in {
+                    self.ai.profile.model = "gpt-sample".into();
+                    self.ai.profile.chatgpt_account = Some(Uuid::from_u128(1));
                     self.ai.cloud.fixture = Some(chatgpt::AccountView {
-                        id: "oaiapp_fixture".into(),
+                        id: Uuid::from_u128(1),
                         label: "you@example.com".into(),
-                        model: Some("gpt-sample".into()),
-                        signed_in: true,
-                        plan_allowed: true,
                         consented_lists: None,
-                        welcomed: true,
                     });
                 }
                 if let Some(view) = &mut self.ai.fixture {

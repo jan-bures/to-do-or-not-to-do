@@ -251,37 +251,26 @@ right pane and puts History, Model & Privacy, New, Settings, and Close in its lo
 does not close the chat. History jumps to earlier messages in the current chat. New chat clears it;
 conversations are not synced or stored on disk. Suggestions fill the message field without sending.
 
-In **AI settings**, enter the base URL and model name for your own OpenAI-compatible server. The app
-adds `/v1` if needed. If your server requires a bearer credential, enter it under **API key**, then
-**Save server**. **Test connection** uses invented data to check streaming and tool support. A text-only
-model cannot read or change tasks. Before a test, the assistant expects streaming with tools. There is no
-cloud fallback or ChatGPT sign-in.
+In **AI settings**, choose **ChatGPT**, **Your private models (via your server)**, or **This device**.
+The first two use the [server relay](hosting-linux.md#ai-assistant-relay) through the current pairing.
+The To-do server keeps the credentials. A ChatGPT account connected by another client is available here
+without a new sign-in. If device sign-in is configured, choose **Sign in with ChatGPT**, choose **Open ChatGPT**
+and enter the displayed code, then return to To-do. Only approve a sign-in you started. Choose the connected
+account and a model. **Sign out** disconnects that ChatGPT account from every paired client; **Disconnect
+model** clears this phone's selection only. **Manage usage** opens ChatGPT's usage settings. No provider
+falls back to another automatically.
 
-For a server on Tailscale that does not serve TLS, connect the phone to Tailscale, make sure this app
-is not excluded from the VPN, and use `http://<machine>.<tailnet>.ts.net:<port>/v1`. Tailscale MagicDNS
-names and addresses in `100.64.0.0/10`
-or `fd7a:115c:a1e0::/48` count as private, as on desktop. Before each plain HTTP request, Rust requires
-the phone's active app VPN to have a Tailscale address. The Rust connector only accepts Tailscale IPs
-from DNS for a MagicDNS name. Plain HTTP is otherwise allowed only to this device's loopback addresses.
-Use HTTPS for other destinations, with a certificate Android trusts, and confirm that the server is yours
-and runs the model locally. The active VPN address is a prerequisite, not a check of the peer's route
-or the VPN's identity. Prefer HTTPS when available; with plain HTTP on a tailnet, transport privacy
-relies on Tailscale.
+**This device** accepts only a loopback OpenAI-compatible endpoint. An optional loopback key is stored
+with a per-pairing Android Keystore alias, bound to the exact address. **Test connection** uses invented
+data to check streaming and tool use. A text-only model cannot read or change tasks. Existing non-loopback
+profiles and their Keystore keys are removed at upgrade; the server operator now sets the private upstream
+URL and key. The phone does not need Tailscale to use the relay.
 
-Assistant requests use Rust (`reqwest`), not the Android platform HTTP stack. The assistant's own Rust
-policy enforces these exceptions in both release and debug; the Android network security config is
-unchanged. The assistant never follows redirects or uses proxies or the task-sync token. It sends its
-optional bearer credential only to the saved endpoint. The key is encrypted with a per-pairing Android
-Keystore key and bound to the exact saved URL. **Disconnect server** or saving a different URL discards
-the old key and list grants. To remove only the key, choose **Remove** and save. Removing or replacing a key
-retires the previous Keystore alias so old ciphertext cannot be reopened. Revocation or unpairing also
-retires the alias; incomplete unpairs retry that cleanup before removing the cache. The endpoint,
-encrypted key, model, and rules live in the app-private, no-backup pairing directory.
-
-Lists start **Hidden**. **Private only** permits reads by your own server, including Tailscale, and
-excludes those lists from any cloud-classified request; **All models** permits both classes. A list
-inherits its collection's default unless overridden. Changing a collection resets its members' overrides.
-Changes to provider or access clear the current conversation so earlier model context is not reused.
+Lists start **Hidden**. **Private only** allows loopback and the private relay, not ChatGPT. **All models**
+also allows ChatGPT. A list inherits its collection’s rule unless overridden. Changing a collection resets
+its members’ overrides. The relay shares its list rules and ChatGPT approval across paired devices; direct
+loopback rules are local to the phone. Confirm ChatGPT plan use and the list scope on first use or when the
+set of allowed lists grows. Provider or access changes clear the chat so it cannot reuse earlier context.
 
 The assistant streams a reply until it finishes or you tap **Stop**. It can propose creating, editing, or
 changing a task's completion; unsupported and destructive operations are not offered. Expand a batch row

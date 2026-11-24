@@ -264,7 +264,7 @@ class AppGraph(private val app: Context) {
                 if (host.isAuthorized(paired)) withContext(NonCancellable) {
                     val ai = withContext(Dispatchers.IO) {
                         val file = pairingFiles.dir(paired.session.pairingId).resolve("assistant.json")
-                        val native = AndroidAssistant.open(e, file.absolutePath, AndroidAssistantPlatform(app, paired.session.pairingId))
+                        val native = AndroidAssistant.open(e, file.absolutePath, AndroidAssistantPlatform(paired.session.pairingId))
                         AssistantModel(NativeAssistant(native), ms, Dispatchers.IO, ::displayNow)
                     }
                     assistant = e to ai

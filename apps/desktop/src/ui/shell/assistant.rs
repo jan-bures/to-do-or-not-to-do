@@ -20,7 +20,7 @@ use todo_client::{
     assistant::{
         Approval, ApprovalOutcome, AssistantError, AssistantView, Composer, Controller,
         ProposalCard, ProposalStatus, SendIntent, TurnView,
-        local::{Destination, LocalProvider, MAX_RETRY_AFTER, Support, valid_model},
+        local::{Destination, MAX_RETRY_AFTER, Support, valid_model},
         provider::{Model, Provider, ProviderError},
     },
     native::{OsEntropy, TokioClock},
@@ -97,9 +97,7 @@ fn unreachable(error: ProviderError) -> bool {
     )
 }
 
-const PRIVATE_ATTESTATION: &str =
-    "This server is mine and keeps data private (local weights, no per-token billing).";
-const NOT_PRIVATE: &str = "This address isn't automatically recognized as private. Confirm that it is your own private server in AI settings. No prompt or API key will be sent until you confirm.";
+const NOT_PRIVATE: &str = "For a non-loopback model, use the private relay on your To-do server.";
 
 struct Setup {
     draft: Profile,
@@ -109,6 +107,7 @@ struct Setup {
     pick_model: bool,
     abort: Option<AbortHandle>,
     revision: Uuid,
+    access_version: Option<Uuid>,
 }
 
 impl Setup {
@@ -194,7 +193,7 @@ impl Ai {
                 i
             })
         };
-        let url = field("Enter an HTTPS or Tailscale URL", false);
+        let url = field("Enter a loopback URL", false);
         let model = field("Choose or enter a model ID", false);
         let key = field("Optional bearer key", true);
         for (entity, field) in [
@@ -261,7 +260,8 @@ impl Ai {
         draft.cloud == self.profile.cloud
             && draft.url == self.profile.url
             && draft.key == self.profile.key
-            && draft.attested == self.profile.attested
+            && draft.private_relay == self.profile.private_relay
+            && draft.chatgpt_account == self.profile.chatgpt_account
     }
 
     fn connection_health(&self) -> ConnectionHealth {
@@ -275,12 +275,12 @@ impl Ai {
     }
 
     fn blocked(&self) -> bool {
-        !self.profile.cloud && self.destination() == Some(Destination::NotPrivate)
+        !self.profile.uses_relay() && !self.profile.url.is_empty() && self.destination().is_none()
     }
 
     fn route_label(&self) -> &'static str {
-        if self.profile.cloud {
-            "Cloud · ChatGPT"
+        if let Some(route) = self.profile.hosted() {
+            route.label()
         } else {
             self.destination()
                 .map_or("Assistant off", Destination::label)
@@ -509,6 +509,7 @@ impl ShellView {
             self.close_menu(false, window, cx);
         }
         self.ai.open = true;
+        self.refresh_ai_relay(cx);
         self.ai.detail_over_room = false;
         self.settle_detail();
         self.focus_ai(window, cx);
@@ -566,6 +567,52 @@ impl ShellView {
     }
 
     fn send_ai(&mut self, text: String, cx: &mut Context<Self>) {
+        if self.ai.profile.uses_relay()
+            && !text.trim().is_empty()
+            && !self.ai.modal()
+            && !self.ai.cloud.sending
+            && !self.ai.stopped
+            && !matches!(
+                self.ai.controller.view().composer,
+                Composer::Streaming { .. }
+            )
+            && let (Some(session), Some(relay)) =
+                (self.store.session(), self.ai.cloud.relay.clone())
+        {
+            self.ai.cloud.sending = true;
+            let route = self.ai.profile.hosted();
+            let model = self.ai.profile.model.clone();
+            let current_draft = self.ai.composer.read(cx).content.to_string();
+            let work = session::spawn(
+                &session.assistant_runtime(),
+                async move { relay.status().await },
+            );
+            cx.spawn(async move |this, cx| {
+                let result = work.await.unwrap_or(Err(ProviderError::Unavailable));
+                let _ = this.update(cx, |this, cx| {
+                    this.ai.cloud.sending = false;
+                    if this.ai.stopped || !this.ai.open || this.ai.modal() || this.ai.profile.hosted() != route
+                        || this.ai.profile.model != model || this.ai.composer.read(cx).content.as_ref() != current_draft
+                    { return; }
+                    match result {
+                        Ok(status) => {
+                            this.apply_ai_relay_status(status, cx);
+                            if this.ai.controller.view().model.is_some() { this.send_ai_refreshed(text, cx); }
+                            else { this.ai.notice = Some("This model or account is no longer connected. Check AI settings.".into()); }
+                        }
+                        Err(err) => this.ai.notice = Some(cloud::cloud_problem(err)),
+                    }
+                    cx.notify();
+                });
+            }).detach();
+            return;
+        }
+        if !self.ai.profile.uses_relay() {
+            self.send_ai_refreshed(text, cx);
+        }
+    }
+
+    fn send_ai_refreshed(&mut self, text: String, cx: &mut Context<Self>) {
         if text.trim().is_empty()
             || self.ai.blocked()
             || self.ai.modal()
@@ -955,8 +1002,17 @@ impl ShellView {
                 model: p.model.clone(),
                 enabled: p.enabled,
                 cloud: p.cloud,
-                attested: p.attested,
-                access: p.access.clone(),
+                private_relay: p.private_relay,
+                chatgpt_account: p.chatgpt_account,
+                access: if p.uses_relay() {
+                    self.ai
+                        .cloud
+                        .status
+                        .as_ref()
+                        .map_or_else(Default::default, |s| s.access.clone())
+                } else {
+                    p.access.clone()
+                },
                 support: p.support,
                 key: p.key.clone(),
             },
@@ -965,18 +1021,21 @@ impl ShellView {
             pick_model: false,
             abort: None,
             revision: Uuid::new_v4(),
+            access_version: self.ai.cloud.status.as_ref().map(|s| s.access_version),
         });
         self.ai.close_to = window.focused(cx);
-        if p.cloud {
+        if p.uses_relay() {
             window.focus(&self.ai.dialog, cx);
         } else {
             window.focus(&self.ai.url.read(cx).focus_handle.clone(), cx);
         }
+        self.refresh_ai_relay(cx);
         cx.notify();
     }
 
     fn close_ai_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ai.settings = None;
+        self.ai.cloud.code = None;
         self.ai.key.update(cx, |i, cx| i.set_text("", cx));
         if let Some(handle) = self.ai.close_to.take() {
             window.focus(&handle, cx);
@@ -1013,17 +1072,6 @@ impl ShellView {
             }
         }
         cx.notify();
-    }
-
-    fn toggle_ai_attestation(&mut self, cx: &mut Context<Self>) {
-        if let Some(setup) = &mut self.ai.settings {
-            setup.draft.attested = !setup.draft.attested;
-            setup.draft.support = None;
-            setup.models.clear();
-            setup.pick_model = false;
-            setup.invalidate();
-            cx.notify();
-        }
     }
 
     fn test_ai(&mut self, capability: bool, cx: &mut Context<Self>) {
@@ -1092,9 +1140,7 @@ impl ShellView {
                     return;
                 };
                 setup.abort = None;
-                if setup.draft.url == this.ai.profile.url
-                    && setup.draft.key == this.ai.profile.key
-                    && setup.draft.attested == this.ai.profile.attested
+                if setup.draft.url == this.ai.profile.url && setup.draft.key == this.ai.profile.key
                 {
                     match result {
                         Ok(_) | Err(ProviderError::Unsupported) => {
@@ -1147,10 +1193,13 @@ impl ShellView {
     }
 
     fn save_ai_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.save_relay_access(window, cx) {
+            return;
+        }
         let (Some(setup), Some(session)) = (self.ai.settings.as_mut(), self.store.session()) else {
             return;
         };
-        if !setup.draft.cloud && (!setup.draft.url.is_empty() || setup.draft.enabled) {
+        if !setup.draft.uses_relay() && (!setup.draft.url.is_empty() || setup.draft.enabled) {
             if let Err(error) = setup.draft.normalize() {
                 setup.check = Check::Failed(error.to_string());
                 cx.notify();
@@ -1174,16 +1223,18 @@ impl ShellView {
             || old.url != next.url
             || old.model != next.model
             || old.key != next.key
-            || old.attested != next.attested
+            || old.private_relay != next.private_relay
+            || old.chatgpt_account != next.chatgpt_account
             || old.support != next.support;
         let endpoint_changed = old.cloud != next.cloud
             || old.url != next.url
             || old.key != next.key
-            || old.attested != next.attested;
+            || old.private_relay != next.private_relay
+            || old.chatgpt_account != next.chatgpt_account;
         let generation = self.ai.controller.view().generation;
         if changing {
             self.ai.controller.configure(self.ai.cloud.selection(&next));
-        } else if old.access != next.access {
+        } else if !next.uses_relay() && old.access != next.access {
             self.ai.controller.set_scope(next.access.clone());
         }
         if endpoint_changed {

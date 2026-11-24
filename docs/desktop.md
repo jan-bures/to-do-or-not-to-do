@@ -304,7 +304,7 @@ into the app**: it is learnt here and saved in the user's config. Alternatively,
 | `pairings\<pairing ID>\cache.sqlite.revoked` | same | empty marker: the server replied 401 to an authenticated request |
 | `pairings\<pairing ID>\ui.json` | same | collapsed collections, preferred pane widths, explicit Done rail choices and Timeline zoom, rail and tray preferences (never synced) |
 | `pairings\<pairing ID>\popouts.json` | same | list-window placement, pin and open state by room ID (never synced) |
-| `pairings\<pairing ID>\assistant-profile.bin` | same | owner-only, separately DPAPI-sealed AI server URL, model, optional API key, capability test result, enable switch, and list access |
+| `pairings\<pairing ID>\assistant-profile.bin` | same | owner-only and DPAPI-sealed: selected provider and model, optional loopback key, loopback test result and list access. Hosted credentials and hosted list access are held by the server. |
 | `pairings\<pairing ID>\reminders.json` | same | the reminders shown and snoozed on this computer: reminder and task IDs and times, never task content (never synced) |
 | `pairings\<pairing ID>\attachments\<random>\` | same | an attachment downloaded to be opened: a new owner-only directory for every open |
 | `pairings\<pairing ID>\damaged\<ms>\` | same | damaged data set aside by **Start fresh**, kept until sign-out |
@@ -426,37 +426,18 @@ middle range opening a task from chat brings Detail over the room, beside chat. 
 memory only. **New chat**, a profile change, a change to list access, or sign-out clears chat history
 and any unapproved proposal.
 
-1. Open **AI assistant…** in Settings. Enter your OpenAI-compatible server's base URL (for example
-   `https://mac.tailnet.example/v1`) and its optional API key. This is not your To-do key or password.
-   An HTTPS address outside loopback or Tailscale is blocked until you confirm that it is your own
-   server, keeps data private, uses local weights, and has no per-token billing. This confirmation
-   applies only to that URL. Editing the URL clears the confirmation, key, and list access.
-2. Choose **Test connection** to fetch the models. Pick a listed model or enter its ID. **Test model**
-   sends an invented prompt to check streaming and tool calls; without this test, or if only text
-   works, the model has no task tools.
-3. Choose which lists the assistant can read. A collection header sets every list in it and the
-   default for lists added or moved into it later. **Mixed** means its lists have different access.
-   Individual choices override the collection and follow the list if it moves. Setting the collection
-   again replaces the individual choices for its current lists. Without either choice a list is
-   **Hidden**, including when it moves out of a shared collection. Inheritance can reach **All models**
-   only if you explicitly set it on the collection. **Private only** and **All models** both allow
-   the configured private provider. Select **Enable assistant on this device**, then **Done** to
-   save. No tests or inference run in the background. **Forget server** clears the key and removes the protected
-   profile and any orphaned files from an interrupted settings save.
+Open **AI assistant…** in Settings and choose **This device**, **Your private models**, or **ChatGPT**.
+**This device** still accepts a loopback OpenAI-compatible endpoint and an optional key. **Test
+connection** lists models, and **Test model** checks streaming and tools with invented data. An untested
+or text-only loopback model cannot read or change tasks. **Your private models** uses the operator’s
+[server relay](hosting-linux.md#ai-assistant-relay), so the PC does not need the private model URL,
+key, or a Tailscale connection. Select a model and **Enable assistant on this device**, then choose **Done**.
 
-The panel shows the configured destination: **This device**, **Tailscale**, **Your server** (confirmed
-HTTPS), or **Not private** (blocked). HTTPS uses normal certificate verification. Plain HTTP on
-loopback supports a model running on the same PC. Direct Tailscale HTTP is unencrypted by the app and
-relies on the tunnel. On every such request, Windows must report an up interface with a Tailscale
-address; otherwise no request is sent. The interface check does not prove the route or peer identity.
-Prefer HTTPS when you cannot verify the intended route. No redirects, HTTP proxies or alternate
-providers are used. A missing or rejected key, missing model, server unavailability (including sleep),
-or usage limit needs your attention; nothing is sent again until you choose **Retry** or send a new
-message. The app waits at most five minutes for a server's `Retry-After` hint. See
-[provider architecture](ai-assistant-architecture.md#3-provider-choices).
-
-Prompts and allowed task summaries go directly to the server you entered, not through the To-do
-server. Task notes and attachments are not shared. A model can prepare new tasks, title/due/priority
+Choose which lists the assistant can read. A collection rule sets the default for lists added or moved
+into it; **Mixed** means its lists have different access. A change to a collection replaces its current
+members’ overrides. Lists default to **Hidden**. **Private only** allows loopback and the private relay;
+**All models** also allows ChatGPT. The server shares relay list access across clients. Loopback rules
+stay on this PC. No provider falls back to another automatically. Task notes and attachments are not shared. A model can prepare new tasks, title/due/priority
 edits, and non-repeating completion changes, but cannot apply them. Destructive tools aren't offered.
 Review the exact changes, optionally pick a subset of a batch, then **Approve**. Approval waits until
 sync has caught up; an outdated review needs a new proposal. Confirmed changes display the `A`
@@ -465,37 +446,24 @@ reverses the whole approved group. Chat drafts and API keys never enter the To-d
 
 #### ChatGPT account (Windows)
 
-No owner-supplied client ID, API key, or client secret is needed for this
-[open-source, locally hosted flow](https://developers.openai.com/siwc/token-sharing-open-source/sign-in).
-Choose **ChatGPT account** in AI settings, then **Continue with ChatGPT**. OpenAI registers the app
-as an agent for the account and workspace that the owner selects in the system browser. The app
-saves the issued client ID before exchanging the code and reuses it on later sign-ins. The stable
-host ID for this pairing is sent as `urn:uuid:<uuid>`.
-This does not sign the owner into To-do or give To-do access to ChatGPT conversations.
+Choose **ChatGPT** in AI settings. If device sign-in is configured, choose **Sign in with ChatGPT**,
+open the verification page, and enter the one-time code. Only approve a sign-in you started. Alternatively,
+choose **Continue in browser** to sign in with the installed app’s loopback handoff. The server creates the
+PKCE verifier and exchanges the code; the app receives no OpenAI token. An account connected by another
+client is available without signing in again. This does not sign the owner into To-do or expose past
+ChatGPT conversations.
 
-Choose a model from the signed-in account's catalog and explicitly enable the assistant in settings.
-The first send asks for permission and names the **All models** lists. The approved lists are saved
-for that account registration. A later send asks again if it would share any newly eligible list;
-sharing fewer approved lists does not require new permission. **Hidden** and **Private only** lists,
-task notes, and attachments are never included. Text you type and the permitted task summaries the
-assistant reads go directly to OpenAI.
-Responses use `store: false`; this is not a zero-retention promise. The app does not send chat data
-or credentials through the To-do server, and never switches providers automatically.
+Choose a model from the account’s catalog. The first send asks to approve ChatGPT plan use and the
+**All models** list scope. It asks again if that scope grows. Approval is shared for the account across
+paired clients. **Hidden** and **Private only** lists, task notes, and attachments are not shared.
+The To-do server relays the chat to OpenAI with `store: false`, which is not a zero-retention promise.
+Eligible requests can use plan allowance or available credits. Use **Manage usage** to review limits;
+a usage failure stops the reply without automatically retrying it.
 
-ChatGPT plan usage is available only to eligible accounts. Requests can use plan allowance or
-available credits, not a To-do subscription or API key. Use **Manage usage** to review limits;
-turn off credit use in ChatGPT settings if you want included-only usage. The app cannot enforce
-that setting. An OpenAI usage failure stops the reply; the app will not retry it automatically.
-
-The `assistant-chatgpt.bin` record is separate from the private server profile. Both are owner-only,
-DPAPI-protected files in the pairing directory. The app renews a token only as needed, saves rotating
-credentials together, and stops using them at sign-out. **Sign out** attempts remote revocation and
-then clears local tokens and sharing permission but retains the account and client mapping for reuse.
-Unpairing removes the local record. If remote revocation is not confirmed, disconnect the app in ChatGPT settings.
-
-The **Continue with ChatGPT** button uses the official logo published in OpenAI's
-[sign-in button guidelines](https://developers.openai.com/siwc/website). The mark is not the To-do
-application identity and does not imply OpenAI endorsement.
+**Sign out** removes that account and consent from the server and attempts remote revocation. If
+revocation cannot be confirmed, disconnect the app in ChatGPT settings. Upgrading deletes the old
+local ChatGPT credential files and any old non-loopback model keys. Sign in again once with the
+server relay instead of transferring the old tokens.
 
 ### Workflow lists, Board and Timeline
 

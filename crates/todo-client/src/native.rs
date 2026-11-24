@@ -278,6 +278,24 @@ impl HttpTransport {
         Ok(b)
     }
 
+    /// Open a bounded-lifetime authenticated response without buffering its body.
+    #[cfg(feature = "assistant")]
+    pub(crate) async fn assistant_body(
+        &self,
+        request: Request,
+    ) -> Result<reqwest::Response, TransportError> {
+        let res = self
+            .builder(&request)?
+            .header(ACCEPT, "text/event-stream, application/json")
+            .timeout(Duration::from_secs(85))
+            .send()
+            .await
+            .map_err(network)?;
+        self.observe_response(&res);
+        refuse_redirect(&res)?;
+        Ok(res)
+    }
+
     fn builder(&self, request: &Request) -> Result<reqwest::RequestBuilder, TransportError> {
         let mut b = self.authenticated(request.method, &request.path)?;
         if let Some(body) = &request.body {

@@ -14,13 +14,14 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,54 +61,47 @@ private val C = Tokens.Metrics.Component
 internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: () -> Unit) {
     val r = LocalDesign.current.room
     val state = ui.panel
+    val usingRelay = state.hosted?.let { it.privateSelected || it.selectedAccount != null } == true
     val server = state.server
     // Don't send a draft to the Activity's saved-state Bundle or show it outside the app.
     var address by remember(server) { mutableStateOf(server?.address.orEmpty()) }
     var name by remember(server) { mutableStateOf(server?.model.orEmpty()) }
-    var privateServer by remember(server) { mutableStateOf(server?.privateServer == true) }
     var apiKey by remember(server) { mutableStateOf("") }
     var removeKey by remember(server) { mutableStateOf(false) }
     val clearKeyDraft = { apiKey = ""; removeKey = false }
     var editing by remember { mutableStateOf<String?>(null) }
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
-    val draft = AssistantServer(address.trim(), name.trim(), privateServer)
-    val info = remember(draft.address, privateServer) {
-        if (draft.address.isEmpty()) null else runCatching { assistantEndpoint(draft.address, privateServer) }
+    val draft = AssistantServer(address.trim(), name.trim(), false)
+    val info = remember(draft.address) {
+        if (draft.address.isEmpty()) null else runCatching { assistantEndpoint(draft.address, false) }
     }
     val endpoint = info?.getOrNull()
     val keySaved = server?.address == draft.address && state.hasApiKey && !removeKey
     val replacementKey = apiKey.takeIf { it.isNotBlank() } ?: "".takeIf { removeKey }
     val changed = draft != server || replacementKey != null
+    LaunchedEffect(model) { model?.refreshHosted() }
+    DisposableEffect(model) { onDispose { model?.cancelChatgpt() } }
     BottomSheet("AI settings", close, tall = true, color = r.pane, defaultFraction = P.SHEET_MAX_FRACTION) { overlay ->
         BackHandler(enabled = editing != null) { editing = null }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = S.S4.dp, vertical = S.S2.dp),
             verticalArrangement = Arrangement.spacedBy(S.S3.dp)) {
             Label("AI settings", T.DETAIL_TITLE, r.ink, Modifier.semantics { heading() })
-            Column(Modifier.fillMaxWidth().clip(shape).background(r.raised).border(Tokens.Elevation.HAIRLINE.dp, r.accentStrong, shape)
+            if (state.hosted != null || ui.code != null) HostedAssistantSettings(ui, model)
+            Column(Modifier.fillMaxWidth().clip(shape).background(r.raised)
+                .border(Tokens.Elevation.HAIRLINE.dp, if (usingRelay) r.lineStrong else r.accentStrong, shape)
                 .padding(S.S3.dp), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon("link", r.accentStrong)
-                    Label("Your own server", T.TASK_TITLE, r.ink, Modifier.weight(1f), maxLines = 2)
+                    Label("This device", T.TASK_TITLE, r.ink, Modifier.weight(1f), maxLines = 2)
                     endpoint?.let { Label(it.label, T.META_PHONE, r.ink2) }
                 }
-                Label("Prompts and allowed task fields go to this server. Use a model it runs locally. There is no cloud fallback.",
+                Label("Connect directly to a model on this device. There is no cloud fallback.",
                     T.BODY, r.ink2, maxLines = Int.MAX_VALUE)
-                SettingsField("Base URL", "https://todo.example.com", address, {
-                    if (it != address) { address = it; privateServer = false; clearKeyDraft() }
+                SettingsField("Base URL", "http://127.0.0.1:11434", address, {
+                    if (it != address) { address = it; clearKeyDraft() }
                 }, KeyboardType.Uri)
                 (info?.exceptionOrNull() as? FfiException.Invalid)?.let {
                     Label(it.detail, T.META_PHONE, r.dangerInk, maxLines = Int.MAX_VALUE)
-                }
-                if (endpoint?.tailnetHttp == true) {
-                    Label("Unencrypted · relies on Tailscale", T.META_PHONE, r.sunInk, maxLines = 2)
-                }
-                if (endpoint?.needsAttestation == true) {
-                    Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).toggleable(privateServer,
-                        role = Role.Checkbox, onValueChange = { privateServer = it }),
-                        horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-                        AccessCheck(privateServer)
-                        Label("I control this private server", T.BODY, r.ink, maxLines = 2)
-                    }
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.Bottom) {
                     SettingsField("API key", if (keySaved) "Key saved · enter to replace" else "Optional bearer key", apiKey,
@@ -117,9 +111,9 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
                 SettingsField("Model", "Model name", name, { name = it }, KeyboardType.Text)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                     AiButton("Test connection", { model?.test() }, Modifier.weight(1f),
-                        enabled = !ui.busy && !state.streaming && !changed && state.destination != null && state.connection != AssistantConnection.TESTING)
-                    AiButton("Save server", { model?.save(draft, replacementKey, clearKeyDraft) }, Modifier.weight(1f), primary = true,
-                        enabled = !ui.busy && changed && endpoint != null && (!endpoint.needsAttestation || privateServer) && name.isNotBlank())
+                        enabled = !ui.busy && !state.streaming && !changed && state.destination == "This device" && state.connection != AssistantConnection.TESTING)
+                    AiButton("Use this device", { model?.save(draft, replacementKey, clearKeyDraft) }, Modifier.weight(1f), primary = true,
+                        enabled = !ui.busy && (changed || state.destination != "This device") && endpoint != null && name.isNotBlank())
                 }
                 val health = when (state.connection) {
                     AssistantConnection.UNTESTED -> null
@@ -127,7 +121,7 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
                     AssistantConnection.CONNECTED -> listOfNotNull("Connected", state.support).joinToString(" · ") to r.success
                     AssistantConnection.UNREACHABLE -> "Server unreachable" to r.danger
                 }
-                health?.let { (text, color) ->
+                health?.takeUnless { usingRelay }?.let { (text, color) ->
                     Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                         Box(Modifier.padding(top = S.S1.dp).size(C.STATUS_LIGHT.dp).background(color, CircleShape))
                         Label(text, T.META_PHONE, r.ink2, maxLines = 2)
@@ -136,7 +130,7 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
             }
             (ui.problem ?: state.problem)?.let { AssistantProblem(it) }
             Label("Lists the assistant can see", T.TASK_TITLE, r.ink, Modifier.semantics { heading() }, maxLines = 2)
-            Label("Lists start hidden. Collection rules also apply to new lists; changing a collection replaces its lists’ overrides.",
+            Label("Lists start hidden. Private only excludes ChatGPT. Collection rules also apply to new lists; changing a collection replaces its lists’ overrides.",
                 T.BODY, r.ink2, maxLines = Int.MAX_VALUE)
             if (state.access.isEmpty()) Label("No synced lists yet.", T.BODY, r.ink3)
             state.access.forEach { row ->
@@ -156,7 +150,7 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
         }
         Row(Modifier.fillMaxWidth().heightIn(min = P.BOTTOM_BAR.dp).background(r.canvas).hairline(r.line, top = true)
             .padding(horizontal = S.S4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            if (server != null) AiButton("Disconnect server", { model?.save(null, saved = clearKeyDraft) }, enabled = !ui.busy, quiet = true)
+            if (server != null || usingRelay) AiButton("Disconnect model", { model?.save(null, saved = clearKeyDraft) }, enabled = !ui.busy, quiet = true)
             else Spacer(Modifier.weight(1f))
             AiButton("Done", overlay::close, quiet = true)
         }

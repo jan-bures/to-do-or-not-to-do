@@ -1,13 +1,9 @@
 package app.todoornot.session
 
-import android.content.Context
-import android.net.ConnectivityManager
-import android.net.NetworkCapabilities
 import app.todoornot.core.AssistantPlatform
 
 /** No task data or pairing token ever reaches the model transport through this bridge. */
-internal class AndroidAssistantPlatform(context: Context, private val pairingId: String) : AssistantPlatform {
-    private val connectivity = context.getSystemService(ConnectivityManager::class.java)
+internal class AndroidAssistantPlatform(private val pairingId: String) : AssistantPlatform {
     private val cipher = KeystoreCipher(alias(pairingId))
 
     override fun sealKey(plain: ByteArray): ByteArray? = try {
@@ -24,21 +20,6 @@ internal class AndroidAssistantPlatform(context: Context, private val pairingId:
 
     override fun destroyKey(): Boolean = synchronized(keyLock) {
         pairingId !in signedOut && destroy(cipher)
-    }
-
-    // Check the VPN available to this app, not just the presence of a Tailscale install or any
-    // carrier CGNAT address. Rust checks the address range again before every HTTP model request.
-    override fun vpnAddresses(): List<String> = try {
-        val network = connectivity?.activeNetwork
-        if (network == null || connectivity.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) != true) {
-            emptyList()
-        } else {
-            connectivity.getLinkProperties(network)?.linkAddresses.orEmpty().mapNotNull {
-                it.address.hostAddress?.substringBefore('%')
-            }
-        }
-    } catch (_: SecurityException) {
-        emptyList()
     }
 
     companion object {

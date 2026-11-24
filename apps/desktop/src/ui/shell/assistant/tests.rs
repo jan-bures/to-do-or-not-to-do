@@ -134,7 +134,6 @@ fn changing_destination_invalidates_probe_scope_and_saved_key_without_contacting
     window.update(|shell, window, cx| {
         shell.preview_assistant("ai-settings", window, cx);
         let setup = shell.ai.settings.as_mut().expect("fixture settings");
-        setup.draft.attested = true;
         let revision = setup.revision;
         assert!(!setup.draft.key.is_empty() && !setup.draft.access.lists.is_empty());
         assert!(!setup.draft.access.collections.is_empty());
@@ -145,11 +144,8 @@ fn changing_destination_invalidates_probe_scope_and_saved_key_without_contacting
         let setup = shell.ai.settings.as_ref().expect("edited settings");
         assert_ne!(setup.revision, revision);
         assert!(setup.draft.key.is_empty() && setup.draft.access == Default::default());
-        assert!(!setup.draft.attested);
-        assert_eq!(
-            setup.draft.endpoint().expect("HTTPS endpoint").destination,
-            Destination::NotPrivate
-        );
+        assert!(setup.draft.endpoint().is_none());
+        assert!(setup.draft.provider().is_err());
         assert!(setup.draft.support.is_none() && setup.models.is_empty());
         assert!(shell.ai.key.read(cx).content.is_empty());
         shell.close_ai_settings(window, cx);
@@ -190,7 +186,7 @@ fn review_each_navigates_without_changing_the_frozen_preview() {
 }
 
 #[test]
-fn public_https_is_blocked_until_the_owner_attests_in_settings() {
+fn non_loopback_inference_cannot_be_enabled_directly() {
     let mut app = TestApp::new();
     let mut window = shell(&mut app);
     window.update(|shell, window, cx| {
@@ -200,32 +196,16 @@ fn public_https_is_blocked_until_the_owner_attests_in_settings() {
             shell
                 .ai_destination()
                 .expect("status destination")
-                .starts_with("Not private")
+                .starts_with("Assistant off")
         );
         shell.focus_ai(window, cx);
         assert!(shell.ai.panel.is_focused(window));
         shell.open_ai_settings(window, cx);
     });
-    window.draw();
-    window.update(|shell, window, cx| {
-        window.focus(&shell.ai.focus_handle("assistant-attestation", cx), cx)
-    });
-    press(&mut window, "enter");
     window.read(|shell, _| {
         let setup = shell.ai.settings.as_ref().expect("settings draft");
-        assert!(setup.draft.attested);
-        assert_eq!(
-            setup
-                .draft
-                .endpoint()
-                .expect("attested endpoint")
-                .destination,
-            Destination::YourServer
-        );
-        assert!(
-            shell.ai.blocked(),
-            "a draft does not change the active destination until saved"
-        );
+        assert!(setup.draft.provider().is_err());
+        assert!(shell.ai.blocked());
     });
 }
 

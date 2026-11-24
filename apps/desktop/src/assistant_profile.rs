@@ -1,10 +1,6 @@
 //! One locally configured inference destination per pairing. No transcript or proposal on disk.
 
-use crate::{
-    chatgpt::DesktopProvider,
-    config::DataDir,
-    platform::{dpapi, tailnet::WindowsTailnet},
-};
+use crate::{chatgpt::DesktopProvider, config::DataDir, platform::dpapi};
 use serde::{Deserialize, Serialize};
 use std::{
     io::{ErrorKind, Write},
@@ -12,7 +8,10 @@ use std::{
 };
 use todo_client::assistant::{
     AccessRules, Selection,
-    local::{EndpointInfo, LocalProvider, SetupError, Support, endpoint_info, valid_model},
+    local::{
+        Destination, EndpointInfo, LocalProvider, SetupError, Support, endpoint_info, valid_model,
+    },
+    native_relay::Hosted,
 };
 use zeroize::Zeroizing;
 
@@ -28,7 +27,9 @@ pub struct Profile {
     #[serde(default)]
     pub cloud: bool,
     #[serde(default)]
-    pub attested: bool,
+    pub private_relay: bool,
+    #[serde(default)]
+    pub chatgpt_account: Option<uuid::Uuid>,
     #[serde(flatten)]
     pub access: AccessRules,
     pub support: Option<Support>,
@@ -49,8 +50,22 @@ mod secret {
 }
 
 impl Profile {
+    pub fn hosted(&self) -> Option<Hosted> {
+        if self.cloud {
+            self.chatgpt_account.map(Hosted::ChatGpt)
+        } else if self.private_relay {
+            Some(Hosted::Private)
+        } else {
+            None
+        }
+    }
+
+    pub fn uses_relay(&self) -> bool {
+        self.cloud || self.private_relay
+    }
+
     pub fn selection(&self) -> Option<Selection<DesktopProvider>> {
-        if self.cloud || !self.enabled || !valid_model(&self.model) {
+        if self.uses_relay() || !self.enabled || !valid_model(&self.model) {
             return None;
         }
         let mut provider = self.provider().ok()?;
@@ -58,7 +73,7 @@ impl Profile {
             provider = provider.with_support(self.model.clone(), support);
         }
         Some(Selection {
-            provider: Arc::new(DesktopProvider::Private(provider)),
+            provider: Arc::new(DesktopProvider::Direct(provider)),
             model: self.model.clone(),
             access: self.access.clone(),
             allow_billed: false,
@@ -67,19 +82,23 @@ impl Profile {
     }
 
     pub fn provider(&self) -> Result<LocalProvider, SetupError> {
-        Ok(
-            LocalProvider::configured(&self.url, &self.key, self.attested)?
-                .with_tailnet_interface(WindowsTailnet),
-        )
+        if self
+            .endpoint()
+            .is_none_or(|info| info.destination != Destination::ThisDevice)
+        {
+            return Err(SetupError::Insecure);
+        }
+        LocalProvider::configured(&self.url, &self.key, false)
     }
 
     pub fn endpoint(&self) -> Option<EndpointInfo> {
-        endpoint_info(&self.url, self.attested).ok()
+        endpoint_info(&self.url, false)
+            .ok()
+            .filter(|info| info.destination == Destination::ThisDevice)
     }
 
     pub fn change_url(&mut self, url: String) {
         if self.url != url {
-            self.attested = false;
             self.key = Zeroizing::default();
             self.support = None;
             self.access = AccessRules::default();
@@ -94,14 +113,52 @@ impl Profile {
 
     pub fn load(data: &DataDir) -> anyhow::Result<Self> {
         data.check()?;
+        Self::remove_legacy_files(data)?;
         let sealed = match todo_fs::read_private_file(&data.path().join(FILE), MAX_PROFILE) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             other => other?,
         };
         let plain = Zeroizing::new(dpapi::open(&sealed, PURPOSE)?);
         // A malformed secret record is neither logged nor returned in a message.
-        serde_json::from_slice(&plain)
-            .map_err(|_| anyhow::anyhow!("Couldn't read assistant settings."))
+        let mut profile: Self = serde_json::from_slice(&plain)
+            .map_err(|_| anyhow::anyhow!("Couldn't read assistant settings."))?;
+        let removed_upstream = !profile.url.is_empty() && profile.endpoint().is_none();
+        let removed_cloud_auth = profile.cloud && profile.chatgpt_account.is_none();
+        if removed_upstream || removed_cloud_auth {
+            if removed_upstream {
+                profile.change_url(String::new());
+                if !profile.uses_relay() {
+                    profile.model.clear();
+                    profile.enabled = false;
+                }
+            }
+            if removed_cloud_auth {
+                profile.enabled = false;
+                profile.cloud = false;
+                profile.model.clear();
+            }
+            profile.save(data)?;
+        }
+        Ok(profile)
+    }
+
+    fn remove_legacy_files(data: &DataDir) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(data.path())? {
+            let entry = entry?;
+            let name = entry.file_name();
+            let remove = name.to_str().is_some_and(|name| {
+                matches!(name, "assistant-chatgpt.bin" | "assistant-chatgpt.lock")
+                    || is_temporary(&entry.file_name())
+                    || (name.starts_with("assistant-chatgpt-") && name.ends_with(".tmp"))
+            });
+            if remove {
+                match std::fs::remove_file(entry.path()) {
+                    Err(e) if e.kind() == ErrorKind::NotFound => {}
+                    result => result?,
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn save(&self, data: &DataDir) -> anyhow::Result<()> {
@@ -174,9 +231,8 @@ mod tests {
         let data = paths.data(&PairingId::random());
         std::fs::create_dir_all(data.path()).expect("create fixture pairing");
         let mut profile = Profile {
-            url: "https://mac.tailnet.example".into(),
+            url: "http://127.0.0.1:8030".into(),
             model: "sample-model".into(),
-            attested: true,
             key: Zeroizing::new("synthetic-secret".into()),
             ..Profile::default()
         };
@@ -200,7 +256,6 @@ mod tests {
         assert_eq!(*loaded.key, *profile.key);
         assert_eq!(loaded.url, profile.url);
         assert_eq!(loaded.access, profile.access);
-        assert!(loaded.attested);
         assert!(loaded.selection().is_none());
         Profile::forget(&data).expect("forget assistant profile");
         assert!(
@@ -243,8 +298,44 @@ mod tests {
     }
 
     #[test]
+    fn migration_discards_non_loopback_keys_and_old_chatgpt_records() {
+        let dir = tempfile::tempdir_in("target").expect("fixture directory");
+        let data = Paths::in_dir(dir.path().to_owned()).data(&PairingId::random());
+        std::fs::create_dir_all(data.path()).expect("fixture pairing");
+        Profile {
+            url: "http://100.64.0.1:8030/v1".into(),
+            model: "example-model".into(),
+            enabled: true,
+            cloud: true,
+            key: Zeroizing::new("legacy key".into()),
+            ..Profile::default()
+        }
+        .save(&data)
+        .expect("fixture settings");
+        for name in [
+            "assistant-chatgpt.bin",
+            "assistant-chatgpt.lock",
+            "assistant-chatgpt-stale.tmp",
+            "assistant-legacy.tmp",
+        ] {
+            std::fs::write(data.path().join(name), b"fixture").expect("fixture credential file");
+        }
+        let profile = Profile::load(&data).expect("migrate");
+        assert!(
+            profile.key.is_empty() && profile.url.is_empty() && !profile.cloud && !profile.enabled
+        );
+        assert_eq!(
+            std::fs::read_dir(data.path())
+                .expect("remaining files")
+                .count(),
+            1
+        );
+        let reloaded = Profile::load(&data).expect("reload migrated settings");
+        assert!(reloaded.key.is_empty());
+    }
+
+    #[test]
     fn legacy_profiles_do_not_inherit_attestation() {
-        use todo_client::assistant::local::Destination;
         let old = r#"{"url":"https://mac.tailnet.example/v1","model":"fixture-model","enabled":true,"lists":{"00000000-0000-0000-0000-000000000001":"Private","00000000-0000-0000-0000-000000000002":"All"},"support":null,"key":""}"#;
         let profile: Profile = serde_json::from_str(old).expect("legacy profile");
         assert!(profile.access.collections.is_empty());
@@ -255,11 +346,8 @@ mod tests {
                 todo_client::assistant::ListAccess::AllModels
             ]
         );
-        assert!(!profile.attested);
-        assert_eq!(
-            profile.endpoint().expect("legacy URL").destination,
-            Destination::NotPrivate
-        );
+        assert!(profile.endpoint().is_none());
+        assert!(profile.provider().is_err());
     }
 
     #[tokio::test]
@@ -304,7 +392,6 @@ mod tests {
         let (new, new_request) = server("localhost").await;
         let mut profile = Profile {
             url: old,
-            attested: true,
             key: Zeroizing::new("fixture-key".into()),
             ..Profile::default()
         };
@@ -321,7 +408,7 @@ mod tests {
                 .contains("authorization: bearer fixture-key")
         );
         profile.change_url(new);
-        assert!(!profile.attested && profile.key.is_empty());
+        assert!(profile.key.is_empty());
         profile
             .provider()
             .expect("new provider")

@@ -1,6 +1,13 @@
 # In-app assistant: architecture proposal
 
-**Decision:** Run the conversation and tool loop in `todo-client`, on the owner's device. Make the
+> **Current transport:** The conversation, scoped tools, and proposal review still run on the client.
+> The original direct tailnet transport and local ChatGPT credential store below have been superseded
+> by the optional [single-owner server relay](hosting-linux.md#ai-assistant-relay). The relay stores
+> credentials and sharing rules, not transcripts or tools. Direct inference is loopback-only. Device-code
+> sign-in is opt-in and requires a provider-approved registration; do not reuse Codex’s registration.
+> Use the ChatGPT integration only where OpenAI permits the owner-controlled deployment.
+
+**Original decision:** Run the conversation and tool loop in `todo-client`, on the owner's device. Make the
 owner's OpenAI-compatible Mac on the tailnet a first-class provider. Send only approved commands to
 `todo-server`. Start with no provider enabled, no paid calls, and no transcript sync. Keep the owner's
 passkey/device sign-in separate from model-provider authorization. This design covers plumbing; the

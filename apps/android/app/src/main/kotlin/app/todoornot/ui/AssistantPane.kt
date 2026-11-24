@@ -198,6 +198,7 @@ internal fun AssistantPane(
     val draft: (String) -> Unit = { model?.draft(it) }
     val turns = state.turns.asReversed()
     val scope = rememberCoroutineScope()
+    LaunchedEffect(model) { model?.refreshHosted() }
     LaunchedEffect(turns.firstOrNull()?.id) { if (turns.isNotEmpty()) scroll.scrollToItem(0) }
     Column(modifier.fillMaxSize().background(r.pane)
         .then(if (inner) Modifier.imePadding().navigationBarsPadding() else Modifier)
@@ -265,7 +266,10 @@ internal fun AssistantPane(
                 }
             }
         }
-        ChatComposer(ui.draft, draft, state.destination != null, state.streaming, ui.busy || state.connection == AssistantConnection.TESTING,
+        if (ui.scopeReview != null) {
+            Box(Modifier.fillMaxWidth().padding(horizontal = S.S3.dp)) { CloudScopeReview(ui, model) }
+        }
+        ChatComposer(ui.draft, draft, state.destination != null, state.streaming, ui.busy || ui.scopeReview != null || state.connection == AssistantConnection.TESTING,
             if (pending) "Approve above, or reply…" else if (inner) "Ask about $room…" else "Ask anything…",
             onSend = { model?.send() }, onStop = { model?.stop() })
         if (inner && !keyboard) {
@@ -284,7 +288,7 @@ internal fun AssistantPane(
 @Composable
 private fun DestinationText(state: AssistantPanelState, modifier: Modifier = Modifier, model: Boolean = false) {
     val r = LocalDesign.current.room
-    val server = state.server
+    val name = state.hosted?.model?.takeIf { it.isNotBlank() } ?: state.server?.model
     val label = when (state.connection) {
         AssistantConnection.UNREACHABLE -> "Server unreachable"
         AssistantConnection.TESTING -> "Testing connection…"
@@ -298,7 +302,7 @@ private fun DestinationText(state: AssistantPanelState, modifier: Modifier = Mod
     }
     Row(modifier, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
         color?.let { Box(Modifier.size(C.STATUS_LIGHT.dp).background(it, CircleShape)) }
-        Label(if (model && server != null) "$label · ${server.model}" else label, T.META_PHONE, r.ink2)
+        Label(if (model && name != null) "$label · $name" else label, T.META_PHONE, r.ink2)
     }
 }
 

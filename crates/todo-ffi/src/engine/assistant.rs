@@ -16,11 +16,10 @@ use todo_client::{
         AccessRules, Approval, ApprovalOutcome, AssistantError, Composer, Controller, Edit, Effect,
         ListAccess, ProposalKind, ProposalStatus, Selection, SendIntent, StepKind, StepStatus,
         ToolKind,
-        local::{
-            Destination, LocalProvider, Support, TailnetInterface, endpoint_info, is_tailnet_ip,
-            valid_model,
-        },
+        local::{Destination, LocalProvider, Support, endpoint_info, valid_model},
+        native_relay::{Hosted, NativeProvider, Relay},
         provider::{DataClass, Provider, ProviderError},
+        relay,
     },
     date_format::DateLabels,
     native::{OsEntropy, TokioClock},
@@ -39,7 +38,7 @@ use crate::{
     view::priority_name,
 };
 
-type Chat = Controller<LocalProvider, TokioClock, OsEntropy>;
+type Chat = Controller<NativeProvider, TokioClock, OsEntropy>;
 
 #[cfg(test)]
 mod tests;
@@ -53,6 +52,12 @@ macro_rules! opaque_debug {
         }
     )+};
 }
+
+mod hosted;
+pub use hosted::{
+    AssistantDeviceCode, AssistantHosted, AssistantHostedAccount, AssistantHostedModel,
+    AssistantScopeReview,
+};
 
 opaque_debug!(
     AndroidAssistant,
@@ -112,25 +117,13 @@ pub struct AssistantServer {
     pub private_server: bool,
 }
 
-/// Android supplies the Keystore and the live address of its active VPN. No task data crosses this boundary.
+/// Android supplies the Keystore for optional loopback-only credentials. No task data crosses it.
 #[uniffi::export(with_foreign)]
 pub trait AssistantPlatform: Send + Sync {
     fn seal_key(&self, plain: Vec<u8>) -> Option<Vec<u8>>;
     fn open_key(&self, sealed: Vec<u8>) -> Option<Vec<u8>>;
     /// Retire the alias before sealing a replacement or discarding the credential.
     fn destroy_key(&self) -> bool;
-    fn vpn_addresses(&self) -> Vec<String>;
-}
-
-struct AndroidVpn(Arc<dyn AssistantPlatform>);
-
-impl TailnetInterface for AndroidVpn {
-    fn connected(&self) -> bool {
-        self.0
-            .vpn_addresses()
-            .into_iter()
-            .any(|address| address.parse().is_ok_and(is_tailnet_ip))
-    }
 }
 
 #[derive(Clone, Debug, uniffi::Record)]
@@ -146,14 +139,17 @@ pub fn assistant_endpoint(address: String, attested: bool) -> Result<AssistantEn
 }
 
 fn endpoint(address: &str, attested: bool) -> Result<AssistantEndpoint, FfiError> {
-    let info = endpoint_info(address, attested).map_err(|e| invalid(e.to_string()))?;
+    let _ = attested;
+    let info = endpoint_info(address, false).map_err(|e| invalid(e.to_string()))?;
+    if info.destination != Destination::ThisDevice {
+        return Err(invalid(
+            "Use a loopback URL, or choose a private model through your To-do server.",
+        ));
+    }
     Ok(AssistantEndpoint {
         label: info.destination.label().into(),
-        needs_attestation: matches!(
-            info.destination,
-            Destination::NotPrivate | Destination::YourServer
-        ),
-        tailnet_http: info.tailnet_http,
+        needs_attestation: false,
+        tailnet_http: false,
     })
 }
 
@@ -254,6 +250,7 @@ pub struct AssistantPanelState {
     pub streaming: bool,
     pub turns: Vec<AssistantTurn>,
     pub problem: Option<String>,
+    pub hosted: Option<AssistantHosted>,
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -264,6 +261,8 @@ struct Settings {
     sealed_key: Option<Vec<u8>>,
     support: Option<Support>,
     access: AccessRules,
+    hosted: Option<Hosted>,
+    hosted_model: String,
 }
 
 struct Receipt {
@@ -275,6 +274,7 @@ struct Receipt {
 struct Session {
     settings: Settings,
     provider: Option<LocalProvider>,
+    relay_status: Option<relay::Status>,
     connection: AssistantConnection,
     problem: Option<String>,
     check: Option<(Uuid, JoinHandle<()>)>,
@@ -291,6 +291,7 @@ pub struct AndroidAssistant {
     path: PathBuf,
     platform: Arc<dyn AssistantPlatform>,
     chat: Chat,
+    relay: Option<Relay>,
     session: Mutex<Session>,
     watch: Mutex<Option<JoinHandle<()>>>,
     changes: Notify,
@@ -308,10 +309,28 @@ impl AndroidAssistant {
         let path = PathBuf::from(settings_path);
         let mut session = Session::default();
         match read_settings(&path) {
-            Ok(settings) => {
-                if let Some(server) = &settings.server {
+            Ok(mut settings) => {
+                let invalid_upstream = settings
+                    .server
+                    .as_ref()
+                    .is_some_and(|server| endpoint(&server.address, false).is_err());
+                if invalid_upstream {
+                    if platform.destroy_key() {
+                        settings.server = None;
+                        settings.sealed_key = None;
+                        settings.support = None;
+                        settings.access = AccessRules::default();
+                        if save_settings(&path, &settings).is_err() {
+                            session.problem =
+                                Some("Couldn’t finish removing the old AI server settings.".into());
+                        }
+                    } else {
+                        session.problem = Some("Couldn’t remove the old private model key. Restart To-do to try again.".into());
+                    }
+                }
+                if let Some(server) = settings.server.as_ref().filter(|_| !invalid_upstream) {
                     match open_key(&*platform, &server.address, settings.sealed_key.as_deref())
-                        .and_then(|key| build(server, key.as_str(), settings.support, platform.clone())) {
+                        .and_then(|key| build(server, key.as_str(), settings.support)) {
                         Ok(provider) => session.provider = Some(provider),
                         Err(_) => session.problem = Some("Check the saved server and replace or remove its API key in AI settings.".into()),
                     }
@@ -323,8 +342,13 @@ impl AndroidAssistant {
                     Some("Couldn't read the saved AI settings. List access is off.".into())
             }
         }
+        let relay = match engine.client.transport() {
+            crate::transport::AppTransport::Http(t) => Some(Relay::new(t.clone())),
+            crate::transport::AppTransport::Offline => None,
+        };
         let this = Arc::new(Self {
             engine,
+            relay,
             path,
             platform,
             chat: Chat::new(TokioClock, OsEntropy),
@@ -399,21 +423,28 @@ impl AndroidAssistant {
         let (access, hidden) = if session.closed {
             (vec![], 0)
         } else {
-            self.engine
-                .client
-                .with_confirmed(|state| access_rows(state, &session.settings.access))
+            self.engine.client.with_confirmed(|state| {
+                access_rows_class(
+                    state,
+                    active_access(&session),
+                    if matches!(session.settings.hosted, Some(Hosted::ChatGpt(_))) {
+                        DataClass::Cloud
+                    } else {
+                        DataClass::Local
+                    },
+                )
+            })
         };
         let streaming = matches!(view.composer, Composer::Streaming { .. });
         AssistantPanelState {
             generation: view.generation,
             server: session.settings.server.clone(),
             has_api_key: session.settings.sealed_key.is_some(),
-            destination: session
-                .provider
-                .as_ref()
-                .and(session.settings.server.as_ref())
-                .and_then(|server| endpoint(&server.address, server.private_server).ok())
-                .map(|info| info.label),
+            destination: if let Some(hosted) = session.settings.hosted {
+                view.model.as_ref().map(|_| hosted.label().to_owned())
+            } else {
+                session.provider.as_ref().map(|_| "This device".to_owned())
+            },
             connection: session.connection,
             support: session.settings.support.map(|s| s.label().into()),
             access,
@@ -490,6 +521,7 @@ impl AndroidAssistant {
                 })
                 .collect(),
             problem: session.problem.clone(),
+            hosted: self.hosted_view(&session),
         }
     }
 
@@ -507,7 +539,10 @@ impl AndroidAssistant {
             model: s.model.trim().into(),
             private_server: s.private_server,
         });
-        if server == session.settings.server && replacement.is_none() {
+        if session.settings.hosted.is_none()
+            && server == session.settings.server
+            && replacement.is_none()
+        {
             return Ok(());
         }
         let same_address = session
@@ -533,10 +568,7 @@ impl AndroidAssistant {
             .map_or(saved_key.as_str(), |key| key.trim());
         // Validate before retiring the old seal. After retirement a write error must fail closed,
         // never keep sending with the previously decrypted key.
-        let provider = server
-            .as_ref()
-            .map(|s| build(s, key, None, self.platform.clone()))
-            .transpose()?;
+        let provider = server.as_ref().map(|s| build(s, key, None)).transpose()?;
         self.chat.cancel();
         stop_check(&mut session);
         let commit = || -> Result<Settings, FfiError> {
@@ -556,6 +588,8 @@ impl AndroidAssistant {
                 } else {
                     session.settings.access.clone()
                 },
+                hosted: None,
+                hosted_model: String::new(),
             };
             save_settings(&self.path, &settings)?;
             Ok(settings)
@@ -591,6 +625,10 @@ impl AndroidAssistant {
     ) -> Result<(), FfiError> {
         let mut session = locked(&self.session);
         self.require_active(&mut session)?;
+        if session.settings.hosted.is_some() {
+            drop(session);
+            return self.set_hosted_access(id, collection, access);
+        }
         let mut settings = session.settings.clone();
         self.engine.client.with_confirmed(|state| {
             if collection {
@@ -826,13 +864,21 @@ impl AndroidAssistant {
     }
 
     fn install(&self, session: &Session) {
+        if let Some(route) = session.settings.hosted {
+            self.chat.configure(self.hosted_selection(session, route));
+            return;
+        }
         self.chat.configure(
             session
                 .provider
                 .as_ref()
                 .zip(session.settings.server.as_ref())
                 .map(|(provider, server)| {
-                    selection(Arc::new(provider.clone()), server, &session.settings.access)
+                    selection(
+                        Arc::new(NativeProvider::Direct(provider.clone())),
+                        server,
+                        &session.settings.access,
+                    )
                 }),
         );
     }
@@ -954,24 +1000,17 @@ fn build(
     server: &AssistantServer,
     key: &str,
     support: Option<Support>,
-    platform: Arc<dyn AssistantPlatform>,
 ) -> Result<LocalProvider, FfiError> {
     if !valid_model(&server.model) {
         return Err(invalid("Enter a valid model name."));
     }
-    let provider = LocalProvider::configured(&server.address, key, server.private_server)
+    endpoint(&server.address, false)?;
+    let provider = LocalProvider::configured(&server.address, key, false)
         .map_err(|e| invalid(e.to_string()))?;
-    if provider.capabilities(&server.model).data_class != DataClass::Local {
-        return Err(invalid(
-            "Confirm that this HTTPS address is your own private server.",
-        ));
-    }
-    Ok(provider
-        .with_tailnet_interface(AndroidVpn(platform))
-        .with_support(
-            server.model.clone(),
-            support.unwrap_or(Support::StreamingTools),
-        ))
+    Ok(provider.with_support(
+        server.model.clone(),
+        support.unwrap_or(Support::StreamingTools),
+    ))
 }
 
 fn seal_key(
@@ -1051,7 +1090,19 @@ fn review_key(id: &str, digest: Vec<u8>) -> Result<(Uuid, [u8; 32]), FfiError> {
     ))
 }
 
-fn access_rows(state: &State, rules: &AccessRules) -> (Vec<AssistantAccessRow>, u32) {
+fn active_access(session: &Session) -> &AccessRules {
+    session
+        .relay_status
+        .as_ref()
+        .filter(|_| session.settings.hosted.is_some())
+        .map_or(&session.settings.access, |s| &s.access)
+}
+
+fn access_rows_class(
+    state: &State,
+    rules: &AccessRules,
+    class: DataClass,
+) -> (Vec<AssistantAccessRow>, u32) {
     let mut collections: Vec<_> = state
         .collections
         .values()
@@ -1068,7 +1119,7 @@ fn access_rows(state: &State, rules: &AccessRules) -> (Vec<AssistantAccessRow>, 
     let mut hidden = 0;
     let mut append = |list: &todo_core::model::List, nested: bool, rows: &mut Vec<_>| {
         let access = rules.list(state, list.id);
-        if !access.allows(DataClass::Local) {
+        if !access.allows(class) {
             hidden += 1;
         }
         rows.push(AssistantAccessRow {

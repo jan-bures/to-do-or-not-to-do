@@ -113,6 +113,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "ai-error"
         | "ai-blocked"
         | "ai-chatgpt-signed-out"
+        | "ai-chatgpt-device-code"
         | "ai-chatgpt-signed-in"
         | "ai-chatgpt-consent" => {
             let mut f = my_day();

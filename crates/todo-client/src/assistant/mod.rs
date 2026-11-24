@@ -16,6 +16,8 @@ pub mod endpoint;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub mod native_relay;
 pub mod openai;
 pub mod provider;
 pub mod responses;

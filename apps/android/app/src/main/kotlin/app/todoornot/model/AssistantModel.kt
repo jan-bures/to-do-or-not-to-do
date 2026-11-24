@@ -3,6 +3,9 @@ package app.todoornot.model
 import app.todoornot.core.AndroidAssistant
 import app.todoornot.core.AssistantAccess
 import app.todoornot.core.AssistantAccessRow
+import app.todoornot.core.AssistantDeviceCode
+import app.todoornot.core.AssistantHostedModel
+import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantPanelState
 import app.todoornot.core.AssistantProposal
 import app.todoornot.core.AssistantServer
@@ -12,9 +15,13 @@ import app.todoornot.core.LocalNow
 import java.io.Closeable
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -36,6 +43,14 @@ internal interface AssistantCore : Closeable {
     fun reject(proposal: AssistantProposal)
     fun approve(proposal: AssistantProposal)
     fun undo(proposal: AssistantProposal)
+    fun refreshRelay() {}
+    fun models(account: String?): List<AssistantHostedModel> = emptyList()
+    fun useHosted(account: String?, model: String) {}
+    fun startChatgpt(): AssistantDeviceCode? = null
+    fun pollChatgpt(attempt: String): String? = null
+    fun signOutChatgpt(account: String): Boolean = false
+    fun scopeReview(): AssistantScopeReview? = null
+    fun approveScope(review: AssistantScopeReview) {}
 }
 
 internal class NativeAssistant(private val native: AndroidAssistant) : AssistantCore {
@@ -58,6 +73,14 @@ internal class NativeAssistant(private val native: AndroidAssistant) : Assistant
     override fun reject(proposal: AssistantProposal) = native.reject(proposal.id, proposal.digest)
     override fun approve(proposal: AssistantProposal) = native.approve(proposal.id, proposal.digest)
     override fun undo(proposal: AssistantProposal) = native.undo(proposal.id)
+    override fun refreshRelay() = native.refreshRelay()
+    override fun models(account: String?) = native.relayModels(account)
+    override fun useHosted(account: String?, model: String) = native.selectRelay(account, model)
+    override fun startChatgpt() = native.startChatgpt()
+    override fun pollChatgpt(attempt: String) = native.pollChatgpt(attempt)
+    override fun signOutChatgpt(account: String) = native.signOutChatgpt(account)
+    override fun scopeReview() = native.relayScopeReview()
+    override fun approveScope(review: AssistantScopeReview) = native.approveRelayScope(review)
 }
 
 internal data class AssistantUi(
@@ -65,6 +88,9 @@ internal data class AssistantUi(
     val draft: String = "",
     val busy: Boolean = false,
     val problem: String? = null,
+    val code: AssistantDeviceCode? = null,
+    val hostedModels: List<AssistantHostedModel>? = null,
+    val scopeReview: AssistantScopeReview? = null,
 )
 
 /** Only editor state and deliberate gestures belong here. Rust owns scope, streaming and review. */
@@ -82,6 +108,9 @@ internal class AssistantModel(
     @Volatile private var foreground = false
     @Volatile private var closed = false
     private var resumed = false
+    private val signInForeground = MutableStateFlow(false)
+    private var signIn: Job? = null
+    private var reviewPrompt: String? = null
 
     init {
         core.listen { changes.trySend(Unit) }
@@ -98,6 +127,7 @@ internal class AssistantModel(
 
     fun foreground(active: Boolean) {
         foreground = active
+        signInForeground.value = active
         changes.trySend(Unit)
     }
 
@@ -107,6 +137,7 @@ internal class AssistantModel(
     /** Revoke live inference before deleting the pairing directory. No new dispatch can start. */
     fun shutdown() {
         closed = true
+        cancelChatgpt()
         changes.close()
         core.shutdown()
     }
@@ -127,12 +158,12 @@ internal class AssistantModel(
     private fun publish() {
         val latest = core.panel(now())
         _ui.update { old ->
-            if (old.panel.generation != latest.generation) old.copy(panel = latest, draft = "", problem = null)
+            if (old.panel.generation != latest.generation) old.copy(panel = latest, draft = "", problem = null, scopeReview = null)
             else old.copy(panel = latest)
         }
     }
 
-    fun draft(text: String) { _ui.update { it.copy(draft = text, problem = null) } }
+    fun draft(text: String) { _ui.update { it.copy(draft = text, problem = null, scopeReview = null) } }
 
     private fun act(action: () -> Unit) {
         if (!foreground || closed) return
@@ -178,8 +209,79 @@ internal class AssistantModel(
     private fun send(shown: AssistantUi, prompt: String, clearDraft: Boolean) {
         if (prompt.isBlank() || shown.panel.streaming || shown.panel.destination == null) return
         act {
-            core.send(shown.panel.generation, ++sequence, prompt, now())
+            val hosted = shown.panel.hosted
+            val route = hosted?.privateSelected == true || hosted?.selectedAccount != null
+            if (route) {
+                core.refreshRelay()
+                val live = core.panel(now())
+                if (live.destination == null || live.hosted?.selectedAccount != hosted.selectedAccount || live.hosted?.model != hosted.model) {
+                    throw FfiException.Invalid("The selected model changed. Check AI settings before sending.")
+                }
+                val review = core.scopeReview()
+                if (review != null) {
+                    reviewPrompt = prompt
+                    _ui.update { it.copy(panel = live, draft = prompt, scopeReview = review) }
+                    return@act
+                }
+                core.send(live.generation, ++sequence, prompt, now())
+            } else core.send(shown.panel.generation, ++sequence, prompt, now())
             if (clearDraft) _ui.update { if (it.draft == prompt) it.copy(draft = "") else it }
+        }
+    }
+
+    fun refreshHosted() {
+        if (!foreground || closed) return
+        scope.launch(io) {
+            serial.withLock {
+                if (!foreground || closed) return@withLock
+                followLifecycle()
+                try { core.refreshRelay(); publish() } catch (_: FfiException) { /* Loopback remains available. */ }
+            }
+        }
+    }
+
+    fun hostedModels(account: String?) {
+        _ui.update { it.copy(hostedModels = null) }
+        act { _ui.update { it.copy(hostedModels = core.models(account)) } }
+    }
+    fun useHosted(account: String?, model: String) = act { core.useHosted(account, model) }
+    fun signOutChatgpt(account: String) = act {
+        if (!core.signOutChatgpt(account)) throw FfiException.Invalid("Signed out on your server. If needed, disconnect the app in ChatGPT settings to revoke access there.")
+    }
+    fun startChatgpt() {
+        if (!foreground || closed || signIn?.isCompleted == false) return
+        signIn = scope.launch {
+            try {
+                val code = withContext(io) { serial.withLock {
+                    if (!foreground || closed) null else { followLifecycle(); core.startChatgpt() }
+                } } ?: return@launch
+                _ui.update { it.copy(code = code, problem = null) }
+                while (!closed) {
+                    signInForeground.first { it }
+                    delay(1000)
+                    val account = withContext(io) { serial.withLock {
+                        if (!foreground || closed) null else core.pollChatgpt(code.attempt).also { publish() }
+                    } }
+                    if (account != null) break
+                }
+            } catch (err: FfiException.Invalid) {
+                _ui.update { it.copy(problem = err.detail) }
+            } catch (_: FfiException) {
+                _ui.update { it.copy(problem = "ChatGPT sign-in didn’t finish. Try again.") }
+            } finally { _ui.update { it.copy(code = null) } }
+        }
+    }
+    fun cancelChatgpt() { signIn?.cancel(); _ui.update { it.copy(code = null) } }
+    fun declineScope() { _ui.update { it.copy(scopeReview = null) } }
+    fun approveScope() {
+        val shown = _ui.value
+        val review = shown.scopeReview ?: return
+        val text = reviewPrompt ?: return
+        if (shown.draft != text) return
+        act {
+            core.approveScope(review)
+            core.send(review.generation, ++sequence, text, now())
+            _ui.update { it.copy(scopeReview = null, draft = "") }
         }
     }
 

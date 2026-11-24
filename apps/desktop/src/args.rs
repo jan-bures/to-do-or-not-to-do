@@ -57,6 +57,7 @@ pub const FIXTURES: &[&str] = &[
     "ai-unconfigured",
     "ai-typing",
     "ai-chatgpt-signed-out",
+    "ai-chatgpt-device-code",
     "ai-chatgpt-signed-in",
     "ai-chatgpt-consent",
     "ai-proposal",

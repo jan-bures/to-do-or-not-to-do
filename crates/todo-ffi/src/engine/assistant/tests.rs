@@ -27,16 +27,15 @@ fn now() -> LocalNow {
 
 fn server() -> AssistantServer {
     AssistantServer {
-        address: "https://todo.example.com".into(),
+        address: "http://127.0.0.1:8030".into(),
         model: MODEL.into(),
-        private_server: true,
+        private_server: false,
     }
 }
 
 #[derive(Default)]
 struct FixturePlatform {
     keys: Mutex<HashMap<Vec<u8>, Zeroizing<Vec<u8>>>>,
-    addresses: Vec<String>,
 }
 
 impl AssistantPlatform for FixturePlatform {
@@ -54,10 +53,6 @@ impl AssistantPlatform for FixturePlatform {
     fn destroy_key(&self) -> bool {
         locked(&self.keys).clear();
         true
-    }
-
-    fn vpn_addresses(&self) -> Vec<String> {
-        self.addresses.clone()
     }
 }
 
@@ -186,7 +181,7 @@ fn proposal_dates_follow_the_phone_preference_and_local_year() {
 }
 
 #[test]
-fn unverified_https_and_public_http_are_refused_and_access_is_inherited() {
+fn non_loopback_http_and_https_are_refused_and_access_is_inherited() {
     let (ai, _temp) = host();
     assert!(ai.panel(now()).server.is_none());
     let mut bad = server();
@@ -202,9 +197,6 @@ fn unverified_https_and_public_http_are_refused_and_access_is_inherited() {
         bad.address = address.into();
         assert!(ai.save_server(Some(bad.clone()), None).is_err());
     }
-    bad = server();
-    bad.private_server = false;
-    assert!(ai.save_server(Some(bad), None).is_err());
     ai.save_server(Some(server()), None).unwrap();
     let before = ai.panel(now());
     assert!(
@@ -246,57 +238,49 @@ fn unverified_https_and_public_http_are_refused_and_access_is_inherited() {
     assert!(reloaded.panel(now()).server.is_none());
 }
 
-#[tokio::test]
-async fn destination_classification_matches_desktop_and_tailnet_http_fails_closed_without_a_vpn() {
+#[test]
+fn direct_inference_is_loopback_only_and_upgrade_retires_old_keys() {
     let (ai, _temp) = host();
-    for (address, label, tailnet_http) in [
-        ("http://127.0.0.1:8000", "This device", false),
-        ("http://sample.example.ts.net:8000/v1", "Tailscale", true),
-        ("http://100.64.0.1:8000/v1", "Tailscale", true),
-        ("https://sample.example.ts.net/v1", "Tailscale", false),
+    for address in [
+        "http://sample.example.ts.net:8000/v1",
+        "http://100.64.0.1:8000/v1",
+        "https://example.com/v1",
     ] {
-        let info = assistant_endpoint(address.into(), false).unwrap();
-        assert_eq!(info.label, label);
-        assert_eq!(info.tailnet_http, tailnet_http);
-        assert!(!info.needs_attestation);
-        ai.save_server(
-            Some(AssistantServer {
-                address: address.into(),
-                private_server: false,
-                ..server()
-            }),
-            None,
+        assert!(assistant_endpoint(address.into(), true).is_err());
+        let server = AssistantServer {
+            address: address.into(),
+            private_server: true,
+            ..server()
+        };
+        assert!(ai.save_server(Some(server.clone()), None).is_err());
+        let sealed_key = ai.platform.seal_key(b"old key".to_vec()).unwrap();
+        save_settings(
+            &ai.path,
+            &Settings {
+                server: Some(server),
+                sealed_key: Some(sealed_key.clone()),
+                ..Settings::default()
+            },
         )
         .unwrap();
-        assert_eq!(ai.panel(now()).destination.as_deref(), Some(label));
-        let provider = locked(&ai.session).provider.clone().unwrap();
-        assert!(ListAccess::PrivateOnly.allows(provider.capabilities(MODEL).data_class));
-        if tailnet_http {
-            assert_eq!(
-                provider.list_models().await.unwrap_err(),
-                ProviderError::TailnetDisconnected
-            );
-            assert_eq!(
-                provider.probe(MODEL).await.unwrap_err(),
-                ProviderError::TailnetDisconnected
-            );
-        }
-    }
-    for (address, accepted) in [
-        ("192.168.0.8", false),
-        ("100.128.0.1", false),
-        ("100.64.0.1", true),
-        ("fd7a:115c:a1e0::1", true),
-    ] {
-        assert_eq!(
-            AndroidVpn(Arc::new(FixturePlatform {
-                addresses: vec![address.into()],
-                ..Default::default()
-            }))
-            .connected(),
-            accepted
+        let reloaded = AndroidAssistant::open(
+            ai.engine.clone(),
+            ai.path.to_string_lossy().into(),
+            ai.platform.clone(),
         );
+        assert!(reloaded.panel(now()).destination.is_none());
+        assert!(ai.platform.open_key(sealed_key).is_none());
+        assert!(read_settings(&ai.path).unwrap().sealed_key.is_none());
     }
+    let direct = server();
+    assert_eq!(
+        assistant_endpoint(direct.address.clone(), false)
+            .unwrap()
+            .label,
+        "This device"
+    );
+    ai.save_server(Some(direct), None).unwrap();
+    assert_eq!(ai.panel(now()).destination.as_deref(), Some("This device"));
 }
 
 const FIXTURE_BEARER: &str = "fixture-model-key";

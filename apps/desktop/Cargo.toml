@@ -41,10 +41,6 @@ uuid = "1"
 # The sync engine's runtime (network I/O runs here, never on the UI thread).
 tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util"] }
 anyhow = "1"
-base64 = "0.23"
-ring = "0.17"
-reqwest = { version = "0.13", default-features = false, features = ["form", "json", "stream", "rustls-no-provider"] }
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 subtle = "2"
 futures = "0.3"
 image = { version = "0.25", default-features = false, features = ["png"] }

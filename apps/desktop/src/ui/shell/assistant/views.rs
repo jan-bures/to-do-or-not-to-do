@@ -1743,21 +1743,18 @@ impl ShellView {
             return Some(self.ai_chatgpt_consent(cx));
         }
         let setup = self.ai.settings.as_ref()?;
-        if setup.draft.cloud && self.ai.cloud.welcome_pending() {
-            return Some(self.ai_chatgpt_welcome(window, cx));
-        }
         let p = self.palette;
         let running = matches!(setup.check, Check::Running(_));
         let endpoint = setup.draft.endpoint();
         let destination = endpoint.map(|info| info.destination);
-        let blocked = destination == Some(Destination::NotPrivate);
+        let blocked = !setup.draft.url.is_empty() && destination.is_none();
         let route = destination.map_or("No address", Destination::label);
         let allowed = !blocked && !running && self.retry_seconds() == 0;
         let (light, status_ink, connection) = match &setup.check {
             Check::NotTested if blocked => (
                 None,
                 p.danger_ink,
-                "Blocked · confirm ownership before testing or sending.".into(),
+                "Only loopback URLs can be used directly.".into(),
             ),
             Check::NotTested
                 if self.ai.same_destination(&setup.draft)
@@ -1845,56 +1842,10 @@ impl ShellView {
                             .items_center()
                             .justify_between()
                             .gap(px(space::S2))
-                            .child(text(ty::NAV_COLLECTION, p.ink, "Your own server"))
+                            .child(text(ty::NAV_COLLECTION, p.ink, "This device"))
                             .child(text(ty::CAPS_LABEL, p.ink_3, route.to_uppercase())),
                     )
                     .child(self.ai_setting_field("Base URL", self.ai.url.clone(), None, window, cx))
-                    .when(endpoint.is_some_and(|info| info.tailnet_http), |form| {
-                        form.child(text(
-                            ty::META,
-                            p.sun_ink,
-                            "Unencrypted · relies on Tailscale",
-                        ))
-                    })
-                    .when(
-                        matches!(
-                            destination,
-                            Some(Destination::NotPrivate | Destination::YourServer)
-                        ),
-                        |form| {
-                            form.child(
-                                self.ai_action(
-                                    "assistant-attestation",
-                                    div()
-                                        .flex()
-                                        .items_start()
-                                        .gap(px(space::S2))
-                                        .p(px(space::S2))
-                                        .rounded(px(radius::MD))
-                                        .bg(if setup.draft.attested {
-                                            p.wash
-                                        } else {
-                                            p.canvas
-                                        })
-                                        .child(kit::icon(
-                                            if setup.draft.attested {
-                                                Icon::CircleCheck
-                                            } else {
-                                                Icon::Circle
-                                            },
-                                            component::ICON_SMALL,
-                                            p.accent_strong,
-                                        ))
-                                        .child(text(ty::META, p.ink, PRIVATE_ATTESTATION)),
-                                    true,
-                                    |this, _, cx| this.toggle_ai_attestation(cx),
-                                    cx,
-                                )
-                                .aria_label(PRIVATE_ATTESTATION)
-                                .aria_toggled(toggled(setup.draft.attested)),
-                            )
-                        },
-                    )
                     .child(
                         div()
                             .flex()
@@ -2053,7 +2004,7 @@ impl ShellView {
                 if super::super::navigation_tab(e) {
                     if e.keystroke.modifiers.shift { window.focus_prev(cx); } else { window.focus_next(cx); }
                     if !this.ai.dialog.contains_focused(window, cx) {
-                        if this.ai.settings.as_ref().is_some_and(|setup| setup.draft.cloud) {
+                        if this.ai.settings.as_ref().is_some_and(|setup| setup.draft.uses_relay()) {
                             window.focus(&this.ai.focus_handle("assistant-settings-close", cx), cx);
                         } else { window.focus(&this.ai.url.read(cx).focus_handle.clone(), cx); }
                     }
@@ -2065,19 +2016,19 @@ impl ShellView {
                 .child(self.ai_icon("assistant-settings-close", Icon::X, "Close AI settings without saving", true, |this, w, cx| this.close_ai_settings(w, cx), cx)))
             .child(div().id("assistant-settings-scroll").min_h_0().overflow_y_scroll().px(px(space::S5)).py(px(space::S4)).flex().flex_col().gap(px(space::S3))
                 .child(kit::label(&p, "Model provider").flex_none())
-                .child(self.ai_provider_choices(setup.draft.cloud, !running, cx))
-                .child(if setup.draft.cloud { self.ai_chatgpt_settings(setup, cx) } else { provider })
+                .child(self.ai_provider_choices(setup, !running, cx))
+                .child(if setup.draft.uses_relay() { self.ai_hosted_settings(setup, cx) } else { provider })
                 .child(div().flex_none().flex().items_start().gap(px(space::S2)).p(px(space::S3)).rounded(px(radius::LG)).bg(p.canvas)
                     .child(kit::icon(if setup.draft.cloud { Icon::CircleAlert } else { Icon::CloudOff }, component::ICON_SMALL, p.ink_3))
                     .child(text(ty::META, p.ink_2, if setup.draft.cloud {
                         "No automatic fallback. ChatGPT receives prompts and allowed summaries from All models lists only."
-                    } else { "No cloud fallback. Prompts and allowed task fields go to the server you enter. Make sure it uses local weights." })))
+                    } else if setup.draft.private_relay { "No cloud fallback. Only allowed task summaries go to your private model through your server." } else { "No cloud fallback. Prompts and allowed task summaries go to the loopback address you enter." })))
                 .child(kit::label(&p, "Lists the assistant can see").flex_none())
-                .child(text(ty::META, p.ink_3, "Select a row to change its access. Lists inherit their collection’s choice unless set individually. Without a choice, lists are hidden on this device.").flex_none())
+                .child(text(ty::META, p.ink_3, "Select a row to change its access. Lists inherit their collection’s choice unless set individually. Without a choice, lists are hidden.").flex_none())
                 .child(list_controls))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))
-                .when(setup.draft.cloud, |footer| footer.justify_end())
-                .when(!setup.draft.cloud, |footer| footer.child(self.ai_button("assistant-forget", "Forget server", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx)))
+                .when(setup.draft.uses_relay(), |footer| footer.justify_end())
+                .when(!setup.draft.uses_relay(), |footer| footer.child(self.ai_button("assistant-forget", "Forget this device’s model", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx)))
                 .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
         Some(
             div()

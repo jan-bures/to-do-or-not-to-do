@@ -10,6 +10,10 @@ import app.todoornot.core.AssistantConnection
 import app.todoornot.core.AssistantEffect
 import app.todoornot.core.AssistantEffectKind
 import app.todoornot.core.AssistantField
+import app.todoornot.core.AssistantDeviceCode
+import app.todoornot.core.AssistantHosted
+import app.todoornot.core.AssistantHostedAccount
+import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantItem
 import app.todoornot.core.AssistantPanelState
 import app.todoornot.core.AssistantProposal
@@ -59,14 +63,16 @@ class AssistantGalleryTest {
                     prose = "I drafted these changes. Nothing has been saved yet.", stepSummary = "Checked 2 lists · Read 1 task · 1 hidden",
                     proposal = AssistantProposal("proposal", ByteArray(32), AssistantProposalStatus.PENDING, null,
                         listOf(AssistantItem(0u, true, listOf(edit)), AssistantItem(1u, true, listOf(longCreate)))))
-                val base = AssistantPanelState(0uL, AssistantServer("https://todo.example.com", "qwen3-14b", true), false,
-                    AssistantConnection.UNTESTED, "Private network", null,
+                val base = AssistantPanelState(0uL, AssistantServer("http://127.0.0.1:11434", "qwen3-14b", false), false,
+                    AssistantConnection.UNTESTED, "This device", null,
                     listOf(
                         AssistantAccessRow("home", "Home", true, false, false, null),
                         AssistantAccessRow("errands", "Errands", false, true, true, AssistantAccess.PRIVATE_ONLY),
                         AssistantAccessRow("paperwork", "Home paperwork", false, true, false, AssistantAccess.HIDDEN),
                         AssistantAccessRow("reading", "Reading", false, false, false, AssistantAccess.ALL_MODELS),
-                    ), 1u, false, emptyList(), null)
+                    ), 1u, false, emptyList(), null, null)
+                val account = AssistantHostedAccount("example-account", "you@example.com")
+                val hosted = AssistantHosted(true, true, true, emptyList(), null, false, "")
                 val states = listOf(
                     "unconfigured" to base.copy(server = null, destination = null),
                     "empty" to base,
@@ -77,6 +83,11 @@ class AssistantGalleryTest {
                         items = listOf(AssistantItem(0u, true, listOf(longCreate))))))),
                     "batch" to base.copy(turns = listOf(change)),
                     "settings" to base.copy(connection = AssistantConnection.CONNECTED, support = "Streaming + task tools"),
+                    "chatgpt_code" to base.copy(server = null, destination = null, hosted = hosted),
+                    "chatgpt_account" to base.copy(server = null, destination = "ChatGPT (cloud)",
+                        hosted = hosted.copy(accounts = listOf(account), selectedAccount = account.id, model = "Example model")),
+                    "chatgpt_consent" to base.copy(server = null, destination = "ChatGPT (cloud)",
+                        hosted = hosted.copy(accounts = listOf(account), selectedAccount = account.id, model = "Example model")),
                 )
                 for ((posture, config) in listOf("cover" to cover, "inner" to inner)) {
                     paparazzi.unsafeUpdateConfig(deviceConfig = config)
@@ -84,9 +95,12 @@ class AssistantGalleryTest {
                         val wide = config == inner
                         paparazzi.snapshot("${posture}_${name}_${if (dark) "dark" else "light"}") {
                             CompositionLocalProvider(LocalSheetAtRest provides true) {
-                                MainScreen(room, Actions.None, dark, wide, assistant = AssistantUi(panel), initialAssistantOpen = true,
+                                val ui = AssistantUi(panel,
+                                    code = AssistantDeviceCode("example-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device").takeIf { name == "chatgpt_code" },
+                                    scopeReview = AssistantScopeReview(account.id, "example-version", 0uL, listOf("reading"), listOf("Reading")).takeIf { name == "chatgpt_consent" })
+                                MainScreen(room, Actions.None, dark, wide, assistant = ui, initialAssistantOpen = true,
                                     fold = if (wide) PaneFold(436.dp, 440.dp) else null,
-                                    initialAssistantOverlay = AssistantOverlay.SETTINGS.takeIf { name == "settings" })
+                                    initialAssistantOverlay = AssistantOverlay.SETTINGS.takeIf { name in setOf("settings", "chatgpt_code", "chatgpt_account") })
                             }
                         }
                     }

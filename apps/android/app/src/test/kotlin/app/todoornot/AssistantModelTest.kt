@@ -3,7 +3,10 @@ package app.todoornot
 import app.todoornot.core.AssistantAccess
 import app.todoornot.core.AssistantAccessRow
 import app.todoornot.core.AssistantConnection
+import app.todoornot.core.AssistantDeviceCode
+import app.todoornot.core.AssistantHosted
 import app.todoornot.core.AssistantPanelState
+import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantProposal
 import app.todoornot.core.AssistantProposalStatus
 import app.todoornot.core.AssistantServer
@@ -13,6 +16,7 @@ import app.todoornot.model.AssistantCore
 import app.todoornot.model.AssistantModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
+import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -25,8 +29,8 @@ import org.junit.Test
 class AssistantModelTest {
     private class Core : AssistantCore {
         private lateinit var changed: () -> Unit
-        var state = AssistantPanelState(3uL, AssistantServer("https://todo.example.com", "test-model", true), false,
-            AssistantConnection.UNTESTED, "Private network", null, emptyList(), 0u, false, emptyList(), null)
+        var state = AssistantPanelState(3uL, AssistantServer("http://127.0.0.1:11434", "test-model", false), false,
+            AssistantConnection.UNTESTED, "This device", null, emptyList(), 0u, false, emptyList(), null, null)
         val prompts = mutableListOf<Triple<ULong, ULong, String>>()
         var review: AssistantProposal? = null
         var rejection: AssistantProposal? = null
@@ -34,6 +38,9 @@ class AssistantModelTest {
         var foreground = false
         var closed = false
         var shownNow: LocalNow? = null
+        var scope: AssistantScopeReview? = null
+        var approvedScope: AssistantScopeReview? = null
+        var pendingPolls = 0
         override fun listen(onChange: () -> Unit) { changed = onChange }
         override fun panel(now: LocalNow): AssistantPanelState { shownNow = now; return state }
         override fun resume() { foreground = true }
@@ -55,6 +62,10 @@ class AssistantModelTest {
         override fun approve(proposal: AssistantProposal) { review = proposal }
         override fun undo(proposal: AssistantProposal) = Unit
         override fun close() { closed = true }
+        override fun startChatgpt() = AssistantDeviceCode("fixture-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device")
+        override fun pollChatgpt(attempt: String): String? { pendingPolls++; return null }
+        override fun scopeReview() = scope
+        override fun approveScope(review: AssistantScopeReview) { approvedScope = review }
         fun replace(panel: AssistantPanelState) { state = panel; changed() }
     }
 
@@ -108,6 +119,46 @@ class AssistantModelTest {
         assertEquals(3uL, model.ui.value.panel.generation)
         assertEquals("Keep this draft", model.ui.value.draft)
         assertTrue(core.prompts.isEmpty())
+    }
+
+    @Test fun theDeviceCodeSurvivesOpeningTheBrowserAndOnlyPollsInForeground() = runTest {
+        val core = Core()
+        val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }
+        model.foreground(true)
+        model.startChatgpt()
+        runCurrent()
+        assertEquals("EXAMPLE-1", model.ui.value.code?.userCode)
+        model.foreground(false)
+        advanceTimeBy(2000)
+        runCurrent()
+        assertEquals(0, core.pendingPolls)
+        assertEquals("EXAMPLE-1", model.ui.value.code?.userCode)
+        model.foreground(true)
+        advanceTimeBy(1100)
+        runCurrent()
+        assertEquals(1, core.pendingPolls)
+        model.cancelChatgpt()
+        runCurrent()
+        assertEquals(null, model.ui.value.code)
+    }
+
+    @Test fun cloudSendWaitsForAnExplicitListScopeApproval() = runTest {
+        val core = Core()
+        core.state = core.state.copy(destination = "ChatGPT (cloud)",
+            hosted = AssistantHosted(true, true, false, emptyList(), "fixture-account", false, "sample-model"))
+        val shown = AssistantScopeReview("fixture-account", "fixture-version", 3uL, listOf("fixture-list"), listOf("Inbox"))
+        core.scope = shown
+        val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }
+        model.foreground(true)
+        model.draft("Cloud message")
+        model.send()
+        runCurrent()
+        assertSame(shown, model.ui.value.scopeReview)
+        assertTrue(core.prompts.isEmpty())
+        model.approveScope()
+        runCurrent()
+        assertSame(shown, core.approvedScope)
+        assertEquals(listOf(Triple(3uL, 1uL, "Cloud message")), core.prompts)
     }
 
     @Test fun reviewUsesPresentedProposalAndBackgroundPreventsSending() = runTest {
