@@ -113,6 +113,33 @@ async fn connector_refuses_redirects_and_relay_caps_chunked_or_known_length_stre
     server.abort();
 }
 
+#[tokio::test]
+async fn model_catalogs_may_exceed_the_general_json_bound() {
+    fn catalog(bytes: usize) -> serde_json::Value {
+        let note = "x".repeat(4096);
+        let models = (0..bytes / 4096)
+            .map(|i| serde_json::json!({"id": format!("model-{i}"), "note": note}))
+            .collect::<Vec<_>>();
+        serde_json::json!({ "data": models })
+    }
+    let mock = Router::new()
+        .route("/large", get(|| async { Json(catalog(1024 * 1024)) }))
+        .route("/huge", get(|| async { Json(catalog(9 * 1024 * 1024)) }));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let http = client().build().unwrap();
+    let get = |path: &str| http.get(format!("{base}/{path}")).send();
+
+    let listed: serde_json::Value = read_catalog(get("large").await.unwrap()).await.unwrap();
+    assert_eq!(listed["data"].as_array().unwrap().len(), 256);
+    let general = read_json::<serde_json::Value>(get("large").await.unwrap()).await;
+    assert!(matches!(general, Err(Error::Upstream)));
+    let huge = read_catalog::<serde_json::Value>(get("huge").await.unwrap()).await;
+    assert!(matches!(huge, Err(Error::Upstream)));
+    server.abort();
+}
+
 #[test]
 fn private_addresses_are_exact_and_have_fixed_paths() {
     for url in [

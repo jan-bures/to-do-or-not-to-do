@@ -31,6 +31,7 @@ pub(crate) const PRIVATE_CHAT_HEAD_TIMEOUT: Duration = Duration::from_secs(65);
 const PRIVATE_TOTAL: Duration = Duration::from_secs(600);
 const PRIVATE_MAX_STREAM: usize = 16 * 1024 * 1024;
 const MAX_JSON: usize = 256 * 1024;
+const MAX_CATALOG: usize = 8 * 1024 * 1024;
 
 /// Operator-only settings: no key material is kept in TOML.
 #[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
@@ -168,7 +169,7 @@ impl Private {
             id: String,
         }
         let url = self.base.join("models").map_err(|_| Error::Upstream)?;
-        let catalog: Catalog = read_json(
+        let catalog: Catalog = read_catalog(
             self.http
                 .get(url)
                 .bearer_auth(self.key.as_str())
@@ -249,15 +250,28 @@ pub(super) fn check_status(status: StatusCode) -> Result<(), Error> {
     }
 }
 
-pub(super) async fn read_json<T: DeserializeOwned>(mut res: reqwest::Response) -> Result<T, Error> {
+pub(super) async fn read_json<T: DeserializeOwned>(res: reqwest::Response) -> Result<T, Error> {
+    read_json_within(res, MAX_JSON).await
+}
+
+/// Model catalogs carry per-model instructions and metadata, so they need a larger bound.
+pub(super) async fn read_catalog<T: DeserializeOwned>(res: reqwest::Response) -> Result<T, Error> {
+    read_json_within(res, MAX_CATALOG).await
+}
+
+async fn read_json_within<T: DeserializeOwned>(
+    mut res: reqwest::Response,
+    limit: usize,
+) -> Result<T, Error> {
     check_status(res.status())?;
+    if res.content_length().is_some_and(|n| n > limit as u64) {
+        tracing::warn!(limit, "assistant upstream JSON exceeded the size limit");
+        return Err(Error::Upstream);
+    }
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = res.chunk().await.map_err(network_error)? {
-        if bytes.len() + chunk.len() > MAX_JSON {
-            tracing::warn!(
-                limit = MAX_JSON,
-                "assistant upstream JSON exceeded the size limit"
-            );
+        if bytes.len() + chunk.len() > limit {
+            tracing::warn!(limit, "assistant upstream JSON exceeded the size limit");
             return Err(Error::Upstream);
         }
         bytes.extend_from_slice(&chunk);

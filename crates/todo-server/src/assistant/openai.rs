@@ -19,7 +19,7 @@ use zeroize::Zeroizing;
 
 use super::{
     Error, InitError,
-    upstream::{client, network_error, read_json, valid_model, valid_token},
+    upstream::{client, network_error, read_catalog, read_json, valid_model, valid_token},
     vault::{Credential, Flow},
 };
 
@@ -633,7 +633,7 @@ impl OpenAi {
         } else {
             req
         };
-        let result: Value = read_json(req.send().await.map_err(network_error)?).await?;
+        let result: Value = read_catalog(req.send().await.map_err(network_error)?).await?;
         Ok(listed_models(&result))
     }
 
