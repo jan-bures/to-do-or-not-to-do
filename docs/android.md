@@ -261,7 +261,8 @@ or `fd7a:115c:a1e0::/48` count as private, as on desktop. Before each plain HTTP
 the phone's active app VPN to have a Tailscale address. The Rust connector only accepts Tailscale IPs
 from DNS for a MagicDNS name. Plain HTTP is otherwise allowed only to this device's loopback addresses.
 Use HTTPS for other destinations, with a certificate Android trusts, and confirm that the server is yours
-and runs the model locally. Prefer HTTPS when available; with plain HTTP on a tailnet, transport privacy
+and runs the model locally. The active VPN address is a prerequisite, not a check of the peer's route
+or the VPN's identity. Prefer HTTPS when available; with plain HTTP on a tailnet, transport privacy
 relies on Tailscale.
 
 Assistant requests use Rust (`reqwest`), not the Android platform HTTP stack. The assistant's own Rust
@@ -269,8 +270,10 @@ policy enforces these exceptions in both release and debug; the Android network 
 unchanged. The assistant never follows redirects or uses proxies or the task-sync token. It sends its
 optional bearer credential only to the saved endpoint. The key is encrypted with a per-pairing Android
 Keystore key and bound to the exact saved URL. **Disconnect server** or saving a different URL discards
-the old key and list grants. To remove only the key, choose **Remove** and save. The endpoint, encrypted
-key, model, and rules live in the app-private, no-backup pairing directory.
+the old key and list grants. To remove only the key, choose **Remove** and save. Removing or replacing a key
+retires the previous Keystore alias so old ciphertext cannot be reopened. Revocation or unpairing also
+retires the alias; incomplete unpairs retry that cleanup before removing the cache. The endpoint,
+encrypted key, model, and rules live in the app-private, no-backup pairing directory.
 
 Lists start **Hidden**. **Private only** permits reads by your own server, including Tailscale, and
 excludes those lists from any cloud-classified request; **All models** permits both classes. A list

@@ -47,6 +47,7 @@ class EngineHostTest {
     private val values = MapValues()
     private val sessions = SessionStore(values, FakeCipher())
     private var keysForgotten = 0
+    private val assistantKeysForgotten = mutableListOf<String>()
     private var ids = 0
 
     /** Pairing IDs in order: 000…01, 000…02, … */
@@ -66,11 +67,12 @@ class EngineHostTest {
      */
     private fun host(
         files: PairingFiles = PairingFiles(root),
+        forgetAssistant: (String) -> Boolean = { assistantKeysForgotten += it; true },
         open: (Session, File) -> TodoEngine = { _, db ->
             db.writeText("cache")
             fixtureEngine()
         },
-    ) = EngineHost(sessions, files, forgetKey = { keysForgotten++ }, newPairingId = ::nextId) { s, db ->
+    ) = EngineHost(sessions, files, forgetKey = { keysForgotten++ }, forgetAssistantKey = forgetAssistant, newPairingId = ::nextId) { s, db ->
         opened += db
         open(s, db)
     }
@@ -101,7 +103,9 @@ class EngineHostTest {
 
     @Test
     fun a_401_survives_an_offline_restart_without_showing_widget_rows_or_accepting_writes() = runTest {
-        fun realHost() = EngineHost(SessionStore(values, FakeCipher()), PairingFiles(root), forgetKey = {}, newPairingId = ::nextId) { s, db ->
+        val erased = java.util.concurrent.atomic.AtomicReference<String?>()
+        fun realHost() = EngineHost(SessionStore(values, FakeCipher()), PairingFiles(root), forgetKey = {},
+            forgetAssistantKey = { erased.set(it); true }, newPairingId = ::nextId) { s, db ->
             TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, true))
         }
         val server = HttpServer.create(InetSocketAddress("127.0.0.1", 0), 0)
@@ -123,6 +127,7 @@ class EngineHostTest {
                 })
                 engine.start()
                 assertTrue("the 401 must be recorded before restart", recorded.await(8, TimeUnit.SECONDS))
+                assertEquals(before.session.pairingId, erased.getAndSet(null))
                 assertEquals(WidgetData.SignedOut, widgetSnapshot(first, room, FIXTURE_NOW).data)
                 id
             } finally {
@@ -131,8 +136,10 @@ class EngineHostTest {
             }
         }
 
+        erased.set(null)
         val restarted = realHost().apply { load() }
         val ready = restarted.state.value as Host.Ready
+        assertEquals(before.session.pairingId, erased.get())
         val click = WidgetTaskAction(before.session.pairingId, WidgetEdit.Complete(task))
         ready.engine.use { engine ->
             assertEquals(before.session.pairingId, ready.session.pairingId)
@@ -246,6 +253,7 @@ class EngineHostTest {
         assertEquals(Host.SignedOut, host.state.value)
         assertNull(sessions.load())
         assertEquals(1, keysForgotten)
+        assertEquals(listOf(db.parentFile.name), assistantKeysForgotten)
         assertFalse(db.exists())
         assertEquals(emptyList<String>(), pairingDirs())
     }
@@ -289,6 +297,7 @@ class EngineHostTest {
         assertEquals(1, keysForgotten)
         assertEquals(emptyList<String>(), pairingDirs())
         assertEquals("the unpaired cache was never opened again", 1, opened.size)
+        assertEquals(listOf(id), assistantKeysForgotten)
     }
 
     /** Killed after the pairing was forgotten, before the data was removed: the next start removes it. */
@@ -301,7 +310,32 @@ class EngineHostTest {
         // The process dies here, the old cache still on disk.
         assertTrue(PairingFiles(root).cache(id).exists())
         host().load()
+        assertEquals(listOf(id), assistantKeysForgotten)
         assertEquals(emptyList<String>(), pairingDirs())
+    }
+
+    @Test
+    fun failed_assistant_key_cleanup_leaves_the_record_and_new_pairing_retries_before_removal() {
+        val files = PairingFiles(root)
+        var canForget = false
+        val host = host(files = files, forgetAssistant = { id ->
+            assertTrue(files.isSignedOut(id))
+            assertTrue(files.cache(id).exists())
+            assistantKeysForgotten += id
+            canForget
+        })
+        host.paired(approved)
+        val id = sessions.load()!!.pairingId
+        assertEquals(Unpaired.DataLeft, host.unpair { it.close() })
+        assertTrue(files.isSignedOut(id))
+        assertTrue(files.cache(id).exists())
+
+        canForget = true
+        host.paired(approved)
+        assertEquals(listOf(id, id), assistantKeysForgotten)
+        assertFalse(files.isSignedOut(id))
+        assertFalse(files.cache(id).exists())
+        (host.state.value as Host.Ready).engine.close()
     }
 
     /** Removal fails (a file still open): unpaired anyway, and a new pairing never sees the old cache. */

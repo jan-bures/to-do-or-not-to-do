@@ -50,6 +50,8 @@ class EngineHost(
     private val files: PairingFiles,
     /** Destroys the token's key once the pairing is forgotten. */
     private val forgetKey: () -> Unit,
+    /** Forgets the assistant key synchronously, before its pairing directory can be removed. */
+    private val forgetAssistantKey: (String) -> Boolean = { true },
     private val newPairingId: () -> String = { PairingFiles.newPairingId() },
     /** Debug-level log lines (never task content). */
     private val debug: (String) -> Unit = {},
@@ -77,14 +79,17 @@ class EngineHost(
             forgetKey()
             s = null
         }
-        files.sweep(keep = s?.pairingId)
-        s?.let(::open)
+        files.sweep(keep = s?.pairingId, beforeRemove = forgetAssistantKey)
+        s?.let {
+            if (sessions.signedOut(it.pairingId, unauthorized = false)) forgetAssistantKey(it.pairingId)
+            open(it)
+        }
     }
 
     /** A new pairing was approved: finish any earlier unpair, keep the pairing, then open its own cache. */
     fun paired(session: Session) {
         val s = session.copy(pairingId = newPairingId())
-        files.sweep(keep = null)
+        files.sweep(keep = null, beforeRemove = forgetAssistantKey)
         sessions.save(s)
         open(s)
     }
@@ -93,6 +98,7 @@ class EngineHost(
     internal fun status(ready: Host.Ready): SyncStatus {
         val sync = ready.engine.status()
         val signedOut = sessions.signedOut(ready.session.pairingId, sync.revoked)
+        if (signedOut) forgetAssistantKey(ready.session.pairingId)
         return if (signedOut == sync.revoked) sync else sync.copy(revoked = signedOut)
     }
 
@@ -129,13 +135,13 @@ class EngineHost(
         forgetKey()
         (current as? Host.Ready)?.engine?.let(close)
         _state.value = Host.SignedOut
-        return if (files.remove(session.pairingId)) Unpaired.Clean else Unpaired.DataLeft
+        return if (forgetAssistantKey(session.pairingId) && files.remove(session.pairingId)) Unpaired.Clean else Unpaired.DataLeft
     }
 
     private fun open(session: Session) {
         _state.value = try {
             val engine = openEngine(session, files.cacheToOpen(session.pairingId))
-            Host.Ready(session, engine, engine.recovered())
+            Host.Ready(session, engine, engine.recovered()).also { status(it) }
         } catch (e: FfiException) {
             Host.CantOpen(session, problem(e))
         } catch (e: IOException) {

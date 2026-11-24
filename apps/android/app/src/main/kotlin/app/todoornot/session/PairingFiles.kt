@@ -102,10 +102,10 @@ class PairingFiles(
 
     /**
      * Finishes earlier unpairs: removes the data of every pairing with a record, except [keep] (the current
-     * pairing). Returns the pairings whose data couldn't be removed yet. Does nothing when `pairings/`
-     * isn't safe to use.
+     * pairing). [beforeRemove] can hold a deletion until its credentials are gone. Returns the
+     * pairings whose data couldn't be removed yet. Does nothing when `pairings/` isn't safe to use.
      */
-    fun sweep(keep: String?): List<String> {
+    fun sweep(keep: String?, beforeRemove: (String) -> Boolean = { true }): List<String> {
         val dir = try {
             safePairings(create = false)
         } catch (_: IOException) {
@@ -114,7 +114,7 @@ class PairingFiles(
         val names = dir.list() ?: return emptyList()
         return names.mapNotNull { it.removeSuffix(SIGNED_OUT).takeIf { id -> id != it && isPairingId(id) } }
             .filter { it != keep && isRecord(record(it)) }
-            .filterNot(::remove)
+            .filterNot { beforeRemove(it) && remove(it) }
     }
 
     /** Only a plain file is a record: a link (even a dangling one) or a directory by that name isn't. */

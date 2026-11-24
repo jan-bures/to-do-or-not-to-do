@@ -51,6 +51,11 @@ impl AssistantPlatform for FixturePlatform {
         locked(&self.keys).get(&sealed).map(|key| key.to_vec())
     }
 
+    fn destroy_key(&self) -> bool {
+        locked(&self.keys).clear();
+        true
+    }
+
     fn vpn_addresses(&self) -> Vec<String> {
         self.addresses.clone()
     }
@@ -385,24 +390,64 @@ async fn bearer_is_sealed_bound_to_the_endpoint_and_never_sent_after_a_redirect(
         )
         .is_err()
     );
+    let first_seal = saved.sealed_key.unwrap();
+    reloaded
+        .save_server(Some(local.clone()), Some("fixture-key-replacement".into()))
+        .unwrap();
+    assert!(
+        ai.platform.open_key(first_seal).is_none(),
+        "the old seal must be unusable"
+    );
+    let replacement_seal = read_settings(&ai.path).unwrap().sealed_key.unwrap();
     // Replacing the destination never carries the key forward, even if the model is unchanged.
     reloaded.save_server(Some(server()), None).unwrap();
+    assert!(ai.platform.open_key(replacement_seal).is_none());
     assert!(!reloaded.panel(now()).has_api_key);
     reloaded
         .save_server(Some(local.clone()), Some(FIXTURE_BEARER.into()))
         .unwrap();
+    let remove_seal = read_settings(&ai.path).unwrap().sealed_key.unwrap();
     reloaded
         .save_server(Some(local.clone()), Some(String::new()))
         .unwrap();
     assert!(!reloaded.panel(now()).has_api_key);
+    assert!(ai.platform.open_key(remove_seal).is_none());
     reloaded
         .save_server(Some(local), Some(FIXTURE_BEARER.into()))
         .unwrap();
+    let disconnect_seal = read_settings(&ai.path).unwrap().sealed_key.unwrap();
     reloaded.save_server(None, None).unwrap();
+    assert!(ai.platform.open_key(disconnect_seal).is_none());
     assert!(read_settings(&ai.path).unwrap().sealed_key.is_none());
     assert!(!reloaded.panel(now()).has_api_key);
     origin.abort();
     target.abort();
+}
+
+#[test]
+fn failed_replacement_cannot_use_a_retired_key() {
+    let (ai, _temp) = host();
+    ai.save_server(Some(server()), Some(FIXTURE_BEARER.into()))
+        .unwrap();
+    let seal = read_settings(&ai.path).unwrap().sealed_key.unwrap();
+    assert!(
+        ai.save_server(Some(server()), Some("invalid\nkey".into()))
+            .is_err()
+    );
+    assert!(
+        ai.platform.open_key(seal.clone()).is_some(),
+        "validate before destroying the alias"
+    );
+    fs::create_dir(ai.path.with_extension("json.new")).unwrap();
+    assert!(
+        ai.save_server(Some(server()), Some("fixture-key-replacement".into()))
+            .is_err()
+    );
+    assert!(ai.platform.open_key(seal).is_none());
+    assert!(
+        ai.panel(now()).destination.is_none(),
+        "do not keep the old authenticated transport"
+    );
 }
 
 #[tokio::test]

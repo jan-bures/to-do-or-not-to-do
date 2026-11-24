@@ -92,6 +92,7 @@ class AppGraph(private val app: Context) {
         sessions,
         pairingFiles,
         forgetKey = cipher::destroy,
+        forgetAssistantKey = { AndroidAssistantPlatform.forgetKey(it) },
         debug = { Log.d("EngineHost", it) },
     ) { s, db ->
         TodoEngine.open(EngineConfig(s.server, s.token, s.deviceId, db.absolutePath, Cleartext.allowLoopbackHttp))
@@ -425,10 +426,7 @@ class AppGraph(private val app: Context) {
             Unpaired.Clean, Unpaired.DataLeft -> {
                 session?.let {
                     PushWork.cancel(app, it.pairingId)
-                    scope.launch(Dispatchers.IO) {
-                        AndroidAssistantPlatform.forgetKey(it.pairingId)
-                        push.unpair(it)
-                    }
+                    scope.launch(Dispatchers.IO) { push.unpair(it) }
                 }
                 val previousCleanup = transferCleanup
                 transferCleanup = scope.launch(Dispatchers.IO) {

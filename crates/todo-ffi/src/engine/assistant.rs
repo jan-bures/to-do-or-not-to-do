@@ -117,6 +117,8 @@ pub struct AssistantServer {
 pub trait AssistantPlatform: Send + Sync {
     fn seal_key(&self, plain: Vec<u8>) -> Option<Vec<u8>>;
     fn open_key(&self, sealed: Vec<u8>) -> Option<Vec<u8>>;
+    /// Retire the alias before sealing a replacement or discarding the credential.
+    fn destroy_key(&self) -> bool;
     fn vpn_addresses(&self) -> Vec<String>;
 }
 
@@ -514,43 +516,65 @@ impl AndroidAssistant {
             .as_ref()
             .zip(server.as_ref())
             .is_some_and(|(old, new)| old.address == new.address);
-        let kept_key = if same_address {
-            session.settings.sealed_key.as_deref()
+        let kept_key = session
+            .settings
+            .sealed_key
+            .clone()
+            .filter(|_| same_address && replacement.is_none());
+        let retire =
+            replacement.is_some() || (!same_address && session.settings.sealed_key.is_some());
+        let saved_key = if let Some(server) = &server {
+            open_key(&*self.platform, &server.address, kept_key.as_deref())?
         } else {
-            None
+            Zeroizing::default()
         };
-        let (provider, sealed_key) = if let Some(server) = &server {
-            let saved_key = if replacement.is_none() {
-                open_key(&*self.platform, &server.address, kept_key)?
-            } else {
-                Zeroizing::default()
-            };
-            let key = replacement
-                .as_ref()
-                .map_or(saved_key.as_str(), |key| key.trim());
-            let provider = build(server, key, None, self.platform.clone())?;
-            let sealed_key = if replacement.is_some() {
-                seal_key(&*self.platform, &server.address, key)?
-            } else {
-                kept_key.map(<[u8]>::to_vec)
-            };
-            (Some(provider), sealed_key)
-        } else {
-            (None, None)
-        };
-        let settings = Settings {
-            server,
-            sealed_key,
-            support: None,
-            access: if session.settings.server.is_some() && !same_address {
-                AccessRules::default()
-            } else {
-                session.settings.access.clone()
-            },
-        };
+        let key = replacement
+            .as_ref()
+            .map_or(saved_key.as_str(), |key| key.trim());
+        // Validate before retiring the old seal. After retirement a write error must fail closed,
+        // never keep sending with the previously decrypted key.
+        let provider = server
+            .as_ref()
+            .map(|s| build(s, key, None, self.platform.clone()))
+            .transpose()?;
         self.chat.cancel();
-        save_settings(&self.path, &settings)?;
         stop_check(&mut session);
+        let commit = || -> Result<Settings, FfiError> {
+            if retire && !self.platform.destroy_key() {
+                return Err(invalid("Couldn't retire the saved API key."));
+            }
+            let sealed_key = match (&server, &replacement) {
+                (Some(server), Some(_)) => seal_key(&*self.platform, &server.address, key)?,
+                _ => kept_key,
+            };
+            let settings = Settings {
+                server,
+                sealed_key,
+                support: None,
+                access: if session.settings.server.is_some() && !same_address {
+                    AccessRules::default()
+                } else {
+                    session.settings.access.clone()
+                },
+            };
+            save_settings(&self.path, &settings)?;
+            Ok(settings)
+        };
+        let settings = match commit() {
+            Ok(settings) => settings,
+            Err(error) => {
+                if retire {
+                    // Also discard any new seal from an interrupted write.
+                    self.platform.destroy_key();
+                    session.provider = None;
+                    session.connection = AssistantConnection::Untested;
+                    session.problem =
+                        Some("Check the saved server and reenter or remove its API key.".into());
+                    self.install(&session);
+                }
+                return Err(error);
+            }
+        };
         session.settings = settings;
         session.provider = provider;
         session.connection = AssistantConnection::Untested;

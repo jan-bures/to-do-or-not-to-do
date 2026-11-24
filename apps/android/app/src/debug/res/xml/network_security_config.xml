@@ -1,8 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Debug builds only: plain http to a server on this device (an adb reverse to a throwaway server on the
-  computer, see docs/android.md). Everything else stays HTTPS only, as in release, apart from the
-  certificate revocation hosts explained in the main config.
+  computer, see docs/android.md). The platform stack otherwise requires HTTPS except for the
+  certificate revocation hosts explained in the main config. The assistant uses Rust reqwest, outside
+  this config; Rust enforces its loopback and Tailscale HTTP exceptions.
 -->
 <network-security-config>
     <base-config cleartextTrafficPermitted="false" />

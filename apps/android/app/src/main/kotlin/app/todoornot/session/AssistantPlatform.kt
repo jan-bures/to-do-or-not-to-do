@@ -6,22 +6,24 @@ import android.net.NetworkCapabilities
 import app.todoornot.core.AssistantPlatform
 
 /** No task data or pairing token ever reaches the model transport through this bridge. */
-internal class AndroidAssistantPlatform(context: Context, pairingId: String) : AssistantPlatform {
+internal class AndroidAssistantPlatform(context: Context, private val pairingId: String) : AssistantPlatform {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val cipher = KeystoreCipher(alias(pairingId))
 
     override fun sealKey(plain: ByteArray): ByteArray? = try {
-        cipher.encrypt(plain)
-    } catch (_: Exception) {
-        null
+        synchronized(keyLock) {
+            if (pairingId in signedOut) null else runCatching { cipher.encrypt(plain) }.getOrNull()
+        }
     } finally {
         plain.fill(0)
     }
 
-    override fun openKey(sealed: ByteArray): ByteArray? = try {
-        cipher.decrypt(sealed)
-    } catch (_: Exception) {
-        null
+    override fun openKey(sealed: ByteArray): ByteArray? = synchronized(keyLock) {
+        if (pairingId in signedOut) null else runCatching { cipher.decrypt(sealed) }.getOrNull()
+    }
+
+    override fun destroyKey(): Boolean = synchronized(keyLock) {
+        pairingId !in signedOut && destroy(cipher)
     }
 
     // Check the VPN available to this app, not just the presence of a Tailscale install or any
@@ -40,12 +42,16 @@ internal class AndroidAssistantPlatform(context: Context, pairingId: String) : A
     }
 
     companion object {
+        private val keyLock = Any()
+        // Sign-out and key operations share a lock so an in-flight save cannot recreate a revoked key.
+        // Cache successes; retry a failed deletion on the next signed-out status or sweep.
+        private val signedOut = mutableMapOf<String, Boolean>()
         private fun alias(pairingId: String) = "assistant-api-key-$pairingId"
+        private fun destroy(cipher: KeystoreCipher) = runCatching { cipher.destroy() }.isSuccess
 
-        /** On unpair, even if the OS couldn't remove the old pairing's directory. */
-        fun forgetKey(pairingId: String) {
-            // The device can already have erased the Keystore. Do not log credential errors.
-            runCatching { KeystoreCipher(alias(pairingId)).destroy() }
+        fun forgetKey(pairingId: String): Boolean = synchronized(keyLock) {
+            if (signedOut[pairingId] == true) true
+            else destroy(KeystoreCipher(alias(pairingId))).also { signedOut[pairingId] = it }
         }
     }
 }
