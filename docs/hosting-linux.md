@@ -230,6 +230,51 @@ Firebase's free Spark plan. No Firebase configuration or credentials go in the A
    Google's OAuth and FCM endpoints. Google receives installation tokens and sequence hints, not task
    content. Treat the database and backups as private: they contain the registration tokens.
 
+### Web Push reminders
+
+Optional, independent of Android FCM. Deploy a release with Web Push and its bundled web app **before**
+adding the new config section. An older binary rejects the unknown section. On the VM:
+
+1. As the service account, generate a persistent VAPID key outside the repo. The command creates a new
+   owner-only file (mode 0600) and won't overwrite one. If the file already exists, keep using it.
+
+   ```sh
+   sudo -u todo /opt/todo/current/todo-server web-push-key --out /var/lib/todo/web-push.secret
+   sudoedit /etc/todo/server.toml
+   ```
+
+2. Keep `[web] dir = "/opt/todo/current/web"` and the HTTPS `public_origin`. Add:
+
+   ```toml
+   [web_push]
+   vapid_key_file = "/var/lib/todo/web-push.secret"
+   ```
+
+   Save, then run:
+
+   ```sh
+   sudo systemctl restart todo-server
+   sudo systemctl is-active todo-server
+   curl -fsS http://127.0.0.1:47320/health
+   ```
+
+3. Sign in at `https://todo.example.com/app`. In **Settings**, choose **Turn on background reminders** and
+   allow notifications. Choose **Send test notification**. Finally, schedule a reminder a few minutes
+   ahead and close the app tab without signing out. On iOS/iPadOS, install the web app from Safari with
+   **Add to Home Screen** and opt in from the installed app.
+
+Allow outbound HTTPS to the supported browser push services (Google FCM, Mozilla autopush, Apple Web Push,
+Windows WNS); no inbound port, cloud account or Firebase credentials are needed. The push body is encrypted
+and contains only a task ID and reminder time. Session expiry or sign-out ends delivery rather than keeping
+sessions alive in the background. With the default limits, even an opted-in browser stops receiving push after
+one hour idle or 12 hours since sign-in; sign in and turn on background reminders again to resume.
+
+Back up the VAPID file separately in a password manager or other private secret store; the normal database
+backup does not include it. Treat database copies as private: they also hold push endpoints and subscription
+keys. Changing the VAPID key requires users to opt in again. To disable push, remove `[web_push]` and restart.
+For a rollback to a pre-Web-Push binary, also restore the pre-deploy database using the normal recovery
+procedure: the old binary does not recognize the new migration.
+
 ## Deploy
 
 ### The build host

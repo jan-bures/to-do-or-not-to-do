@@ -80,6 +80,9 @@ for (const [from, to] of [
   [join(brand, "generated", "icon-16.png"), "icon-16.png"],
   [join(brand, "generated", "icon-32.png"), "icon-32.png"],
   [join(brand, "generated", "apple-touch-icon.png"), "apple-touch-icon.png"],
+  [join(brand, "generated", "icon-192.png"), "icon-192.png"],
+  [join(brand, "generated", "icon-512.png"), "icon-512.png"],
+  [join(brand, "generated", "maskable-512.png"), "maskable-512.png"],
 ]) {
   copyFileSync(from, join(out, "brand", to));
 }

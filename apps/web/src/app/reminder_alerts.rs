@@ -1,9 +1,9 @@
-//! Deliver in this page only: a system notification when possible, otherwise the shared toast view.
+//! Reminder settings and in-tab fallback. The service worker shares our occurrence claims.
 
 use super::{Ctx, ctx, icon};
 use crate::model::RoomId;
 use crate::platform;
-use crate::reminder_alerts::{Permission, timeout_ms};
+use crate::reminder_alerts::{Background, Permission, timeout_ms};
 use js_sys::{Function, Promise};
 use leptos::leptos_dom::helpers::{TimeoutHandle, set_timeout_with_handle};
 use leptos::prelude::*;
@@ -24,12 +24,26 @@ extern "C" {
     #[wasm_bindgen(js_name = showReminderNotification)]
     fn notify(title: &str, task: &str, open: &Function) -> bool;
     #[wasm_bindgen(js_name = claimReminder)]
-    fn claim(key: &str, at: f64, cutoff: f64, eligible: &Function) -> Promise;
+    fn claim(key: &str, at: f64, cutoff: f64, eligible: &Function, legacy: &str) -> Promise;
+    #[wasm_bindgen(js_name = webPushState)]
+    fn web_push_state() -> Promise;
+    #[wasm_bindgen(js_name = enableWebPush)]
+    fn enable_web_push() -> Promise;
+    #[wasm_bindgen(js_name = disableWebPush)]
+    fn disable_web_push() -> Promise;
+    #[wasm_bindgen(js_name = testWebPush)]
+    fn test_web_push() -> Promise;
+    #[wasm_bindgen(js_name = unsubscribeForSignOut)]
+    pub(super) fn unsubscribe_for_sign_out() -> Promise;
 }
 
 #[derive(Clone, Copy)]
 pub(super) struct Alerts {
     permission: RwSignal<Permission>,
+    background: RwSignal<Background>,
+    checking: RwSignal<bool>,
+    working: RwSignal<bool>,
+    feedback: RwSignal<&'static str>,
     queue: RwSignal<Vec<reminder::Alarm>>,
 }
 
@@ -37,6 +51,10 @@ impl Alerts {
     pub(super) fn new() -> Self {
         Self {
             permission: RwSignal::new(Self::read_permission()),
+            background: RwSignal::new(Background::Unavailable),
+            checking: RwSignal::new(false),
+            working: RwSignal::new(false),
+            feedback: RwSignal::new(""),
             queue: RwSignal::new(Vec::new()),
         }
     }
@@ -49,6 +67,57 @@ impl Alerts {
         self.permission.set(Self::read_permission());
     }
 
+    pub(super) fn refresh_background(self) {
+        if self.checking.get_untracked() || self.working.get_untracked() {
+            return;
+        }
+        self.checking.set(true);
+        leptos::task::spawn_local(async move {
+            self.background.set(read_background().await);
+            self.checking.set(false);
+        });
+    }
+
+    fn background_action(self, action: BackgroundAction) {
+        if self.checking.get_untracked() || self.working.get_untracked() {
+            return;
+        }
+        // Subscribe is called in the event handler, before handing off to the async task.
+        let request = match action {
+            BackgroundAction::Enable => enable_web_push(),
+            BackgroundAction::Disable => disable_web_push(),
+            BackgroundAction::Test => test_web_push(),
+        };
+        self.working.set(true);
+        self.feedback.set("");
+        leptos::task::spawn_local(async move {
+            let result = JsFuture::from(request)
+                .await
+                .ok()
+                .and_then(|v| v.as_string());
+            self.feedback.set(match (action, result.as_deref()) {
+                (BackgroundAction::Test, Some("ok")) => "Test sent.",
+                (BackgroundAction::Test, Some("wait")) => {
+                    "Wait 30 seconds before sending another test."
+                }
+                (BackgroundAction::Test, Some("expired")) => {
+                    "Subscription expired. Turn background reminders on again."
+                }
+                (BackgroundAction::Test, _) => "Couldn’t send the test notification.",
+                (_, Some("ok" | "blocked")) => "",
+                (BackgroundAction::Enable, _) => "Couldn’t turn on background reminders.",
+                (BackgroundAction::Disable, _) => "Couldn’t turn off background reminders.",
+            });
+            let next = read_background().await;
+            if matches!(action, BackgroundAction::Test) && next != Background::On {
+                platform::focus("reminder-notification-setting");
+            }
+            self.background.set(next);
+            self.refresh_permission();
+            self.working.set(false);
+        });
+    }
+
     pub(super) fn first(self) -> Option<reminder::Alarm> {
         self.queue.with(|q| q.first().copied())
     }
@@ -58,14 +127,30 @@ impl Alerts {
     }
 }
 
+#[derive(Clone, Copy)]
+enum BackgroundAction {
+    Enable,
+    Disable,
+    Test,
+}
+
+async fn read_background() -> Background {
+    JsFuture::from(web_push_state())
+        .await
+        .ok()
+        .and_then(|v| v.as_string())
+        .as_deref()
+        .map_or(Background::Unavailable, Background::from_browser)
+}
+
 pub(super) fn running(c: Ctx) -> bool {
     c.sync
         .with(|s| s.reminders_ready && !s.signed_out && !s.read_only)
 }
 
-fn can_deliver() -> bool {
-    Alerts::read_permission() == Permission::Granted
-        || document().visibility_state() == web_sys::VisibilityState::Visible
+fn can_deliver(background: Background) -> bool {
+    document().visibility_state() == web_sys::VisibilityState::Visible
+        || (background != Background::On && Alerts::read_permission() == Permission::Granted)
 }
 
 fn eligible(c: Ctx, alarm: reminder::Alarm) -> bool {
@@ -83,8 +168,13 @@ pub(super) fn start(c: Ctx) {
         c.reminder_alerts.refresh_permission();
         tick.update(|t| *t += 1);
     };
-    platform::on_wake(wake);
-    let _focus = window_event_listener(leptos::ev::focus, move |_| wake());
+    let resume = move || {
+        wake();
+        c.reminder_alerts.refresh_background();
+    };
+    c.reminder_alerts.refresh_background();
+    platform::on_wake(resume);
+    let _focus = window_event_listener(leptos::ev::focus, move |_| resume());
     let busy = StoredValue::new(BTreeSet::new());
     let delivered = StoredValue::new(BTreeSet::new());
     // A single handler per page. The title is the only value passed to the Notification API.
@@ -106,34 +196,36 @@ pub(super) fn start(c: Ctx) {
         }
         let now = platform::now().at;
         let cutoff = reminder::alert_cutoff(now);
-        let (due, next) = c.state.with(|state| {
+        let background = c.reminder_alerts.background.get();
+        let (due, mut next) = c.state.with(|state| {
             c.reminder_alerts
                 .queue
                 .update(|q| q.retain(|alarm| alarm.is_current(state)));
             delivered.update_value(|keys| keys.retain(|key: &reminder::AlertKey| key.at >= cutoff));
             delivered.with_value(|keys| reminder::alert_plan(state, now, |key| keys.contains(&key)))
         });
-        if let Some(next) = next {
-            timer.set_value(
-                set_timeout_with_handle(wake, Duration::from_millis(timeout_ms(next, now))).ok(),
-            );
-        }
-        // Leave fallback claims to a visible tab. A background tab can still show a native alert.
-        if !can_deliver() {
-            return;
-        }
-        for alarm in due {
+        let deliver = can_deliver(background);
+        for alarm in due.into_iter().filter(|_| deliver) {
+            let fallback = background.fallback_at(alarm.at);
+            if fallback > now {
+                next = Some(next.map_or(fallback, |next| next.min(fallback)));
+                continue;
+            }
             let key = alarm.key();
             if busy.try_update_value(|keys| keys.insert(key)) == Some(true) {
                 leptos::task::spawn_local(async move {
                     let check = Closure::<dyn Fn() -> bool>::new(move || {
-                        eligible(c, alarm) && can_deliver()
+                        let background = c.reminder_alerts.background.get_untracked();
+                        eligible(c, alarm)
+                            && can_deliver(background)
+                            && background.fallback_at(alarm.at) <= platform::now().at
                     });
                     let claim = JsFuture::from(claim(
-                        &format!("{}@{}", key.reminder, key.at),
+                        &format!("{}@{}", alarm.task, alarm.at.as_millisecond()),
                         alarm.at.as_millisecond() as f64,
                         cutoff.as_millisecond() as f64,
                         check.as_ref().unchecked_ref(),
+                        &format!("{}@{}", key.reminder, key.at),
                     ))
                     .await;
                     busy.update_value(|keys| {
@@ -157,9 +249,11 @@ pub(super) fn start(c: Ctx) {
                                     s.tasks.get(&alarm.task).map(|t| t.title.clone())
                                 })
                             {
-                                if !open.with_value(|open| {
-                                    notify(&title, &alarm.task.to_string(), open)
-                                }) {
+                                if c.reminder_alerts.background.get_untracked() == Background::On
+                                    || !open.with_value(|open| {
+                                        notify(&title, &alarm.task.to_string(), open)
+                                    })
+                                {
                                     c.reminder_alerts.queue.update(|q| q.push(alarm));
                                 }
                                 c.reminder_alerts.refresh_permission();
@@ -169,6 +263,11 @@ pub(super) fn start(c: Ctx) {
                     }
                 });
             }
+        }
+        if let Some(next) = next {
+            timer.set_value(
+                set_timeout_with_handle(wake, Duration::from_millis(timeout_ms(next, now))).ok(),
+            );
         }
     });
 }
@@ -216,28 +315,54 @@ fn finish(c: Ctx, alarm: reminder::Alarm, snooze: bool) {
 #[component]
 pub(super) fn Setting() -> impl IntoView {
     let alerts = ctx().reminder_alerts;
-    let can_ask = move || alerts.permission.get() == Permission::NotAsked;
+    let can_ask = move || {
+        alerts.background.get() == Background::Unavailable
+            && alerts.permission.get() == Permission::NotAsked
+    };
+    let busy = move || alerts.checking.get() || alerts.working.get();
+    let active = move || alerts.background.get() == Background::On;
     view! {
         <div class="settings-reminders" role="none">
             <button type="button" id="reminder-notification-setting" role="menuitem" tabindex="-1"
-                aria-describedby="reminder-notification-description" aria-disabled=move || (!can_ask()).to_string()
+                aria-describedby="reminder-notification-description"
+                aria-disabled=move || (busy() || !(can_ask() || matches!(alerts.background.get(), Background::Off | Background::On))).to_string()
                 on:click=move |ev| {
-                    if !ev.is_trusted() { return; }
-                    alerts.refresh_permission();
-                    if alerts.permission.get_untracked() == Permission::NotAsked {
-                        let request = request_permission();
-                        leptos::task::spawn_local(async move {
-                            let _ = JsFuture::from(request).await;
-                            alerts.refresh_permission();
-                        });
+                    if !ev.is_trusted() || untrack(busy) { return; }
+                    match alerts.background.get_untracked() {
+                        Background::Off => alerts.background_action(BackgroundAction::Enable),
+                        Background::On => alerts.background_action(BackgroundAction::Disable),
+                        Background::Unavailable if untrack(can_ask) => {
+                            let request = request_permission();
+                            leptos::task::spawn_local(async move {
+                                let _ = JsFuture::from(request).await;
+                                alerts.refresh_permission();
+                            });
+                        }
+                        _ => {}
                     }
                 }>
                 {icon(Icon::Bell)}
-                {move || if can_ask() { "Enable reminder notifications" } else { "Reminder notifications" }}
+                {move || match alerts.background.get() {
+                    Background::Off => "Turn on background reminders",
+                    Background::On => "Turn off background reminders",
+                    Background::Blocked => "Background reminders",
+                    Background::Unavailable if can_ask() => "Enable reminder notifications",
+                    Background::Unavailable => "Reminder notifications",
+                }}
             </button>
             <p id="reminder-notification-description" role="status">
-                {move || alerts.permission.get().description()}
+                {move || alerts.background.get().description(alerts.permission.get())}
             </p>
+            <Show when=active>
+                <button type="button" id="reminder-test-setting" role="menuitem" tabindex="-1"
+                    aria-disabled=move || busy().to_string()
+                    on:click=move |ev| {
+                        if ev.is_trusted() { alerts.background_action(BackgroundAction::Test); }
+                    }>{icon(Icon::ArrowUp)}"Send test notification"</button>
+            </Show>
+            <Show when=move || !alerts.feedback.get().is_empty()>
+                <p role="status">{move || alerts.feedback.get()}</p>
+            </Show>
         </div>
     }
 }

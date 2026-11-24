@@ -28,6 +28,7 @@ fn build() -> TempDir {
     // The build's gzipped copy (the server sends it as is; the bytes needn't be real gzip here).
     std::fs::write(dir.path().join("todo_web_bg.wasm.gz"), b"gzipped").unwrap();
     std::fs::write(dir.path().join("boot.js"), "import('./todo_web.js');").unwrap();
+    std::fs::write(dir.path().join("reminder-worker.js"), "// Worker fixture").unwrap();
     std::fs::create_dir(dir.path().join("fonts")).unwrap();
     std::fs::write(dir.path().join("fonts").join("Mono.ttf"), b"font").unwrap();
     std::fs::write(dir.path().join("README.md"), b"not served").unwrap();
@@ -74,6 +75,119 @@ async fn api(
         headers,
         serde_json::from_str(&text).unwrap_or(Value::String(text)),
     )
+}
+
+#[tokio::test]
+async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+    use std::sync::atomic::Ordering;
+
+    let (env, _) = env_with_app().await;
+    let b = env.owner().await;
+    let config = "/api/v1/web-push";
+    assert_eq!(
+        api(&b, Method::GET, config, b.csrf.as_deref(), None, None)
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api(&b, Method::GET, config, None, None, None).await.0,
+        StatusCode::FORBIDDEN
+    );
+    drop(env);
+
+    let dist = build();
+    let key = dist.path().join("test.secret");
+    todo_server::write_vapid_key(&key).unwrap();
+    let env = Env::start_with(|cfg| {
+        cfg.web_push.vapid_key_file = Some(key);
+        cfg.web.dir = Some(dist.path().to_owned());
+    })
+    .await;
+    let b = env.owner().await;
+    let csrf = b.csrf.as_deref();
+    let (s, _, key) = api(&b, Method::GET, config, csrf, None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(key["public_key"].as_str().unwrap().len(), 87);
+    assert_eq!(
+        env.api(Method::GET, config, TOKEN_A, None).await.status,
+        StatusCode::NOT_FOUND
+    );
+    let sub = json!({
+        "endpoint": "https://fcm.googleapis.com/fcm/send/fixture",
+        "keys": { "p256dh": key["public_key"], "auth": URL_SAFE_NO_PAD.encode([0_u8; 16]) }
+    });
+    assert_eq!(
+        api(&b, Method::PUT, config, csrf, None, Some(sub.clone()))
+            .await
+            .0,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        api(&b, Method::PUT, config, csrf, Some(SITE), Some(sub.clone()))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
+    let endpoint = json!({"endpoint": sub["endpoint"]});
+    let status = format!("{config}/status");
+    assert_eq!(
+        api(
+            &b,
+            Method::POST,
+            &status,
+            csrf,
+            Some(SITE),
+            Some(endpoint.clone())
+        )
+        .await
+        .2,
+        json!({"active":true})
+    );
+    assert_eq!(
+        api(
+            &b,
+            Method::DELETE,
+            config,
+            csrf,
+            Some(SITE),
+            Some(endpoint.clone())
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    assert_eq!(
+        api(&b, Method::POST, &status, csrf, Some(SITE), Some(endpoint))
+            .await
+            .2,
+        json!({"active":false})
+    );
+
+    let list = env.t.create_list("Errands").await;
+    let task = id();
+    assert_eq!(env.command(TOKEN_A, json!({"cmd":"create_task", "id":task, "list":list, "title":"Private title", "notes":"Private notes"})).await.status, StatusCode::OK);
+    let task_path = format!("{config}/tasks/{task}");
+    env.offset.store(50 * 60 * 1000, Ordering::SeqCst);
+    let (s, headers, body) = api(&b, Method::GET, &task_path, csrf, None, None).await;
+    assert_eq!(s, StatusCode::OK, "{body}");
+    assert_eq!(headers[CACHE_CONTROL], "no-store, no-transform");
+    assert_eq!(body, json!({ "title": "Private title" }));
+    let (s, headers, _) = api(&b, Method::GET, "/app/reminder-worker.js", None, None, None).await;
+    assert_eq!(s, StatusCode::OK);
+    assert_eq!(headers["service-worker-allowed"], "/app");
+    assert!(
+        headers[CONTENT_SECURITY_POLICY]
+            .to_str()
+            .unwrap()
+            .contains("connect-src 'self'")
+    );
+    env.offset.store(61 * 60 * 1000, Ordering::SeqCst);
+    assert_eq!(
+        api(&b, Method::GET, &task_path, csrf, None, None).await.0,
+        StatusCode::UNAUTHORIZED
+    );
 }
 
 fn create_list(name: &str) -> Value {

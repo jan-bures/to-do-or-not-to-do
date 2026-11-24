@@ -226,6 +226,7 @@ pub struct Engine {
     readers: Mutex<Vec<Connection>>,
     live: broadcast::Sender<Arc<LiveEvent>>,
     push_wakes: OnceLock<Arc<crate::push::Inbox>>,
+    web_push_wakes: OnceLock<Arc<tokio::sync::Notify>>,
     head: AtomicU64,
     /// The log epoch (see [`db::log_epoch`]).
     epoch: Uuid,
@@ -449,6 +450,7 @@ impl Engine {
             readers: Mutex::new(Vec::new()),
             live,
             push_wakes: OnceLock::new(),
+            web_push_wakes: OnceLock::new(),
             head: AtomicU64::new(head),
             epoch,
             clock,
@@ -511,6 +513,10 @@ impl Engine {
     /// Enables coalescing of committed reminder changes for the push worker.
     pub(crate) fn enable_push(&self) -> Arc<crate::push::Inbox> {
         self.push_wakes.get_or_init(Arc::default).clone()
+    }
+
+    pub(crate) fn enable_web_push(&self) -> Arc<tokio::sync::Notify> {
+        self.web_push_wakes.get_or_init(Arc::default).clone()
     }
 
     /// Subscribes to events committed from now on.
@@ -1267,21 +1273,22 @@ impl Engine {
                 *gone = Arc::new(next_gone);
             }
         }
-        let wake = self
-            .push_wakes
-            .get()
-            .zip(result.events.last())
-            .filter(|_| crate::push::affects_alarms(base, &next, &events));
+        let (push, web_push) = (self.push_wakes.get(), self.web_push_wakes.get());
+        let alarms_changed = (push.is_some() || web_push.is_some())
+            && crate::push::affects_alarms(base, &next, &events);
         *self.state.write().unwrap_or_else(PoisonError::into_inner) = Arc::new(next);
         if let Some(last) = result.events.last() {
             self.head.store(last.seq, Ordering::Release);
         }
-        if let Some((sender, last)) = wake {
+        if alarms_changed && let Some((sender, last)) = push.zip(result.events.last()) {
             let origin = match p.actor {
                 Actor::Owner { device } => Some(device.clone()),
                 _ => None,
             };
             sender.push(origin, last.seq);
+        }
+        if alarms_changed && let Some(wake) = web_push {
+            wake.notify_one();
         }
         let command_len = Some(u32::try_from(events.len()).unwrap_or(u32::MAX));
         for (i, (event, scope)) in events.into_iter().zip(scopes).enumerate() {

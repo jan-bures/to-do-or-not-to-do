@@ -33,6 +33,8 @@ pub mod engine;
 pub mod ingest;
 pub mod mcp;
 mod push;
+mod web_push;
+pub use web_push::write_vapid_key;
 pub mod ratelimit;
 mod releases;
 pub mod scope;

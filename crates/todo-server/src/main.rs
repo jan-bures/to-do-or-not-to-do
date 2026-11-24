@@ -47,6 +47,12 @@ enum Cmd {
     /// Check the config and print the absolute path of the database a server started in this
     /// working directory would open, then exit. Deploy scripts use it to find what to back up.
     DatabasePath,
+    /// Generate a Web Push VAPID key in a new owner-only file. Does not require a running server.
+    WebPushKey {
+        /// Path outside the repo. The file must not already exist.
+        #[arg(long)]
+        out: PathBuf,
+    },
     /// Make a new token for the local admin API: write it to a new owner-only file and print the
     /// config lines with its hash. Works while the server runs (it touches neither the database nor
     /// the config); restart the server after changing the config.
@@ -80,6 +86,13 @@ fn main() -> anyhow::Result<()> {
             let token = token.trim();
             anyhow::ensure!(!token.is_empty(), "no token on stdin");
             println!("{}", todo_server::auth::hash_token(token));
+            Ok(())
+        }
+        Cmd::WebPushKey { out } => {
+            todo_server::write_vapid_key(&out)?;
+            println!(
+                "Created an owner-only VAPID key. Set web_push.vapid_key_file and restart the server."
+            );
             Ok(())
         }
         Cmd::AdminToken { out } => {

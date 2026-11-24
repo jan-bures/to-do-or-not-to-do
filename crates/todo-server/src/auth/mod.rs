@@ -166,8 +166,26 @@ pub const WEB_DEVICE: &str = "web";
 /// a missing or wrong CSRF token or origin is 403 `csrf`.
 pub async fn require_auth_or_session(
     State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    authenticate_session(state, req, next, true).await
+}
+
+/// A service worker may read a reminder title, but that isn't owner activity.
+pub(crate) async fn require_session_without_touch(
+    State(state): State<AppState>,
+    req: Request,
+    next: Next,
+) -> Response {
+    authenticate_session(state, req, next, false).await
+}
+
+async fn authenticate_session(
+    state: AppState,
     mut req: Request,
     next: Next,
+    touch: bool,
 ) -> Response {
     if req.headers().contains_key(AUTHORIZATION) {
         return require_auth(State(state), req, next).await;
@@ -208,14 +226,16 @@ pub async fn require_auth_or_session(
     {
         return e.into_response();
     }
-    let touched = row.clone();
-    match session::blocking(&state.authsvc, move |svc| svc.touch_session(&touched)).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => {
-            tracing::error!(error = %e, "session touch failed");
-            return ApiError::internal().into_response();
+    if touch {
+        let touched = row.clone();
+        match session::blocking(&state.authsvc, move |svc| svc.touch_session(&touched)).await {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => {
+                tracing::error!(error = %e, "session touch failed");
+                return ApiError::internal().into_response();
+            }
+            Err(e) => return e.into_response(),
         }
-        Err(e) => return e.into_response(),
     }
     let Ok(device) = DeviceId::new(WEB_DEVICE) else {
         return ApiError::internal().into_response();

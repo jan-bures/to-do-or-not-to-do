@@ -135,14 +135,25 @@ impl FromRequestParts<AppState> for ClientIp {
     }
 }
 
-async fn lookup(parts: &Parts, state: &AppState) -> Result<Option<OwnerSession>, ApiError> {
+async fn lookup(
+    parts: &Parts,
+    state: &AppState,
+    touch: bool,
+) -> Result<Option<OwnerSession>, ApiError> {
     let ip = state
         .authsvc
         .client_ip(&parts.headers, peer_ip(&parts.extensions));
     let Some(cookie) = cookie_value(&parts.headers) else {
         return Ok(None);
     };
-    let row = blocking(&state.authsvc, move |svc| svc.session(&cookie)).await??;
+    let row = blocking(&state.authsvc, move |svc| {
+        if touch {
+            svc.session(&cookie)
+        } else {
+            svc.peek_session(&cookie)
+        }
+    })
+    .await??;
     Ok(row.map(|row| OwnerSession { row, ip }))
 }
 
@@ -167,7 +178,7 @@ impl FromRequestParts<AppState> for MaybeSession {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        lookup(parts, state)
+        lookup(parts, state, true)
             .await
             .map(Self)
             .map_err(IntoResponse::into_response)
@@ -181,7 +192,9 @@ impl FromRequestParts<AppState> for OwnerSession {
         parts: &mut Parts,
         state: &AppState,
     ) -> Result<Self, Self::Rejection> {
-        match lookup(parts, state).await {
+        // Browser-driven service-worker updates must not keep a closed app's session alive.
+        let touch = !crate::web::spa::is_worker_script(parts.uri.path());
+        match lookup(parts, state, touch).await {
             Ok(Some(s)) => Ok(s),
             Ok(None) if parts.method == Method::GET => {
                 let next = parts.uri.path_and_query().map_or("/admin", |p| p.as_str());

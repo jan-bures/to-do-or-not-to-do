@@ -4,6 +4,7 @@
 import { expect, test } from "@playwright/test";
 import { chooseNew, dragOver, open, openDeviceSettings, openRows, pickup, watch } from "./helpers.mjs";
 import { beforeReminder, mockNotifications, reminderToast, REMINDER_TASK } from "./reminder-helpers.mjs";
+import { mockPush } from "./web-push-helpers.mjs";
 
 const DESKTOP = { width: 1440, height: 900 };
 const MEDIUM = { width: 1024, height: 768 };
@@ -72,6 +73,29 @@ for (const scheme of ["light", "dark"]) {
         await expect(page.locator("#reminder-notification-description")).toContainText(status);
         await page.locator(".sidebar").screenshot({ path: `gallery/reminder-settings-${name}-${scheme}.png`, animations: "disabled" });
         await w.check();
+      });
+    }
+
+    for (const [name, permission, status] of [
+      ["off", "default", "Off."], ["on", "granted", "On."], ["blocked", "denied", "Blocked by the browser"],
+    ]) {
+      test(`background reminders ${name} in Settings (${scheme})`, async ({ page, browser, baseURL }) => {
+        const capture = async (tab, suffix) => {
+          const w = watch(tab);
+          await mockPush(tab, permission, name === "on");
+          await open(tab);
+          await tab.getByRole("button", { name: "Settings", exact: true }).click();
+          await expect(tab.locator("#reminder-notification-description")).toContainText(status);
+          const sidebar = tab.locator(".sidebar");
+          await expect(sidebar.getByRole("menuitem", { name: "Send test notification" })).toHaveCount(name === "on" ? 1 : 0);
+          await sidebar.screenshot({ path: `gallery/web-push-${name}-${scheme}${suffix}.png`, animations: "disabled" });
+          await w.check();
+        };
+        await page.setViewportSize(DESKTOP);
+        await capture(page, "");
+        const scaled = await browser.newPage({ baseURL, viewport: DESKTOP, colorScheme: scheme,
+          deviceScaleFactor: 1.5, locale: "en-GB", timezoneId: "Europe/Prague" });
+        try { await capture(scaled, "-150"); } finally { await scaled.close(); }
       });
     }
 

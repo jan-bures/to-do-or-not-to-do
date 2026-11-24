@@ -1454,6 +1454,14 @@ impl AuthService {
         .unwrap_or(i64::MAX)
     }
 
+    /// A session must be newer than both cutoffs to receive Web Push.
+    pub(crate) fn session_cutoffs(&self, now: i64) -> (i64, i64) {
+        (
+            now.saturating_sub(self.idle_ms()),
+            now.saturating_sub(self.absolute_ms()),
+        )
+    }
+
     /// Seconds until a new session's absolute timeout (the cookie's `Max-Age`).
     #[must_use]
     pub fn session_max_age_secs(&self) -> i64 {

@@ -43,6 +43,10 @@ token_sha256 = "<hex SHA-256 of the admin token>"
 [web]
 dir = "/opt/todo/current/web"
 
+# Optional Web Push. Generate this owner-only file as the todo service account.
+# [web_push]
+# vapid_key_file = "/var/lib/todo/web-push.secret"
+
 # Optional Android reminder wake-ups; see docs/hosting-linux.md. Never add real values here.
 # [push]
 # project_id = "<firebase-project-id>"

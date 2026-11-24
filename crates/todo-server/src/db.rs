@@ -310,6 +310,26 @@ BEGIN
     DELETE FROM device_push WHERE device = NEW.id;
 END;
 ",
+    r"
+CREATE TABLE web_push_subscriptions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT NOT NULL REFERENCES sessions(id_hash) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE CHECK (length(endpoint) <= 4096),
+    p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+    auth BLOB NOT NULL CHECK (length(auth) = 16),
+    vapid_key TEXT NOT NULL,
+    registered_at INTEGER NOT NULL,
+    tested_at INTEGER
+);
+CREATE INDEX web_push_by_session ON web_push_subscriptions (session);
+CREATE TABLE web_push_claims (
+    subscription INTEGER NOT NULL REFERENCES web_push_subscriptions(id) ON DELETE CASCADE,
+    task TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    PRIMARY KEY (subscription, task, at)
+) WITHOUT ROWID;
+CREATE INDEX web_push_claims_by_time ON web_push_claims (at);
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

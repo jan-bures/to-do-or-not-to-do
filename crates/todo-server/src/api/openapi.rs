@@ -1,6 +1,6 @@
 //! The OpenAPI document, generated with `utoipa` and served at `/api/v1/openapi.json`.
 
-use super::{attachments, commands, dto, error, events, invite, pair, push, read};
+use super::{attachments, commands, dto, error, events, invite, pair, push, read, web_push};
 use crate::auth::{Authenticated, session};
 use crate::engine::{CommandResult, EventRef};
 use axum::Json;
@@ -60,6 +60,12 @@ impl Modify for ApiAuth {
         push::config,
         push::register,
         push::unregister,
+        web_push::config,
+        web_push::register,
+        web_push::unregister,
+        web_push::status,
+        web_push::test,
+        web_push::title,
         invite::create,
         invite::status,
         invite::cancel,

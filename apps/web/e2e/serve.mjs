@@ -37,6 +37,7 @@ const TYPES = {
   ".png": "image/png",
   ".txt": "text/plain; charset=utf-8",
   ".json": "application/json",
+  ".webmanifest": "application/manifest+json",
 };
 
 export function serve(dir, port) {
@@ -53,6 +54,10 @@ export function serve(dir, port) {
       res.writeHead(302, { location: "/app" });
       return res.end();
     }
+    if (path === "/api/v1/web-push" && req.method === "GET") {
+      res.writeHead(204);
+      return res.end();
+    }
     if (!path.startsWith("/app")) {
       res.writeHead(404);
       return res.end("not found");
@@ -64,6 +69,7 @@ export function serve(dir, port) {
         "content-type": TYPES[extname(file)] ?? "application/octet-stream",
         "cache-control": "no-cache",
         "x-content-type-options": "nosniff",
+        ...(rest === "reminder-worker.js" && { "service-worker-allowed": "/app" }),
       });
       return res.end(readFileSync(file));
     }

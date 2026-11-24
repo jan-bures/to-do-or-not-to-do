@@ -23,6 +23,7 @@ test-hooks = []
 [dependencies]
 todo-core = { workspace = true, features = ["openapi"] }
 todo-tools.workspace = true
+todo-client.workspace = true
 anyhow.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
@@ -61,6 +62,9 @@ reqwest = { workspace = true, features = ["rustls-no-provider"] }
 rustls.workspace = true
 ring.workspace = true
 httpdate.workspace = true
+p256.workspace = true
+aes-gcm.workspace = true
+zeroize.workspace = true
 
 [dev-dependencies]
 todo-server = { path = ".", features = ["test-hooks"] }

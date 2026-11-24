@@ -960,7 +960,7 @@ dependencies = [
  "cts",
  "der 0.8.3",
  "digest 0.11.3",
- "ecdsa",
+ "ecdsa 0.17.0",
  "elliptic-curve 0.14.3",
  "hex",
  "hkdf 0.13.0",
@@ -979,7 +979,7 @@ dependencies = [
  "serde",
  "sha1",
  "sha2 0.11.1",
- "signature",
+ "signature 3.0.0",
  "spki",
  "subtle",
  "tracing",
@@ -1165,6 +1165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
+ "const-oid 0.9.6",
  "crypto-common 0.1.7",
  "subtle",
 ]
@@ -1209,6 +1210,19 @@ checksum = "d0881ea181b1df73ff77ffaaf9c7544ecc11e82fba9b5f27b262a3c73a332555"
 
 [[package]]
 name = "ecdsa"
+version = "0.16.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ee27f32b5c5292967d2d4a9d7f1e0b0aed2c15daded5a60300e4abb9d8020bca"
+dependencies = [
+ "der 0.7.10",
+ "digest 0.10.7",
+ "elliptic-curve 0.13.8",
+ "rfc6979 0.4.0",
+ "signature 2.2.0",
+]
+
+[[package]]
+name = "ecdsa"
 version = "0.17.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0681a4fc24c767085329728d8dfba959af91228aa4610cca4f8ce317ba46ae0"
@@ -1216,8 +1230,8 @@ dependencies = [
  "der 0.8.3",
  "digest 0.11.3",
  "elliptic-curve 0.14.3",
- "rfc6979",
- "signature",
+ "rfc6979 0.6.0",
+ "signature 3.0.0",
  "spki",
  "zeroize",
 ]
@@ -2640,8 +2654,10 @@ version = "0.13.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c9863ad85fa8f4460f9c48cb909d38a0d689dba1f6f6988a5e3e0d31071bcd4b"
 dependencies = [
+ "ecdsa 0.16.9",
  "elliptic-curve 0.13.8",
  "primeorder 0.13.6",
+ "sha2 0.10.9",
 ]
 
 [[package]]
@@ -2650,7 +2666,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d2c9239b2dbc807adbbe147e8cf72ea7450c3a0aabe62cb8e75ff4ec22e1f72a"
 dependencies = [
- "ecdsa",
+ "ecdsa 0.17.0",
  "elliptic-curve 0.14.3",
  "primefield",
  "primeorder 0.14.0",
@@ -2663,7 +2679,7 @@ version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d17b851e6b3e378ab4ecb07fa2ed23f4d15f075735f8fec9fa1e7bdce5f8301f"
 dependencies = [
- "ecdsa",
+ "ecdsa 0.17.0",
  "elliptic-curve 0.14.3",
  "fiat-crypto 0.3.0",
  "primefield",
@@ -2678,7 +2694,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4ad64cc32c2dc466317c12ee5853e61f159f9eab1fe7efade0395dc2e7b43449"
 dependencies = [
  "base16ct 1.0.0",
- "ecdsa",
+ "ecdsa 0.17.0",
  "elliptic-curve 0.14.3",
  "primefield",
  "primeorder 0.14.0",
@@ -3198,6 +3214,16 @@ dependencies = [
 
 [[package]]
 name = "rfc6979"
+version = "0.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8dd2a808d456c4a54e300a23e9f5a67e122c3024119acbfd73e3bf664491cb2"
+dependencies = [
+ "hmac 0.12.1",
+ "subtle",
+]
+
+[[package]]
+name = "rfc6979"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4a459cddafb3fe76b31fd8f1108007566c40301feb64dc7b54656eb7388172b"
@@ -3285,7 +3311,7 @@ dependencies = [
  "pkcs8",
  "rand_core 0.10.1",
  "sha2 0.11.1",
- "signature",
+ "signature 3.0.0",
  "spki",
  "zeroize",
 ]
@@ -3923,6 +3949,16 @@ dependencies = [
 
 [[package]]
 name = "signature"
+version = "2.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
+dependencies = [
+ "digest 0.10.7",
+ "rand_core 0.6.4",
+]
+
+[[package]]
+name = "signature"
 version = "3.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "28d567dcbaf0049cb8ac2608a76cd95ff9e4412e1899d389ee400918ca7537f5"
@@ -4384,6 +4420,7 @@ dependencies = [
 name = "todo-server"
 version = "0.1.0"
 dependencies = [
+ "aes-gcm 0.10.3",
  "anyhow",
  "axum",
  "base64 0.23.1",
@@ -4398,6 +4435,7 @@ dependencies = [
  "hyper",
  "hyper-util",
  "jiff 1.0.1",
+ "p256 0.13.2",
  "proptest",
  "reqwest",
  "ring",
@@ -4411,6 +4449,7 @@ dependencies = [
  "subtle",
  "tempfile",
  "thiserror 2.0.21",
+ "todo-client",
  "todo-core",
  "todo-fs",
  "todo-server",
@@ -4428,6 +4467,7 @@ dependencies = [
  "uuid",
  "webauthn-authenticator-rs",
  "webauthn-rs",
+ "zeroize",
 ]
 
 [[package]]
@@ -5493,7 +5533,7 @@ dependencies = [
  "const-oid 0.10.3",
  "der 0.8.3",
  "sha1",
- "signature",
+ "signature 3.0.0",
  "spki",
  "tls_codec",
 ]

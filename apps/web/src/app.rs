@@ -1747,7 +1747,18 @@ impl FooterMenu {
         ev.prevent_default();
         ev.stop_propagation();
         if open {
-            platform::focus(self.items[next]);
+            // Optional menu items (for example, test notifications) may not be mounted.
+            let backward = matches!(key.as_str(), "ArrowUp" | "End");
+            for offset in 0..self.items.len() {
+                let step = if backward {
+                    self.items.len() - offset
+                } else {
+                    offset
+                };
+                if platform::focus(self.items[(next + step) % self.items.len()]) {
+                    break;
+                }
+            }
         } else {
             self.open_at(next);
         }
@@ -1862,27 +1873,22 @@ fn SettingsMenu() -> impl IntoView {
     let c = ctx();
     use todo_client::date_format::DateFormat;
     let csrf = backend::csrf();
+    const ITEMS: &[&str] = &[
+        "open-admin",
+        "sync-now",
+        "reminder-notification-setting",
+        "reminder-test-setting",
+        "open-ai-settings",
+        "device-settings",
+        "date-format-setting",
+        "sign-out",
+    ];
     let menu = FooterMenu::new(
         "open-settings",
         if csrf.is_some() {
-            &[
-                "open-admin",
-                "sync-now",
-                "reminder-notification-setting",
-                "open-ai-settings",
-                "device-settings",
-                "date-format-setting",
-                "sign-out",
-            ]
+            ITEMS
         } else {
-            &[
-                "open-admin",
-                "sync-now",
-                "reminder-notification-setting",
-                "open-ai-settings",
-                "device-settings",
-                "date-format-setting",
-            ]
+            &ITEMS[..ITEMS.len() - 1]
         },
     );
     let dialog = NodeRef::<html::Dialog>::new();
@@ -1892,9 +1898,11 @@ fn SettingsMenu() -> impl IntoView {
         s.connection == Connection::Syncing || s.read_only || s.signed_out || s.offline_demo
     };
     let field = NodeRef::<html::Input>::new();
+    let logout = NodeRef::<html::Form>::new();
     Effect::new(move |_| {
         if menu.open.get() {
             c.reminder_alerts.refresh_permission();
+            c.reminder_alerts.refresh_background();
         }
     });
     view! {
@@ -1951,12 +1959,18 @@ fn SettingsMenu() -> impl IntoView {
                         <span class="date-format-example">{move || c.now.with(|n| n.dates().date(n.today()))}</span>
                     </button>
                     {csrf.clone().map(|token| view! {
-                        <form method="post" action="/auth/logout" role="none" on:submit=move |_| {
-                            // The token may have changed since the page loaded (see `backend::csrf`).
+                        <form method="post" action="/auth/logout" role="none" node_ref=logout on:submit=move |event| {
+                            event.prevent_default();
                             c.ai.sign_out();
-                            if let (Some(i), Some(t)) = (field.get(), backend::csrf()) {
-                                i.set_value(&t);
-                            }
+                            let unsubscribe = reminder_alerts::unsubscribe_for_sign_out();
+                            let form = logout.get();
+                            let csrf_field = field.get();
+                            leptos::task::spawn_local(async move {
+                                let _ = wasm_bindgen_futures::JsFuture::from(unsubscribe).await;
+                                // The token may have changed since the page loaded (see `backend::csrf`).
+                                if let (Some(i), Some(t)) = (csrf_field, backend::csrf()) { i.set_value(&t); }
+                                if let Some(form) = form { let _ = form.submit(); }
+                            });
                         }>
                             <input type="hidden" name="csrf" value=token node_ref=field/>
                             <button type="submit" id="sign-out" role="menuitem" tabindex="-1">{icon(Icon::LogOut)}"Sign out"</button>

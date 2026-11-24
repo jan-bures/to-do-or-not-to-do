@@ -79,6 +79,7 @@ pub struct AppState {
     pub releases: Option<std::path::PathBuf>,
     /// Firebase client options, when Android push wake-ups are configured.
     pub push: Option<Arc<crate::config::PushConfig>>,
+    pub(crate) web_push: Option<Arc<crate::web_push::Sender>>,
 }
 
 impl AppState {
@@ -316,6 +317,7 @@ pub struct Server {
     /// The attachment garbage collector; awaited before the engine is closed.
     collector: JoinHandle<()>,
     push_worker: Option<JoinHandle<()>>,
+    web_push_worker: Option<JoinHandle<()>>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -450,7 +452,30 @@ impl Server {
         } else {
             None
         };
+        let web_push = if let Some(path) = config.web_push.vapid_key_file.clone() {
+            let subject = config
+                .origin()?
+                .filter(|origin| origin.is_https())
+                .map(|origin| origin.as_str().to_owned());
+            let sender =
+                tokio::task::spawn_blocking(move || crate::web_push::Sender::load(&path, subject))
+                    .await
+                    .map_err(|_| ConfigError::Invalid("could not initialize Web Push".into()))?
+                    .map_err(|err| ConfigError::Invalid(err.to_string()))?;
+            Some(Arc::new(sender))
+        } else {
+            None
+        };
         let (shutdown, shutdown_rx) = watch::channel(false);
+        let web_push_worker = web_push.clone().map(|sender| {
+            tracing::info!("Web Push reminders are enabled");
+            tokio::spawn(sender.run(
+                engine.clone(),
+                authsvc.clone(),
+                engine.enable_web_push(),
+                shutdown_rx.clone(),
+            ))
+        });
         let push_worker = sender.map(|sender| {
             tracing::info!("Android reminder wake-ups are enabled");
             tokio::spawn(sender.run(authsvc.clone(), engine.enable_push(), shutdown_rx.clone()))
@@ -476,6 +501,7 @@ impl Server {
             web,
             releases,
             push,
+            web_push,
         };
         let admin = admin.map(|(l, hash)| {
             let st = crate::admin::AdminState::new(state.clone(), hash, &config.admin);
@@ -491,6 +517,7 @@ impl Server {
             attachments,
             collector,
             push_worker,
+            web_push_worker,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -576,6 +603,11 @@ impl Server {
             && let Err(e) = worker.await
         {
             tracing::error!(error = %e, "FCM worker failed");
+        }
+        if let Some(worker) = self.web_push_worker
+            && let Err(e) = worker.await
+        {
+            tracing::error!(error = %e, "Web Push worker failed");
         }
         drop(self.attachments);
         // Refuse late writes (from timed-out requests still on the blocking pool) and release the

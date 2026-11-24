@@ -76,7 +76,7 @@ browsers that accept gzip.
 | `src/app/task_actions.rs` | Task context menu and detail overflow, searchable move and merge pickers, and focus hand-off when a row leaves. |
 | `src/app/workflow.rs`, `board.rs`, `timeline.rs` | List settings, view selection, status and start-date controls, and the shared Board and Timeline projections with pointer and keyboard input. |
 | `src/app/reminder.rs`, `repeat.rs`, `tags.rs`, `links.rs` | Task detail editors using the shared client intents. `pickers.rs` shares the anchored controls and swatches. |
-| `src/app/reminder_alerts.rs`, `static/reminder-browser.js` | Reminder scheduling, permission settings, native and in-app delivery, and cross-tab claims. |
+| `src/app/reminder_alerts.rs`, `static/reminder-browser.js`, `static/reminder-worker.js` | Reminder scheduling, opt-in, Web Push notifications and clicks, and durable claims shared with the in-tab fallback. |
 | `src/app/attachments.rs` | File picker, drops onto the detail pane, upload status, and download and removal controls. |
 | `src/app/email_drop.rs` | The task list's `.eml` drop target and browser file reads. Parsing and commands are shared with desktop. |
 | `src/platform.rs` | Browser helpers: clock and UTC offset, theme, history, local fold preferences, CSRF token, downloads. |
@@ -135,7 +135,7 @@ The page gets its own CSP:
 ```
 default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:;
 connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self';
-frame-ancestors 'none'; base-uri 'none'; form-action 'self';
+worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self';
 object-src 'none'
 ```
 
@@ -347,7 +347,7 @@ cannot hide the new workflow fields. The outbox is kept.
 
 So a change made while the server can't be reached waits in the outbox, survives a reload or a closed tab
 (from one tab or several), and is sent when the app runs again (the live browser tests do exactly this). The
-page itself still needs the server to load: there is no service worker yet.
+page itself still needs the server to load: the reminder service worker does not cache the app.
 
 ## Look and layout
 
@@ -591,19 +591,26 @@ shared intent shows the first from local today onward, or the latest if all are 
 changes elsewhere while the picker is open, close and reopen it before editing. Adding, changing and
 removing a reminder all offer Undo.
 
-**Reminder alerts** work while the app has an open tab. To allow system alerts, choose **Settings → Enable reminder notifications**;
-only that action opens the browser's permission prompt. Settings shows whether permission is allowed, blocked or
-unsupported. If it is blocked, allow notifications for this site in the browser's site settings. A system alert
-contains only the task title; click it to focus the tab and open the task in its current list. If system alerts
-are not available or not enabled, a visible tab uses the app's toast strip instead. The toast offers **Complete**
-and **Snooze 10 min**. Both offer Undo; snoozing from the web moves that reminder on all synced devices.
+**Reminder alerts** can reach a signed-in browser when no app tab is open. If the server has
+[Web Push configured](hosting-linux.md#web-push-reminders), choose **Settings → Turn on background reminders**.
+The browser asks permission only when you choose this action. Settings shows On, Off, or Blocked by the browser;
+if blocked, allow notifications in the browser's site settings. Choose **Send test notification** to check delivery.
+On iOS/iPadOS, add the app to the Home Screen and opt in from there. The setting belongs to this browser's
+current passkey session. Signing out unsubscribes, and expiry or revocation stops delivery. Sign in and opt in
+again after the session expires.
 
-The app takes its schedule from the shared `alarms` list once the initial sync catches up and rechecks it
-when the replica changes or the tab wakes. It ignores alarms more than 24 hours old. Same-origin tabs claim each
-reminder ID and scheduled instant in a single IndexedDB transaction. A `BroadcastChannel` tells other tabs about
-recent claims; the durable record prevents a duplicate after a reload even if the broadcast was missed. The
-claims store contains no task content. Browsers can delay a background tab's timers, and no alert is delivered
-while all app tabs are closed. There is no Web Push.
+The server schedules live reminders for incomplete tasks and claims each task and scheduled time once per
+subscription. It uses Web Push with VAPID and encrypted payloads: only the task ID and Unix time (milliseconds),
+never its title or notes. The expiry is at most 15 minutes after the due time. The `/app` service worker fetches
+only the title through the cookie- and CSRF-authenticated API and shows **Reminder** if it can't fetch it. These
+requests don't extend the session. A notification click focuses or opens `/app` on the task, signing in first if
+needed. The worker is same-origin and handles no fetches or offline caching.
+
+The in-tab schedule still uses the shared `alarms` list and ignores alarms more than 24 hours old. When background
+reminders are on, a visible tab waits eight seconds before offering a toast. The service worker and tabs claim
+the same task and scheduled instant in one IndexedDB transaction so they don't both alert. With Web Push
+unavailable, **Settings → Enable reminder notifications** still controls the in-tab system alerts where supported;
+otherwise the alert appears in the toast strip. The toast offers **Complete** and **Snooze 10 min** with Undo.
 
 **Repeat** (or **R**) offers Daily, Weekdays, Weekly, Monthly and Yearly, plus **Custom…** for an
 interval, unit and days of the week. Use the arrows to browse the presets and Enter or Space to choose.
@@ -699,6 +706,8 @@ The status bar shows shortcuts only when their actions are available.
   and phone (`phone-settings-{light,dark}.png`). Reminder permission states are in
   `reminder-settings-{not-enabled,allowed,blocked,unsupported}-{light,dark}.png` and fallback toasts in
   `reminder-toast-{light,dark}.png` and `reminder-toast-phone-{light,dark}.png`.
+  Background reminder states are in `web-push-{off,on,blocked}-{light,dark}.png` and the matching
+  `-150.png` captures at 150%.
   Workflow captures `board-{light,dark}.png`, `board-detail-{light,dark}.png`, `board-phone-{light,dark}.png`,
   `board-drag-{light,dark}.png`, `board-move-{light,dark}.png`, `list-status-{light,dark}.png` and
   `list-settings-{light,dark}.png` against the same renovation data as desktop.
@@ -762,8 +771,7 @@ The status bar shows shortcuts only when their actions are available.
 
 ## Not yet
 
-- **Offline start.** There is no service worker, so the app can't load without the server (Web Push and PWA
-  install are out of scope for this version, and would come with it).
+- **Offline start.** The reminder service worker does not cache assets, so the app can't load without the server.
 - **Damaged records** are set aside and counted, but the app can't show or export them yet.
 - **An idle tab is signed out.** The event stream doesn't extend the session, so a tab left alone for longer
   than `session_idle_timeout_mins` is sent to sign-in when the session lapses. Pending changes are kept.

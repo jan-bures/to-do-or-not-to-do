@@ -56,7 +56,15 @@ use std::path::Path as FsPath;
 /// Other assets stay same-origin. Keep in sync with the browser's model endpoint validation.
 pub const APP_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
 style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self'; \
-frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
+
+const WORKER_CSP: &str =
+    "default-src 'none'; script-src 'self'; connect-src 'self'; img-src 'self'";
+const WORKER: &str = "reminder-worker.js";
+
+pub(crate) fn is_worker_script(path: &str) -> bool {
+    matches!(path, "/app/reminder-worker.js" | "/app/reminder-browser.js")
+}
 
 /// The marker in `index.html` that is replaced with the session's CSRF meta tag.
 pub const SESSION_MARKER: &str = "<!--todo-session-->";
@@ -112,6 +120,7 @@ fn content_type(name: &str) -> Option<&'static str> {
         "wasm" => "application/wasm",
         "css" => "text/css; charset=utf-8",
         "json" => "application/json",
+        "webmanifest" => "application/manifest+json",
         "ttf" => "font/ttf",
         "woff2" => "font/woff2",
         "svg" => "image/svg+xml",
@@ -381,7 +390,16 @@ pub async fn path(
         return StatusCode::NOT_FOUND.into_response();
     };
     if let Some(f) = web.files.get(path.as_str()) {
-        return file_response(f, &headers);
+        let mut response = file_response(f, &headers);
+        if path == WORKER {
+            let headers = response.headers_mut();
+            headers.insert("service-worker-allowed", HeaderValue::from_static("/app"));
+            headers.insert(
+                CONTENT_SECURITY_POLICY,
+                HeaderValue::from_static(WORKER_CSP),
+            );
+        }
+        return response;
     }
     let last = path.rsplit('/').next().unwrap_or_default();
     if last.contains('.') {

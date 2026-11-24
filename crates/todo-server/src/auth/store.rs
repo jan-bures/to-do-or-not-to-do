@@ -13,6 +13,8 @@ use std::time::Duration;
 use todo_core::{AgentId, DeviceId, Grants};
 use webauthn_rs::prelude::Passkey;
 
+pub(crate) mod web_push;
+
 /// Result alias.
 pub type Result<T, E = StoreError> = std::result::Result<T, E>;
 

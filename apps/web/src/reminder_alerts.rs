@@ -30,6 +30,46 @@ impl Permission {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Background {
+    Unavailable,
+    Off,
+    On,
+    Blocked,
+}
+
+impl Background {
+    pub fn from_browser(value: &str) -> Self {
+        match value {
+            "on" => Self::On,
+            "off" => Self::Off,
+            "blocked" => Self::Blocked,
+            _ => Self::Unavailable,
+        }
+    }
+
+    pub fn description(self, permission: Permission) -> &'static str {
+        match self {
+            Self::On => "On. Reminders can arrive when the app is closed.",
+            Self::Off => "Off. Reminders still appear while the app is open.",
+            Self::Blocked => {
+                "Blocked by the browser. Allow notifications in your browser’s site settings."
+            }
+            Self::Unavailable => permission.description(),
+        }
+    }
+
+    /// Give the service worker a chance to deliver before showing the visible-tab fallback.
+    pub fn fallback_at(self, at: Timestamp) -> Timestamp {
+        if self == Self::On {
+            Timestamp::from_millisecond(at.as_millisecond().saturating_add(8_000))
+                .unwrap_or(Timestamp::MAX)
+        } else {
+            at
+        }
+    }
+}
+
 /// Browser timeouts take a signed 32-bit millisecond count. Wake again for dates farther out;
 /// always wait at least a millisecond for a future instant with sub-millisecond precision.
 pub fn timeout_ms(next: Timestamp, now: Timestamp) -> u64 {
@@ -50,6 +90,20 @@ mod tests {
         assert_eq!(Permission::from_browser("denied"), Permission::Blocked);
         for value in ["unsupported", "", "prompt"] {
             assert_eq!(Permission::from_browser(value), Permission::Unsupported);
+        }
+    }
+
+    #[test]
+    fn only_an_active_subscription_delays_the_in_tab_fallback() {
+        let at = Timestamp::UNIX_EPOCH;
+        assert_eq!(
+            Background::from_browser("on")
+                .fallback_at(at)
+                .as_millisecond(),
+            8_000
+        );
+        for status in ["off", "blocked", "unknown"] {
+            assert_eq!(Background::from_browser(status).fallback_at(at), at);
         }
     }
 
