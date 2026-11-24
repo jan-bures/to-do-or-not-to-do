@@ -7,9 +7,9 @@ mod upstream;
 mod vault;
 
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::HashMap,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Weak},
     time::Duration,
 };
 
@@ -22,27 +22,29 @@ use axum::{
 };
 use serde::Deserialize;
 use serde_json::Value;
-use todo_core::ids::ListId;
 use todo_tools::assistant::{
-    access::{AccessRules, DataClass},
+    access::DataClass,
     relay::{self, Account, Poll, Status},
 };
 use tokio::{
-    sync::{Mutex, OwnedMutexGuard, Semaphore},
+    sync::{Mutex, OwnedMutexGuard, Semaphore, watch},
     time::Instant,
 };
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use crate::{
     api::error::ApiError,
     app::AppState,
     auth::{Authenticated, Principal, limits::KeyedLimiter},
     config::ConfigError,
+    engine::Engine,
 };
 use openai::{DeviceGrant, LoopbackGrant, OpenAi};
 use upstream::Private;
-use vault::{Credential, Flow, Records, Vault};
+use vault::{Credential, Flow, PendingRevocation, Records, Revocation, Vault};
 
+pub(crate) use upstream::PRIVATE_CHAT_HEAD_TIMEOUT;
 pub use upstream::PrivateConfig;
 
 const MAX_ATTEMPTS: usize = 8;
@@ -62,7 +64,7 @@ pub struct Config {
     /// OAuth client ID authorized for OpenAI device-code login and ChatGPT inference.
     pub chatgpt_device_client_id: Option<String>,
     /// An owner-only encryption key file, created if absent on a fresh installation.
-    /// Defaults to `data_dir/assistant.key`.
+    /// Defaults to `/etc/todo/assistant.secret` on Linux, `assistant.secret` elsewhere.
     pub key_file: Option<PathBuf>,
     /// Optional private model gateway.
     pub private: Option<PrivateConfig>,
@@ -110,7 +112,18 @@ pub(crate) enum InitError {
     Http,
 }
 
-#[derive(Debug, thiserror::Error)]
+impl InitError {
+    pub(crate) fn owner_reason(&self) -> &'static str {
+        match self {
+            Self::Vault(_) => "Could not open the assistant vault or its encryption key.",
+            Self::PrivateKey(_) | Self::BadPrivateKey => "Could not load the private model key.",
+            Self::PrivateAddress => "The private model address is invalid.",
+            Self::Http => "Could not initialize the assistant HTTP client.",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, thiserror::Error)]
 pub(super) enum Error {
     #[error("assistant provider is disabled")]
     Disabled,
@@ -136,7 +149,7 @@ pub(super) enum Error {
     AccountsFull,
     #[error("settings have changed; refresh settings to continue")]
     AccessChanged,
-    #[error("the request includes a list not allowed for this provider")]
+    #[error("the request does not match the server's sharing settings")]
     Scope,
     #[error("approve these lists before sharing them with ChatGPT")]
     Consent,
@@ -185,6 +198,8 @@ enum AttemptState {
     Failed,
 }
 
+type RefreshResult = watch::Receiver<Option<Result<Credential, Error>>>;
+
 pub(crate) struct Assistant {
     openai: Option<OpenAi>,
     private: Option<Private>,
@@ -192,6 +207,10 @@ pub(crate) struct Assistant {
     vault: Arc<Vault>,
     records: Arc<Mutex<Records>>,
     attempts: Mutex<HashMap<Uuid, Attempt>>,
+    start_gate: Mutex<()>,
+    account_gates: Mutex<HashMap<Uuid, Weak<Mutex<()>>>>,
+    refreshing: Mutex<HashMap<Uuid, RefreshResult>>,
+    revocation_gate: Mutex<()>,
     starts: KeyedLimiter<()>,
     inference: KeyedLimiter<()>,
     slots: Arc<Semaphore>,
@@ -214,7 +233,13 @@ impl Assistant {
             .then(|| OpenAi::new(config.chatgpt_device_client_id))
             .transpose()?;
         let private = config.private.as_ref().map(Private::open).transpose()?;
-        let key = config.key_file.unwrap_or_else(|| dir.join("assistant.key"));
+        let key = config.key_file.unwrap_or_else(|| {
+            PathBuf::from(if cfg!(target_os = "linux") {
+                "/etc/todo/assistant.secret"
+            } else {
+                "assistant.secret"
+            })
+        });
         let (vault, records) = Vault::open(dir, &key)?;
         Ok(Some(Arc::new(Self {
             openai,
@@ -223,6 +248,10 @@ impl Assistant {
             vault: Arc::new(vault),
             records: Arc::new(Mutex::new(records)),
             attempts: Mutex::new(HashMap::new()),
+            start_gate: Mutex::new(()),
+            account_gates: Mutex::new(HashMap::new()),
+            refreshing: Mutex::new(HashMap::new()),
+            revocation_gate: Mutex::new(()),
             starts: KeyedLimiter::new(4, 3),
             inference: KeyedLimiter::new(30, 12),
             slots: Arc::new(Semaphore::new(4)),
@@ -246,6 +275,7 @@ impl Assistant {
             },
             access: records.access.clone(),
             access_version: records.version,
+            disabled_reason: None,
         }
     }
 
@@ -266,63 +296,220 @@ impl Assistant {
         .map_err(|_| Error::Storage)?
     }
 
-    async fn insert(&self, auth: Credential) -> Result<Account, Error> {
-        let guard = self.records.clone().lock_owned().await;
-        let mut records = guard.clone();
-        let previous = records.accounts.iter().find(|(_, a)| {
-            a.flow == auth.flow
-                && a.subject == auth.subject
-                && a.workspace == auth.workspace
-                && a.client_id == auth.client_id
-        });
-        let (id, auth) = match previous {
-            Some((&id, old)) => {
-                let mut auth = auth;
-                auth.approved = old.approved;
-                auth.approved_lists.clone_from(&old.approved_lists);
-                (id, auth)
+    async fn account_gate(&self, id: Uuid) -> OwnedMutexGuard<()> {
+        let gate = {
+            let mut gates = self.account_gates.lock().await;
+            gates.retain(|_, gate| gate.strong_count() != 0);
+            if let Some(gate) = gates.get(&id).and_then(Weak::upgrade) {
+                gate
+            } else {
+                let gate = Arc::new(Mutex::new(()));
+                gates.insert(id, Arc::downgrade(&gate));
+                gate
             }
-            None if records.accounts.len() < MAX_ACCOUNTS => (Uuid::new_v4(), auth),
-            None => return Err(Error::AccountsFull),
         };
-        let result = auth.public(id);
-        records.accounts.insert(id, auth);
-        self.commit(guard, records).await?;
-        Ok(result)
+        gate.lock_owned().await
+    }
+
+    async fn insert(&self, mut auth: Credential) -> Result<Account, Error> {
+        let mut account_gate = None;
+        loop {
+            let guard = self.records.clone().lock_owned().await;
+            let previous = guard.accounts.iter().find(|(_, a)| {
+                a.flow == auth.flow
+                    && a.subject == auth.subject
+                    && a.workspace == auth.workspace
+                    && a.client_id == auth.client_id
+            });
+            let id = match previous {
+                Some((&id, old)) if account_gate.as_ref().is_some_and(|(held, _)| *held == id) => {
+                    auth.approved = old.approved;
+                    auth.approved_lists.clone_from(&old.approved_lists);
+                    id
+                }
+                Some((&id, _)) => {
+                    drop(guard);
+                    drop(account_gate.take());
+                    account_gate = Some((id, self.account_gate(id).await));
+                    continue;
+                }
+                None if guard.accounts.len() < MAX_ACCOUNTS => Uuid::new_v4(),
+                None => return Err(Error::AccountsFull),
+            };
+            let mut records = guard.clone();
+            let result = auth.public(id);
+            records.accounts.insert(id, auth);
+            self.commit(guard, records).await?;
+            return Ok(result);
+        }
+    }
+
+    async fn accept(&self, auth: Credential) -> Result<Account, Error> {
+        let grant = Revocation::from(&auth);
+        let result = self.insert(auth).await;
+        if result.is_err() {
+            self.discard(&grant).await;
+        }
+        result
+    }
+
+    async fn discard(&self, grant: &Revocation) {
+        if let Some(openai) = &self.openai {
+            let _ = openai.revoke(grant).await;
+        }
     }
 
     async fn credential(
-        &self,
+        self: &Arc<Self>,
         id: Uuid,
-        lists: Option<&BTreeSet<ListId>>,
         rejected: Option<&str>,
     ) -> Result<Credential, Error> {
+        fn needs_refresh(auth: &Credential, rejected: Option<&str>) -> bool {
+            auth.expires_at <= openai::now().saturating_add(REFRESH_MARGIN)
+                || rejected.is_some_and(|rejected| rejected == auth.access)
+        }
+        let mut result = {
+            let mut refreshing = self.refreshing.lock().await;
+            if let Some(result) = refreshing.get(&id).filter(|r| r.has_changed().is_ok()) {
+                result.clone()
+            } else {
+                let records = self.records.lock().await;
+                let auth = records.accounts.get(&id).ok_or(Error::AccountMissing)?;
+                if !needs_refresh(auth, rejected) {
+                    return Ok(auth.clone());
+                }
+                let (done, result) = watch::channel(None);
+                refreshing.insert(id, result.clone());
+                let service = self.clone();
+                let rejected = rejected.map(|value| Zeroizing::new(value.to_owned()));
+                // The upstream can rotate the token before it answers. The shared result can be
+                // dropped without cancelling the detached refresh or the vault commit.
+                tokio::spawn(async move {
+                    let result = async {
+                        let _gate = service.account_gate(id).await;
+                        let auth = service
+                            .records
+                            .lock()
+                            .await
+                            .accounts
+                            .get(&id)
+                            .cloned()
+                            .ok_or(Error::AccountMissing)?;
+                        if needs_refresh(&auth, rejected.as_ref().map(|v| v.as_str())) {
+                            service.refresh(id, auth).await
+                        } else {
+                            Ok(auth)
+                        }
+                    }
+                    .await;
+                    let mut refreshing = service.refreshing.lock().await;
+                    refreshing.remove(&id);
+                    done.send_replace(Some(result));
+                });
+                result
+            }
+        };
+        result
+            .wait_for(Option::is_some)
+            .await
+            .map_err(|_| Error::Storage)?
+            .clone()
+            .ok_or(Error::Storage)?
+    }
+
+    async fn refresh(&self, id: Uuid, mut auth: Credential) -> Result<Credential, Error> {
         let openai = self.openai.as_ref().ok_or(Error::Disabled)?;
-        let guard = self.records.clone().lock_owned().await;
-        let auth = guard.accounts.get(&id).ok_or(Error::AccountMissing)?;
-        if lists.is_some_and(|lists| !auth.approved || !lists.is_subset(&auth.approved_lists)) {
-            return Err(Error::Consent);
-        }
-        let needs_refresh = auth.expires_at <= openai::now().saturating_add(REFRESH_MARGIN)
-            || rejected.is_some_and(|rejected| rejected == auth.access);
-        if !needs_refresh {
-            return Ok(auth.clone());
-        }
-        let mut auth = auth.clone();
         openai.refresh(&mut auth).await?;
+        let guard = self.records.clone().lock_owned().await;
+        // Consent can change while HTTP is in flight. Commit only the new credential fields.
+        let current = guard.accounts.get(&id).ok_or(Error::AccountMissing)?;
+        auth.approved = current.approved;
+        auth.approved_lists.clone_from(&current.approved_lists);
         let mut records = guard.clone();
         records.accounts.insert(id, auth.clone());
         self.commit(guard, records).await?;
         Ok(auth)
     }
 
-    async fn remove(&self, id: Uuid) -> Result<Credential, Error> {
+    async fn approved_credential(&self, engine: &Engine, id: Uuid) -> Result<Credential, Error> {
+        let records = self.records.lock().await;
+        let auth = records.accounts.get(&id).ok_or(Error::AccountMissing)?;
+        let lists = records.access.allowed(&engine.state(), DataClass::Cloud);
+        if !auth.approved || !lists.is_subset(&auth.approved_lists) {
+            return Err(Error::Consent);
+        }
+        Ok(auth.clone())
+    }
+
+    async fn remove(&self, id: Uuid) -> Result<Uuid, Error> {
+        let _gate = self.account_gate(id).await;
         let guard = self.records.clone().lock_owned().await;
         let mut records = guard.clone();
         let auth = records.accounts.remove(&id).ok_or(Error::AccountMissing)?;
-        // Removing the credential and consent durably is mandatory even if remote revocation fails.
+        let job = Uuid::new_v4();
+        records.revocations.insert(
+            job,
+            PendingRevocation {
+                grant: Revocation::from(&auth),
+                attempts: 0,
+                retry_at: 0,
+            },
+        );
+        // Sign-out drops the credential and consent immediately, even if revocation must retry.
         self.commit(guard, records).await?;
-        Ok(auth)
+        Ok(job)
+    }
+
+    async fn retry_revocation(&self, job: Uuid) -> Result<bool, Error> {
+        let openai = self.openai.as_ref().ok_or(Error::Disabled)?;
+        let _gate = self.revocation_gate.lock().await;
+        let Some(pending) = self.records.lock().await.revocations.get(&job).cloned() else {
+            return Ok(true);
+        };
+        if pending.retry_at > openai::now() {
+            return Ok(false);
+        }
+        let revoked = openai.revoke(&pending.grant).await.is_ok();
+        let guard = self.records.clone().lock_owned().await;
+        let mut records = guard.clone();
+        if revoked {
+            records.revocations.remove(&job);
+        } else {
+            let mut pending = pending;
+            let delay = (60 << pending.attempts.min(6)).min(3600);
+            pending.attempts = pending.attempts.saturating_add(1);
+            pending.retry_at = openai::now().saturating_add(delay);
+            records.revocations.insert(job, pending);
+        }
+        self.commit(guard, records).await?;
+        Ok(revoked)
+    }
+
+    pub(crate) async fn run_revocations(&self, mut shutdown: watch::Receiver<bool>) {
+        if self.openai.is_none() {
+            return;
+        }
+        let mut tick = tokio::time::interval(Duration::from_secs(30));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        while !*shutdown.borrow() {
+            tokio::select! {
+                _ = shutdown.changed() => break,
+                _ = tick.tick() => {
+                    let now = openai::now();
+                    let jobs: Vec<_> = self.records.lock().await.revocations.iter()
+                        .filter(|(_, pending)| pending.retry_at <= now)
+                        .take(MAX_ACCOUNTS)
+                        .map(|(&job, _)| job)
+                        .collect();
+                    for job in jobs {
+                        if *shutdown.borrow() { return; }
+                        if self.retry_revocation(job).await.is_err() {
+                            tracing::warn!("could not update pending assistant revocation");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     async fn attempt(
@@ -353,6 +540,7 @@ impl FromRequestParts<AppState> for Owner {
             Principal::Owner { device } if app.authsvc.paired_device(device, &parts.headers) => {
                 Ok(Self(caller.principal))
             }
+            Principal::Agent { .. } => Err(crate::api::no_such_endpoint()),
             _ => Err(ApiError::new(
                 StatusCode::FORBIDDEN,
                 "assistant_owner_required",
@@ -397,14 +585,17 @@ pub(crate) fn router() -> Router<AppState> {
     assistant_routes!(build)
 }
 
-fn configured(app: &AppState) -> Result<&Assistant, Error> {
-    app.assistant.as_deref().ok_or(Error::Disabled)
+fn configured(app: &AppState) -> Result<&Arc<Assistant>, Error> {
+    app.assistant.as_ref().ok_or(Error::Disabled)
 }
 
 async fn status(_owner: Owner, State(app): State<AppState>) -> Json<Status> {
     Json(match app.assistant {
         Some(a) => a.status().await,
-        None => Status::default(),
+        None => Status {
+            disabled_reason: app.assistant_disabled_reason.map(str::to_owned),
+            ..Status::default()
+        },
     })
 }
 
@@ -424,6 +615,10 @@ async fn update_access(
     if input.access != guard.access {
         let mut next = guard.clone();
         next.access = input.access;
+        let allowed = next.access.allowed(&app.engine.state(), DataClass::Cloud);
+        for auth in next.accounts.values_mut() {
+            auth.approved_lists.retain(|id| allowed.contains(id));
+        }
         next.version = Uuid::new_v4();
         service.commit(guard, next).await?;
     } else {
@@ -443,6 +638,15 @@ async fn start(
         return Err(Error::Disabled.into());
     }
     relay.starts.check(&()).map_err(Error::Rate)?;
+    let _start = relay.start_gate.lock().await;
+    {
+        let mut attempts = relay.attempts.lock().await;
+        let now = Instant::now();
+        attempts.retain(|_, a| a.valid_until > now);
+        if attempts.len() >= MAX_ATTEMPTS {
+            return Err(Error::Rate(30).into());
+        }
+    }
     let attempt = Uuid::new_v4();
     let (state, valid_for, response) = match input {
         relay::SignIn::Device => {
@@ -476,10 +680,6 @@ async fn start(
     };
     let mut attempts = relay.attempts.lock().await;
     let now = Instant::now();
-    attempts.retain(|_, a| a.valid_until > now);
-    if attempts.len() >= MAX_ATTEMPTS {
-        return Err(Error::Rate(30).into());
-    }
     attempts.insert(
         attempt,
         Attempt {
@@ -496,39 +696,54 @@ async fn poll(
     State(app): State<AppState>,
     Route(id): Route<Uuid>,
 ) -> Result<Json<Poll>, ApiError> {
-    let service = configured(&app)?;
-    let openai = service.openai.as_ref().ok_or(Error::Disabled)?;
+    let service = configured(&app)?.clone();
     let Some((expiry, attempt)) = service.attempt(id, &owner).await else {
         return Ok(Json(Poll::Expired));
     };
-    let Ok(mut state) = attempt.try_lock() else {
+    let Ok(state) = attempt.try_lock_owned() else {
         return Ok(Json(Poll::Pending));
     };
+    // Once the token exchange starts, finish saving or revoking even if the client disconnects.
+    tokio::spawn(poll_attempt(service, app, owner, expiry, state))
+        .await
+        .map_err(|_| Error::Storage)?
+        .map(Json)
+}
+
+async fn poll_attempt(
+    service: Arc<Assistant>,
+    app: AppState,
+    owner: Principal,
+    expiry: Instant,
+    mut state: OwnedMutexGuard<AttemptState>,
+) -> Result<Poll, ApiError> {
+    let openai = service.openai.as_ref().ok_or(Error::Disabled)?;
     let result = match &mut *state {
         AttemptState::Device { grant, next } => {
             let until = (*next).min(expiry);
             let cap = Instant::now() + POLL_WAIT;
             tokio::time::sleep_until(until.min(cap)).await;
             if Instant::now() >= expiry {
-                return Ok(Json(Poll::Expired));
+                return Ok(Poll::Expired);
             }
             if Instant::now() < *next {
-                return Ok(Json(Poll::Pending));
+                return Ok(Poll::Pending);
             }
             *next = Instant::now() + Duration::from_secs(grant.interval.clamp(1, 900));
             match openai.poll_device(grant).await {
                 Ok(None) => Poll::Pending,
                 Ok(Some(auth)) if app.authsvc.is_active(&owner) && Instant::now() < expiry => {
                     *state = AttemptState::Failed;
-                    let account = service.insert(auth).await?;
+                    let account = service.accept(auth).await?;
                     *state = AttemptState::Finished(account.id);
                     Poll::SignedIn { account }
                 }
-                Ok(Some(_)) => {
+                Ok(Some(auth)) => {
                     *state = AttemptState::Failed;
+                    service.discard(&Revocation::from(&auth)).await;
                     Poll::Expired
                 }
-                Err(Error::Timeout | Error::UpstreamLimit) => return Ok(Json(Poll::Pending)),
+                Err(Error::Timeout | Error::UpstreamLimit) => return Ok(Poll::Pending),
                 Err(err) => {
                     *state = AttemptState::Failed;
                     return Err(err.into());
@@ -549,7 +764,7 @@ async fn poll(
         AttemptState::Failed => Poll::Failed,
         AttemptState::Loopback(_) => return Err(Error::BadRequest.into()),
     };
-    Ok(Json(result))
+    Ok(result)
 }
 
 async fn handoff(
@@ -558,20 +773,27 @@ async fn handoff(
     Route(id): Route<Uuid>,
     Json(input): Json<relay::Handoff>,
 ) -> Result<Json<Account>, ApiError> {
-    let service = configured(&app)?;
-    let openai = service.openai.as_ref().ok_or(Error::Disabled)?;
+    let service = configured(&app)?.clone();
     let (expiry, attempt) = service.attempt(id, &owner).await.ok_or(Error::BadRequest)?;
-    let mut state = attempt.try_lock().map_err(|_| Error::Rate(1))?;
-    let AttemptState::Loopback(grant) = std::mem::replace(&mut *state, AttemptState::Failed) else {
-        return Err(Error::BadRequest.into());
-    };
-    let auth = openai.handoff(&grant, &input).await?;
-    if Instant::now() >= expiry || !app.authsvc.is_active(&owner) {
-        return Err(Error::BadRequest.into());
-    }
-    let account = service.insert(auth).await?;
-    *state = AttemptState::Finished(account.id);
-    Ok(Json(account))
+    let mut state = attempt.try_lock_owned().map_err(|_| Error::Rate(1))?;
+    tokio::spawn(async move {
+        let openai = service.openai.as_ref().ok_or(Error::Disabled)?;
+        let AttemptState::Loopback(grant) = &*state else {
+            return Err(Error::BadRequest.into());
+        };
+        let result = openai.handoff(grant, &input).await;
+        *state = AttemptState::Failed;
+        let auth = result?;
+        if Instant::now() >= expiry || !app.authsvc.is_active(&owner) {
+            service.discard(&Revocation::from(&auth)).await;
+            return Err(Error::BadRequest.into());
+        }
+        let account = service.accept(auth).await?;
+        *state = AttemptState::Finished(account.id);
+        Ok(Json(account))
+    })
+    .await
+    .map_err(|_| Error::Storage)?
 }
 
 async fn sign_out(
@@ -579,28 +801,15 @@ async fn sign_out(
     State(app): State<AppState>,
     Route(id): Route<Uuid>,
 ) -> Result<Json<relay::SignOut>, ApiError> {
-    let service = configured(&app)?;
-    let openai = service.openai.as_ref().ok_or(Error::Disabled)?;
-    let auth = service.remove(id).await?;
-    Ok(Json(relay::SignOut {
-        revoked: openai.revoke(&auth).await.is_ok(),
-    }))
-}
-
-fn check_scope(
-    state: &todo_core::State,
-    access: &AccessRules,
-    lists: &BTreeSet<ListId>,
-    class: DataClass,
-) -> Result<(), Error> {
-    if lists.len() > MAX_RULES
-        || lists
-            .iter()
-            .any(|&id| !access.list(state, id).allows(class))
-    {
-        return Err(Error::Scope);
+    let service = configured(&app)?.clone();
+    if service.openai.is_none() {
+        return Err(Error::Disabled.into());
     }
-    Ok(())
+    let job = service.remove(id).await?;
+    let revoked = tokio::spawn(async move { service.retry_revocation(job).await })
+        .await
+        .is_ok_and(|result| result.is_ok_and(|revoked| revoked));
+    Ok(Json(relay::SignOut { revoked }))
 }
 
 async fn consent(
@@ -617,16 +826,14 @@ async fn consent(
     if input.access_version != guard.version {
         return Err(Error::AccessChanged.into());
     }
-    check_scope(
-        &app.engine.state(),
-        &guard.access,
-        &input.lists,
-        DataClass::Cloud,
-    )?;
+    let derived = guard.access.allowed(&app.engine.state(), DataClass::Cloud);
+    if input.lists != derived {
+        return Err(Error::Scope.into());
+    }
     let mut records = guard.clone();
     let credential = records.accounts.get_mut(&id).ok_or(Error::AccountMissing)?;
     credential.approved = true;
-    credential.approved_lists = input.lists;
+    credential.approved_lists = derived;
     let account = credential.public(id);
     service.commit(guard, records).await?;
     Ok(Json(account))
@@ -650,12 +857,6 @@ async fn private_chat(
     let service = configured(&app)?;
     let upstream = service.private.as_ref().ok_or(Error::Disabled)?;
     validate_request(&mut input, DataClass::Local)?;
-    check_scope(
-        &app.engine.state(),
-        &service.records.lock().await.access,
-        &input.lists,
-        DataClass::Local,
-    )?;
     service.inference.check(&()).map_err(Error::Rate)?;
     let permit = service
         .slots
@@ -677,10 +878,10 @@ async fn chatgpt_models(
     let service = configured(&app)?;
     let upstream = service.openai.as_ref().ok_or(Error::Disabled)?;
     service.inference.check(&()).map_err(Error::Rate)?;
-    let auth = service.credential(id, None, None).await?;
+    let auth = service.credential(id, None).await?;
     let result = match upstream.models(&auth).await {
         Err(Error::UpstreamAuthorization) => {
-            let auth = service.credential(id, None, Some(&auth.access)).await?;
+            let auth = service.credential(id, Some(&auth.access)).await?;
             upstream.models(&auth).await?
         }
         result => result?,
@@ -697,32 +898,22 @@ async fn chatgpt_chat(
     let service = configured(&app)?;
     let upstream = service.openai.as_ref().ok_or(Error::Disabled)?;
     validate_request(&mut input, DataClass::Cloud)?;
-    check_scope(
-        &app.engine.state(),
-        &service.records.lock().await.access,
-        &input.lists,
-        DataClass::Cloud,
-    )?;
+    service.approved_credential(&app.engine, id).await?;
     service.inference.check(&()).map_err(Error::Rate)?;
     let permit = service
         .slots
         .clone()
         .try_acquire_owned()
         .map_err(|_| Error::Rate(1))?;
-    let auth = service.credential(id, Some(&input.lists), None).await?;
-    // Refresh may have taken time. Recheck list visibility before sending. No retry after sending a
-    // billed request, even on 401; a later explicit request may reconnect or refresh.
-    check_scope(
-        &app.engine.state(),
-        &service.records.lock().await.access,
-        &input.lists,
-        DataClass::Cloud,
-    )?;
+    service.credential(id, None).await?;
+    // Refresh may have taken time. Re-derive scope and check consent before sending. Never
+    // replay a billed request, even on 401; rotate the credentials for the next request instead.
+    let auth = service.approved_credential(&app.engine, id).await?;
     let res = upstream
         .chat(&auth, &responses_for(auth.flow, input.request)?)
         .await?;
     if res.status() == StatusCode::UNAUTHORIZED {
-        let _ = service.credential(id, None, Some(&auth.access)).await;
+        let _ = service.credential(id, Some(&auth.access)).await;
     }
     Ok(upstream::relay(res, permit, false)?)
 }

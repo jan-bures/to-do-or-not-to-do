@@ -79,6 +79,7 @@ pub struct AppState {
     pub releases: Option<std::path::PathBuf>,
     /// The optional owner-only AI relay.
     pub(crate) assistant: Option<Arc<crate::assistant::Assistant>>,
+    pub(crate) assistant_disabled_reason: Option<&'static str>,
     /// Firebase client options, when Android push wake-ups are configured.
     pub push: Option<Arc<crate::config::PushConfig>>,
     pub(crate) web_push: Option<Arc<crate::web_push::Sender>>,
@@ -170,6 +171,15 @@ pub(crate) async fn deadline(
     mut req: Request,
     next: Next,
 ) -> Response {
+    // A private model may take longer to produce response headers. No other route (even one
+    // requesting SSE) can extend the global deadline.
+    let limit = if req.method() == axum::http::Method::POST
+        && req.uri().path() == "/api/v1/assistant/private/chat"
+    {
+        limit.max(crate::assistant::PRIVATE_CHAT_HEAD_TIMEOUT)
+    } else {
+        limit
+    };
     let at = tokio::time::Instant::now() + limit;
     let cancel = Cancel::with_deadline(at.into_std());
     req.extensions_mut().insert(cancel.clone());
@@ -285,6 +295,8 @@ pub struct Options {
     /// Also receives the one-time setup code (which is otherwise only in the owner-only setup code
     /// file, never in the log).
     pub setup_code: Option<SetupCodeSink>,
+    #[cfg(test)]
+    pub(crate) assistant: Option<Arc<crate::assistant::Assistant>>,
 }
 
 impl std::fmt::Debug for Options {
@@ -301,6 +313,8 @@ impl Default for Options {
             clock: system_clock(),
             auth: None,
             setup_code: None,
+            #[cfg(test)]
+            assistant: None,
         }
     }
 }
@@ -320,6 +334,7 @@ pub struct Server {
     collector: JoinHandle<()>,
     push_worker: Option<JoinHandle<()>>,
     web_push_worker: Option<JoinHandle<()>>,
+    revocations: Option<JoinHandle<()>>,
     limits: Limits,
     shutdown: watch::Sender<bool>,
 }
@@ -431,13 +446,26 @@ impl Server {
             }
             None => None,
         };
-        let assistant = {
+        let (assistant, assistant_disabled_reason) = {
             let (settings, dir) = (config.assistant.clone(), config.data_dir.clone());
-            tokio::task::spawn_blocking(move || crate::assistant::Assistant::open(settings, &dir))
-                .await
-                .map_err(|_| ConfigError::Invalid("could not initialize assistant".into()))?
-                .map_err(|e| ConfigError::Invalid(e.to_string()))?
+            let result = tokio::task::spawn_blocking(move || {
+                crate::assistant::Assistant::open(settings, &dir)
+            })
+            .await;
+            match result {
+                Ok(Ok(service)) => (service, None),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "assistant disabled");
+                    (None, Some(error.owner_reason()))
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "assistant initialization task failed");
+                    (None, Some("Could not initialize the assistant."))
+                }
+            }
         };
+        #[cfg(test)]
+        let assistant = options.assistant.or(assistant);
         let releases = if let Some(dir) = &config.releases.dir {
             Some(
                 crate::releases::directory(dir)
@@ -485,6 +513,10 @@ impl Server {
                 shutdown_rx.clone(),
             ))
         });
+        let revocations = assistant.clone().map(|assistant| {
+            let shutdown = shutdown_rx.clone();
+            tokio::spawn(async move { assistant.run_revocations(shutdown).await })
+        });
         let push_worker = sender.map(|sender| {
             tracing::info!("Android reminder wake-ups are enabled");
             tokio::spawn(sender.run(authsvc.clone(), engine.enable_push(), shutdown_rx.clone()))
@@ -510,6 +542,7 @@ impl Server {
             web,
             releases,
             assistant,
+            assistant_disabled_reason,
             push,
             web_push,
         };
@@ -528,6 +561,7 @@ impl Server {
             collector,
             push_worker,
             web_push_worker,
+            revocations,
             limits: config.limits.clone(),
             shutdown,
         })
@@ -608,6 +642,11 @@ impl Server {
         // (it may need the writer) and ends, dropping its handle on the engine.
         if let Err(e) = self.collector.await {
             tracing::error!(error = %e, "attachment garbage collector failed");
+        }
+        if let Some(worker) = self.revocations
+            && let Err(error) = worker.await
+        {
+            tracing::error!(%error, "assistant revocation worker failed");
         }
         if let Some(worker) = self.push_worker
             && let Err(e) = worker.await

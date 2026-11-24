@@ -18,6 +18,9 @@ pub struct Status {
     pub access: AccessRules,
     /// Compare-and-swap token for writes from a settings view opened on another device.
     pub access_version: Uuid,
+    /// A sanitized initialization failure, visible only to the owner.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
@@ -47,7 +50,7 @@ pub struct Consent {
 #[serde(deny_unknown_fields)]
 pub struct Chat {
     pub destination: DataClass,
-    /// The confirmed list scope pinned by the assistant controller (not forwarded upstream).
+    /// The client's scope hint, retained for compatibility. The server does not trust or forward it.
     pub lists: BTreeSet<ListId>,
     pub request: Value,
 }

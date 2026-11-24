@@ -216,8 +216,11 @@ fn registrations() -> BTreeSet<(String, String, String)> {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
-            // Local auth/Responses stubs, included only under cfg(test).
-            if file == "assistant/openai/tests.rs" {
+            // Local upstream and relay stubs, included only under cfg(test).
+            if matches!(
+                file.as_str(),
+                "assistant/openai/tests.rs" | "assistant/upstream/tests.rs" | "assistant/tests.rs"
+            ) {
                 continue;
             }
             let code: String = std::fs::read_to_string(&path)

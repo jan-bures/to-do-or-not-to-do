@@ -61,7 +61,7 @@ dir = "/opt/todo/current/web"
 # [assistant]
 # chatgpt = true
 # chatgpt_device_client_id = "<approved-openai-device-client-id>"
-# key_file = "/var/lib/todo/assistant.key"
+# key_file = "/etc/todo/assistant.secret" # default; install as todo:todo mode 0600
 # [assistant.private]
 # base_url = "http://<model>.<tailnet>.ts.net:8030/v1"
 # key_file = "/etc/todo/assistant-model.secret"

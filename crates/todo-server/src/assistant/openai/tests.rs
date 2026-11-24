@@ -113,7 +113,7 @@ async fn device_login_refresh_model_list_stream_and_revoke_use_the_expected_cont
         .await
         .unwrap();
     assert_eq!(response.text().await.unwrap(), "data: fixture\n\n");
-    openai.revoke(&credential).await.unwrap();
+    openai.revoke(&(&credential).into()).await.unwrap();
     mock.abort();
 }
 

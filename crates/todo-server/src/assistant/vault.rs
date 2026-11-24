@@ -76,12 +76,46 @@ impl Credential {
     }
 }
 
+/// Only the material necessary to revoke a signed-out grant. Never usable for inference.
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct Revocation {
+    pub flow: Flow,
+    pub client_id: String,
+    pub refresh: String,
+}
+
+impl Drop for Revocation {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.refresh.zeroize();
+    }
+}
+
+impl From<&Credential> for Revocation {
+    fn from(auth: &Credential) -> Self {
+        Self {
+            flow: auth.flow,
+            client_id: auth.client_id.clone(),
+            refresh: auth.refresh.clone(),
+        }
+    }
+}
+
+#[derive(Clone, Deserialize, Serialize)]
+pub(super) struct PendingRevocation {
+    pub grant: Revocation,
+    pub attempts: u32,
+    pub retry_at: u64,
+}
+
 #[derive(Clone, Deserialize, Serialize)]
 pub(super) struct Records {
     pub host: Uuid,
     pub version: Uuid,
     pub access: AccessRules,
     pub accounts: BTreeMap<Uuid, Credential>,
+    #[serde(default)]
+    pub revocations: BTreeMap<Uuid, PendingRevocation>,
 }
 
 impl Default for Records {
@@ -91,6 +125,7 @@ impl Default for Records {
             version: Uuid::new_v4(),
             access: AccessRules::default(),
             accounts: BTreeMap::new(),
+            revocations: BTreeMap::new(),
         }
     }
 }

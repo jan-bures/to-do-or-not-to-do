@@ -219,7 +219,24 @@ fn has_scope(scope: Option<&str>, name: &str) -> bool {
     scope.is_some_and(|s| s.split_ascii_whitespace().any(|item| item == name))
 }
 
+#[cfg(test)]
+impl LoopbackGrant {
+    pub(super) fn set_fixture_nonce(&mut self, nonce: &str) {
+        self.nonce = Zeroizing::new(nonce.to_owned());
+    }
+}
+
 impl OpenAi {
+    #[cfg(test)]
+    pub(super) fn at_fixture(issuer: String, client: Option<String>) -> Self {
+        Self {
+            codex: format!("{issuer}/codex"),
+            resource: format!("{issuer}/siwc"),
+            issuer,
+            ..Self::new(client).unwrap()
+        }
+    }
+
     pub fn new(device_client: Option<String>) -> Result<Self, InitError> {
         Ok(Self {
             http: client().build().map_err(|_| InitError::Http)?,
@@ -372,6 +389,31 @@ impl OpenAi {
         let mut tokens: Tokens = self
             .auth(self.http.post(self.token_endpoint(flow)).form(&form))
             .await?;
+        let result = self
+            .new_credential(flow, client_id, nonce, &mut tokens)
+            .await;
+        if result.is_err()
+            && tokens.refresh_token.as_deref().is_some_and(valid_token)
+            && let Some(refresh) = tokens.refresh_token.take()
+        {
+            let _ = self
+                .revoke(&super::vault::Revocation {
+                    flow,
+                    client_id: client_id.into(),
+                    refresh,
+                })
+                .await;
+        }
+        result
+    }
+
+    async fn new_credential(
+        &self,
+        flow: Flow,
+        client_id: &str,
+        nonce: Option<&str>,
+        tokens: &mut Tokens,
+    ) -> Result<Credential, Error> {
         let claims = self
             .verify(
                 tokens.id_token.as_deref().ok_or(Error::Identity)?,
@@ -394,8 +436,8 @@ impl OpenAi {
         {
             return Err(Error::UpstreamAuthorization);
         }
-        let expires_at = expiry(&tokens, Some(claims.exp), now());
-        let (access, refresh) = extract_tokens(&mut tokens, flow, false)?;
+        let expires_at = expiry(tokens, Some(claims.exp), now());
+        let (access, refresh) = extract_tokens(tokens, flow, false)?;
         let label = [claims.email, claims.name]
             .into_iter()
             .flatten()
@@ -512,7 +554,7 @@ impl OpenAi {
         Ok(())
     }
 
-    pub async fn revoke(&self, credential: &Credential) -> Result<(), Error> {
+    pub async fn revoke(&self, credential: &super::vault::Revocation) -> Result<(), Error> {
         let req = match credential.flow {
             Flow::Device => self.http.post(format!("{}/oauth/revoke", self.issuer))
                 .json(&json!({"token": credential.refresh, "token_type_hint": "refresh_token", "client_id": credential.client_id})),

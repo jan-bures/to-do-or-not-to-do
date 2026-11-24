@@ -28,11 +28,15 @@ async fn only_real_owner_sessions_and_paired_tokens_can_use_the_assistant() {
     let env = Env::start().await;
     let browser = env.owner().await;
     let (_, agent) = browser.create_agent("example-agent", "read", "").await;
-    for token in [agent.as_str(), common::TOKEN_A] {
-        let response = env.api(Method::GET, STATUS, token, None).await;
-        assert_eq!(response.status, StatusCode::FORBIDDEN);
-        assert_eq!(response.json["error"]["code"], "assistant_owner_required");
-    }
+    let response = env.api(Method::GET, STATUS, &agent, None).await;
+    let missing = env
+        .api(Method::GET, "/api/v1/no-such-route", &agent, None)
+        .await;
+    assert_eq!(response.status, StatusCode::NOT_FOUND);
+    assert_eq!(response.json, missing.json);
+    let response = env.api(Method::GET, STATUS, common::TOKEN_A, None).await;
+    assert_eq!(response.status, StatusCode::FORBIDDEN);
+    assert_eq!(response.json["error"]["code"], "assistant_owner_required");
     let response = env
         .browser()
         .send(Method::GET, STATUS, None, Body::None)
@@ -82,7 +86,103 @@ async fn only_real_owner_sessions_and_paired_tokens_can_use_the_assistant() {
 }
 
 #[tokio::test]
-async fn private_relay_checks_list_class_and_streams_without_forwarding_headers() {
+async fn assistant_writes_require_both_csrf_and_origin() {
+    let env = Env::start().await;
+    let browser = env.owner().await;
+    let id = uuid::Uuid::new_v4();
+    for (method, path, payload) in [
+        (
+            Method::POST,
+            "/api/v1/assistant/chatgpt/start".into(),
+            json!({"flow":"device"}),
+        ),
+        (
+            Method::PUT,
+            "/api/v1/assistant/access".into(),
+            json!({"access":{"lists":{}}, "access_version":id}),
+        ),
+        (
+            Method::DELETE,
+            format!("/api/v1/assistant/chatgpt/accounts/{id}"),
+            Value::Null,
+        ),
+    ] {
+        for (origin, body) in [
+            (Some(SITE), Body::None),
+            (None, Body::Json(payload.clone())),
+            (
+                Some("https://other.example.com"),
+                Body::Json(payload.clone()),
+            ),
+        ] {
+            let denied = browser.send(method.clone(), &path, origin, body).await;
+            assert_eq!(denied.status, StatusCode::FORBIDDEN, "{method} {path}");
+            assert_eq!(denied.json()["error"]["code"], "csrf");
+        }
+        let accepted = browser
+            .send(method, &path, Some(SITE), Body::Json(payload))
+            .await;
+        assert_eq!(
+            accepted.json()["error"]["code"],
+            "assistant_disabled",
+            "{path}: {}",
+            accepted.body
+        );
+    }
+}
+
+#[tokio::test]
+async fn bad_vault_or_model_key_disables_only_the_assistant() {
+    for private in [false, true] {
+        let env = Env::start_with(|cfg| {
+            let key = cfg.data_dir.join("fixture-bad-secret");
+            todo_fs::create_private_file(&key)
+                .unwrap()
+                .write_all(b"not a key")
+                .unwrap();
+            if private {
+                cfg.assistant.private = Some(PrivateConfig {
+                    base_url: "http://127.0.0.1:8030".into(),
+                    key_file: key,
+                });
+            } else {
+                cfg.assistant.chatgpt = true;
+                cfg.assistant.key_file = Some(key);
+            }
+        })
+        .await;
+        let browser = env.owner().await;
+        let status = browser
+            .send(Method::GET, STATUS, None, Body::Json(json!({})))
+            .await;
+        assert_eq!(status.status, StatusCode::OK);
+        let json = status.json();
+        assert_eq!(json["chatgpt"], false);
+        assert_eq!(json["private_models"], false);
+        assert!(
+            json["disabled_reason"]
+                .as_str()
+                .unwrap()
+                .contains(if private {
+                    "private model key"
+                } else {
+                    "vault"
+                })
+        );
+        assert!(!status.body.contains("fixture-bad-secret"));
+        assert!(!status.body.contains("not a key"));
+        assert_eq!(
+            browser
+                .send(Method::GET, "/health", None, Body::None)
+                .await
+                .status,
+            StatusCode::OK
+        );
+    }
+}
+
+#[tokio::test]
+async fn private_relay_checks_destination_and_streams_without_forwarding_headers() {
     let finish = Arc::new(Notify::new());
     let model =
         Router::new()
@@ -137,6 +237,7 @@ async fn private_relay_checks_list_class_and_streams_without_forwarding_headers(
     let addr = listener.local_addr().unwrap();
     let model_server = tokio::spawn(async move { axum::serve(listener, model).await.unwrap() });
     let env = Env::start_with(|cfg| {
+        cfg.assistant.key_file = Some(cfg.data_dir.join("assistant.secret"));
         let path = cfg.data_dir.join("model.secret");
         todo_fs::create_private_file(&path)
             .unwrap()
@@ -192,11 +293,9 @@ async fn private_relay_checks_list_class_and_streams_without_forwarding_headers(
         json!([{"id":"fixture-model","label":"fixture-model"}])
     );
     let chat = format!("{PRIVATE}/chat");
-    for body in [request(&hidden, "local"), request(&private, "cloud")] {
-        let denied = browser.post_json(&chat, body).await;
-        assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
-        assert_eq!(denied.json()["error"]["code"], "assistant_scope");
-    }
+    let denied = browser.post_json(&chat, request(&private, "cloud")).await;
+    assert_eq!(denied.status, StatusCode::FORBIDDEN, "{}", denied.body);
+    assert_eq!(denied.json()["error"]["code"], "assistant_scope");
     let mut streamed = common::http()
         .build()
         .unwrap()
@@ -207,7 +306,8 @@ async fn private_relay_checks_list_class_and_streams_without_forwarding_headers(
         )
         .header("x-csrf-token", browser.csrf.as_deref().unwrap())
         .header("origin", SITE)
-        .json(&request(&private, "local"))
+        // The relay does not trust or interpret this client-supplied list hint.
+        .json(&request(&hidden, "local"))
         .send()
         .await
         .unwrap();

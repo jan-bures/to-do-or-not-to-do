@@ -26,6 +26,10 @@ const CONNECT: Duration = Duration::from_secs(5);
 const IDLE: Duration = Duration::from_secs(20);
 const TOTAL: Duration = Duration::from_secs(80);
 const MAX_STREAM: usize = 4 * 1024 * 1024;
+const PRIVATE_IDLE: Duration = Duration::from_secs(60);
+pub(crate) const PRIVATE_CHAT_HEAD_TIMEOUT: Duration = Duration::from_secs(65);
+const PRIVATE_TOTAL: Duration = Duration::from_secs(600);
+const PRIVATE_MAX_STREAM: usize = 16 * 1024 * 1024;
 const MAX_JSON: usize = 256 * 1024;
 
 /// Operator-only settings: no key material is kept in TOML.
@@ -147,6 +151,7 @@ impl Private {
         }
         let key = Zeroizing::new(key.to_owned());
         let http = client()
+            .read_timeout(PRIVATE_IDLE)
             .dns_resolver(Arc::new(CheckedDns(network)))
             .build()
             .map_err(|_| InitError::Http)?;
@@ -191,6 +196,7 @@ impl Private {
             .map_err(|_| Error::Upstream)?;
         self.http
             .post(url)
+            .timeout(PRIVATE_TOTAL)
             .bearer_auth(self.key.as_str())
             .header(header::ACCEPT, "text/event-stream, application/json")
             .json(request)
@@ -242,10 +248,15 @@ pub(super) async fn read_json<T: DeserializeOwned>(mut res: reqwest::Response) -
 pub(super) fn relay(
     res: reqwest::Response,
     permit: OwnedSemaphorePermit,
-    allow_json: bool,
+    private: bool,
 ) -> Result<Response, Error> {
     check_status(res.status())?;
-    if res.content_length().is_some_and(|n| n > MAX_STREAM as u64) {
+    let limit = if private {
+        PRIVATE_MAX_STREAM
+    } else {
+        MAX_STREAM
+    };
+    if res.content_length().is_some_and(|n| n > limit as u64) {
         return Err(Error::Upstream);
     }
     let media = res
@@ -256,14 +267,14 @@ pub(super) fn relay(
         .map(str::trim);
     let content_type = match media {
         Some(s) if s.eq_ignore_ascii_case("text/event-stream") => "text/event-stream",
-        Some(s) if allow_json && s.eq_ignore_ascii_case("application/json") => "application/json",
+        Some(s) if private && s.eq_ignore_ascii_case("application/json") => "application/json",
         _ => return Err(Error::Upstream),
     };
     let body = Body::from_stream(stream::try_unfold(
         (res, permit, 0usize),
-        |(mut res, permit, used)| async move {
+        move |(mut res, permit, used)| async move {
             match res.chunk().await {
-                Ok(Some(chunk)) if chunk.len() <= MAX_STREAM - used => {
+                Ok(Some(chunk)) if chunk.len() <= limit - used => {
                     let used = used + chunk.len();
                     Ok(Some((chunk, (res, permit, used))))
                 }
@@ -283,36 +294,4 @@ pub(super) fn relay(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn private_addresses_are_exact_and_have_fixed_paths() {
-        for url in [
-            "http://localhost:8030",
-            "http://127.0.0.1",
-            "https://[::1]",
-            "http://100.64.0.0",
-            "http://100.127.255.255",
-            "http://[fd7a:115c:a1e0::ffff]",
-            "https://model.example.ts.net/v1/",
-        ] {
-            assert_eq!(base_address(url).unwrap().0.path(), "/v1/", "{url}");
-        }
-        for url in [
-            "https://example.com",
-            "http://100.63.255.255",
-            "http://100.128.0.0",
-            "http://[fd7a:115c:a1e1::1]",
-            "http://169.254.169.254",
-            "http://192.168.1.2",
-            "http://example.ts.net.example.com",
-            "http://localhost?x=1",
-            "http://localhost#x",
-            "https://user@example.ts.net",
-            "ftp://localhost",
-            "https://[::ffff:127.0.0.1]",
-        ] {
-            assert!(base_address(url).is_none(), "{url}");
-        }
-    }
-}
+mod tests;

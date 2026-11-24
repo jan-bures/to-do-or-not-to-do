@@ -201,26 +201,32 @@ are not accepted.
 chatgpt = true
 # Optional; omit to allow only the installed app's browser handoff for new sign-ins.
 chatgpt_device_client_id = "<approved-openai-device-client-id>"
-key_file = "/var/lib/todo/assistant.key"
+# Optional; defaults to /etc/todo/assistant.secret.
+key_file = "/etc/todo/assistant.secret"
 
 [assistant.private]
 base_url = "http://<model>.<tailnet>.ts.net:8030/v1"
 key_file = "/etc/todo/assistant-model.secret"
 ```
 
-- Configure only the providers you need. The server creates `assistant.key`, by default under
-  `data_dir`, if there is no existing vault. If supplying your own key file, make it a single line of
-  64 hex digits, owned by `todo`, mode `0600`. Use a new key, not the attachment or ingest key.
+- Configure only the providers you need. On Linux, install the vault key at `/etc/todo/assistant.secret`
+  before starting the service. Generate it once (for example, with `openssl rand -hex 32`) and install
+  it as `todo:todo` mode `0600`. Use a new key, not the attachment or ingest key. An explicit
+  `assistant.key_file` still works, including an existing key that was stored under `data_dir`.
+  Outside Linux the default is `assistant.secret` in the working directory. For development, the
+  server can create the key if its directory is writable and no vault exists yet.
   Tokens and list-sharing permissions are encrypted in `data_dir/assistant.vault`. The vault and key
   are not in the task database or its backups. Retain them safely and separately if a VM move must
   preserve sign-ins; otherwise sign in and configure list access again. Never restore a vault copy to
   recover a signed-out account: it may contain stale tokens. If the key is lost, stop the server and
-  set the unreadable vault aside before restarting with a new key.
+  set the unreadable vault aside before restarting with a new key. If a vault or key cannot be
+  opened, the server stays up and shows the owner why the assistant is disabled.
 - Device sign-in uses the Codex device-authorization protocol. The client ID must be enabled by
   OpenAI for device codes and ChatGPT inference. It is not an API key or the desktop's dynamic SIWC
   registration. Device-code sign-in does not appear without it. With ChatGPT enabled, a connected
   account can be used from any owner session. A ChatGPT sign-out removes that account and its
-  consent on all devices. If revocation is not confirmed, disconnect the app in ChatGPT settings.
+  consent on all devices. If revocation fails, the server keeps only the grant information needed
+  to retry it with backoff, including after a restart. You can also disconnect the app in ChatGPT settings.
 - For private inference, the server (not the phone or browser) needs a route to the upstream. Join the
   server to your tailnet with shields-up and grant only outbound access to the trusted model port.
   The URL may use a MagicDNS name ending in `.ts.net`, a Tailscale address (IPv4 `100.64.0.0/10` or
@@ -230,8 +236,11 @@ key_file = "/etc/todo/assistant-model.secret"
   `todo:todo` mode `0600`; the web and paired apps never receive it.
 - Restart the server after changing these settings. Choose a provider and model under **AI settings**.
   List access defaults to **Hidden**. **Private only** lists cannot be used by ChatGPT. The relay
-  checks the currently allowed list IDs and account approval before sending; owner-typed text is not
-  filtered. Only share data with a model you trust.
+  derives the current Cloud-allowed list set from server-side rules and requires that the account has
+  approved that entire set. Lowering a list's access in settings removes its approval; raising it again
+  needs new consent. The relay cannot tell what lists or task data are present in the inference request
+  content; it does not filter prompt text or tool results. Clients enforce which list data they include.
+  Only share data with a model you trust.
 
 ### Android reminder wake-ups
 

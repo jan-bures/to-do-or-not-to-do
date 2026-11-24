@@ -71,13 +71,19 @@ test("device sign-in, shared account and consent, and sign-out across two browse
   const w = watch(page);
   const mock = await relay(context);
   const settings = await settingsFor(page);
+  await settings.getByRole("button", { name: "Use private models" }).click();
   await settings.getByRole("button", { name: "Sign in with ChatGPT" }).click();
   await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
   await expect(settings.getByRole("link", { name: "Open ChatGPT" })).toHaveAttribute("href", "https://auth.openai.com/codex/device");
   await expect(settings.getByRole("status").filter({ hasText: "Waiting for ChatGPT" })).toBeVisible();
   mock.approveSignIn();
   await expect(settings.getByText("you@example.com", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("status").filter({ hasText: "Connected you@example.com" })).toBeVisible();
   await expect(settings.getByRole("button", { name: "Add another ChatGPT account" })).toBeVisible();
+  const useAccount = settings.getByRole("button", { name: "Use account" });
+  await expect(useAccount).toHaveAttribute("aria-pressed", "false");
+  await expect(settings.getByRole("region", { name: "Your private models (via your server)" })).toHaveAttribute("data-selected", "true");
+  await useAccount.click();
   await expect(settings.getByRole("option", { name: "Example model" })).toBeAttached();
   await settings.getByRole("combobox", { name: "Planning", exact: true }).selectOption("all");
   await settings.getByRole("combobox", { name: "Inbox", exact: true }).selectOption("private");
@@ -133,12 +139,14 @@ test("private models use the paired server, not a client-held key", async ({ con
 for (const colorScheme of ["light", "dark"]) {
   test(`assistant relay settings gallery (${colorScheme})`, async ({ context, page }) => {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
-    await relay(context);
+    const mock = await relay(context);
     const settings = await settingsFor(page);
     await settings.getByRole("button", { name: "Sign in with ChatGPT" }).click();
     await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
     await page.screenshot({ path: `gallery/ai-chatgpt-device-${colorScheme}.png`, animations: "disabled" });
-    await settings.getByRole("button", { name: "Cancel sign-in" }).click();
+    mock.approveSignIn();
+    await expect(settings.getByRole("status").filter({ hasText: "Connected you@example.com" })).toBeVisible();
+    await page.screenshot({ path: `gallery/ai-chatgpt-connected-${colorScheme}.png`, animations: "disabled" });
     await settings.getByRole("button", { name: "Use private models" }).click();
     await expect(settings.getByRole("option", { name: "Example model" })).toBeAttached();
     await page.screenshot({ path: `gallery/ai-private-relay-${colorScheme}.png`, animations: "disabled" });

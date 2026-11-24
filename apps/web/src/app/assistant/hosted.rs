@@ -222,6 +222,7 @@ pub(super) fn HostedCards(
 ) -> impl IntoView {
     let ai = ctx().ai;
     let code = RwSignal::new(None::<DeviceCode>);
+    let signed_in = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     Effect::new(move |_| {
         if ai.settings.get().is_none() {
@@ -254,6 +255,7 @@ pub(super) fn HostedCards(
         }
         busy.set(true);
         error.set(None);
+        signed_in.set(None);
         leptos::task::spawn_local(async move {
             let result = async {
                 relay_json(
@@ -300,8 +302,8 @@ pub(super) fn HostedCards(
                     Ok(relay::Poll::Pending) => continue,
                     Ok(relay::Poll::SignedIn { account }) => {
                         code.set(None);
+                        signed_in.set(Some(account.label));
                         refresh().await;
-                        choose(draft, status, local_access, Hosted::ChatGpt(account.id));
                     }
                     _ => {
                         code.set(None);
@@ -323,6 +325,12 @@ pub(super) fn HostedCards(
             <div class="ai-provider-heading">{icon(Icon::Sparkles)}<h3>"ChatGPT"</h3><span>"Cloud"</span></div>
             <p>"Sign in once to use your ChatGPT plan or available credits on paired devices."</p>
             <a class="ai-link" href=USAGE_URL target="_blank" rel="noopener noreferrer">"Manage usage"</a>
+            {move || signed_in.get().map(|label| view! {
+                <p role="status">{format!("Connected {label}. Choose Use account to switch to it.")}</p>
+            })}
+            {move || status.with(|s| s.as_ref().and_then(|s| s.disabled_reason.clone())).map(|reason| view! {
+                <p role="status">{reason}</p>
+            })}
             <For each=move || status.with(|s| s.as_ref().map_or_else(Vec::new, |s| s.accounts.clone())) key=|a| a.id
                 children=move |account| {
                     let id = account.id;
@@ -338,11 +346,12 @@ pub(super) fn HostedCards(
                                     busy.set(false);
                                     match result {
                                         Ok(signed_out) => {
+                                            signed_in.set(None);
                                             if draft.with_untracked(|p| p.hosted == Some(Hosted::ChatGpt(id))) {
                                                 draft.update(|p| p.hosted_model.clear());
                                             }
                                             refresh().await;
-                                            if !signed_out.revoked { error.set(Some("Signed out on your server. If needed, disconnect the app in ChatGPT settings to revoke access there.".into())); }
+                                            if !signed_out.revoked { error.set(Some("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.".into())); }
                                         }
                                         Err(err) => error.set(Some(err.to_string())),
                                     }

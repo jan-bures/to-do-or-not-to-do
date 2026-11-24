@@ -174,8 +174,9 @@ Each list defaults to **Hidden**. **Private only** permits the private relay and
 **All models** also permits ChatGPT. Lists inherit the collection rule unless overridden. Relay list
 rules and ChatGPT approval are shared across paired devices, while loopback access stays in the browser.
 The first send to ChatGPT asks to approve plan use and the list scope. It asks again when a newly
-eligible list would be shared, and not when fewer lists are used. The assistant projects the confirmed
-replica before tool reads. Changes to the provider or access reset the conversation. Pane width and
+eligible list would be shared, including when a list is lowered and later made Cloud-eligible again.
+Lowering a list's access does not itself prompt again. The assistant projects the confirmed replica
+before tool reads. Changes to the provider or access reset the conversation. Pane width and
 model choice are browser-local; conversation text is not persisted or synced.
 
 Model output cannot submit commands. **Approve** submits the exact reviewed effects through the same durable
