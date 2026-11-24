@@ -18,7 +18,7 @@ fn document() -> Option<web_sys::Document> {
 
 const FOLD_PREFIX: &str = "todo-folded-collection:";
 
-fn local_storage() -> Option<web_sys::Storage> {
+pub(crate) fn local_storage() -> Option<web_sys::Storage> {
     window()?.local_storage().ok().flatten()
 }
 
@@ -411,6 +411,9 @@ pub fn animate_reorder(before: Vec<(web_sys::Element, f64)>) {
 
 /// Wraps Tab within the active overlay. The rest of the shell is inert.
 pub fn contain_tab(id: &str, ev: &web_sys::KeyboardEvent) {
+    if ev.key() != "Tab" {
+        return;
+    }
     let Some(doc) = document() else { return };
     let Some(panel) = doc.get_element_by_id(id) else {
         return;

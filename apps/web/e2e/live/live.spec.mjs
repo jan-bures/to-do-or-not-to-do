@@ -11,6 +11,7 @@ import { join } from "node:path";
 import { DATA, PORT } from "../live-env.mjs";
 import { openDeviceSettings } from "../tests/helpers.mjs";
 import { mockNotifications } from "../tests/reminder-helpers.mjs";
+import { call, configure, modelRoute, panel, send, toolResults, words } from "../tests/assistant-helpers.mjs";
 
 test.describe.configure({ mode: "serial" });
 
@@ -260,6 +261,90 @@ test("set up, sign in, and use the app against the server", async () => {
   }
 
   expect(problems).toEqual([]);
+  await page.close();
+});
+
+test("assistant edits and selected batch items only sync after approval; reject and Undo are exact", async () => {
+  const page = await openApp();
+  const problems = watch(page);
+  await page.getByRole("button", { name: "Ask AI", exact: true }).click();
+  await configure(page, { Inbox: "all" });
+  const create = "Assistant draft: Water the seedlings";
+  const skipped = "Assistant draft: Catalog the seed packets";
+  const edited = "Assistant edit: Water the patio plants";
+  let submitted = 0;
+  page.on("request", (r) => { if (r.url().endsWith("/api/v1/assistant/approvals")) submitted++; });
+  const requests = await modelRoute(page, (body) => {
+    const prompt = body.messages.filter((m) => m.role === "user").at(-1).content;
+    const results = toolResults(body);
+    if (prompt === "Draft a list of garden tasks") {
+      if (results.length === 0) return call("draft-first", "create_task", { title: create, due: "tomorrow" });
+      if (results.length === 1) return call("draft-second", "create_task", { title: skipped });
+      return words("I prepared two changes for your review.");
+    }
+    if (results.length === 0) return call("find", "query_tasks", { query: "květiny" });
+    if (results.length === 1) {
+      const task = results[0].items.find((task) => task.title === "Zalít květiny");
+      return call("edit", "update_task", { task_id: task.id, title: edited });
+    }
+    return words("I drafted a title change.");
+  });
+  const log = async () => (await serverLog(page)).body;
+  async function assertSettled() {
+    await expect(page.locator(".sync-text")).toHaveAttribute("title", /^Synced/, { timeout: 15_000 });
+  }
+  const assistant = panel(page);
+  await send(page, "Draft a list of garden tasks");
+  const batch = assistant.getByRole("region", { name: "2 proposed changes" });
+  await expect(batch.getByRole("button", { name: "Approve all (2)" })).toBeVisible();
+  expect(submitted).toBe(0);
+  expect(await log()).not.toContain(create);
+  await batch.getByRole("checkbox", { name: `Include ${skipped}` }).uncheck();
+  await batch.getByRole("button", { name: "Approve 1", exact: true }).click();
+  await expect(assistant.getByText("Approved · 1 change confirmed")).toBeVisible({ timeout: 15_000 });
+  expect(await log()).toContain(create);
+  expect(await log()).not.toContain(skipped);
+  expect(submitted).toBe(1);
+  await assistant.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(assistant.getByText("Approved changes undone")).toBeVisible({ timeout: 15_000 });
+  await assertSettled();
+
+  await send(page, "Rename the plant task, first draft");
+  let edit = assistant.getByRole("region", { name: /^Edit task:/ });
+  await expect(edit.getByText(edited)).toBeVisible();
+  await edit.getByRole("button", { name: "Reject", exact: true }).click();
+  await expect(assistant.getByText("Proposal rejected")).toBeVisible();
+  expect(await log()).not.toContain(edited);
+  expect(submitted).toBe(1);
+
+  await send(page, "Rename the plant task, second draft");
+  edit = assistant.getByRole("region", { name: /^Edit task:/ });
+  await expect(edit.getByText(edited)).toBeVisible();
+  expect(await log()).not.toContain(edited);
+  await edit.getByRole("button", { name: "Approve", exact: true }).click();
+  await expect(assistant.getByText("Approved · 1 change confirmed").last()).toBeVisible({ timeout: 15_000 });
+  expect(await log()).toContain(edited);
+  expect(await log()).toContain('"agent_id":"assistant"');
+  expect(submitted).toBe(2);
+  expect(requests.length).toBeGreaterThanOrEqual(8);
+  expect(problems).toEqual([]);
+  await assistant.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(assistant.getByText("Approved changes undone")).toHaveCount(2, { timeout: 15_000 });
+  await assertSettled();
+
+  await send(page, "Rename the plant task, stale draft");
+  await expect(edit.getByText(edited)).toBeVisible();
+  const other = await openApp();
+  const remote = "Another tab changed the confirmed revision";
+  const card = assistant.getByRole("region", { name: /^Edit task:/ });
+  await expect(card.getByRole("button", { name: "Approve", exact: true })).toBeVisible();
+  await add(other, remote);
+  await expect(assistant.getByText("The task snapshot changed. Request a new proposal.")).toBeVisible();
+  await expect(card.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
+  expect(submitted).toBe(2);
+  await other.getByRole("button", { name: "Undo", exact: true }).click();
+  await other.close();
+  await page.evaluate(() => localStorage.removeItem("todo.assistant.settings"));
   await page.close();
 });
 
@@ -1394,7 +1479,7 @@ test("Dismiss all does not drop a refusal that arrived after opening Not synced"
 });
 
 test("a frozen assistant approval survives an IndexedDB reload without being rebased", async ({ browser }) => {
-  // This release has no assistant UI. Seed exactly the outbox record the approved operation
+  // Seed exactly the outbox record the approved operation
   // would have persisted, then exercise the real IndexedDB reader, web sender and owner REST API.
   const isolated = await browser.newContext({ baseURL });
   try {

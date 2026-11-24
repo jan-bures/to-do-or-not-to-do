@@ -68,7 +68,8 @@ browsers that accept gzip.
 | `src/model.rs` | The view-model: sidebar counts, a room's header and rows, the detail pane, tomorrow's plan. Pure Rust over `todo_core::State`, unit-tested on the host. |
 | `src/landscape.rs` | The header landscape as SVG markup, from `todo_design::landscape`. Shapes carry classes; `app.css` colours them from the room's tokens. |
 | `src/app.rs` | The Leptos components, including the frame that applies the preferred detail width. |
-| `src/app/detail_splitter.rs` | Docked detail width, pointer capture, and keyboard resizing. |
+| `src/app/detail_splitter.rs` | Shared docked detail and Assistant splitters, width preferences, pointer capture, and keyboard resizing. |
+| `src/app/assistant.rs`, `assistant/`, `assistant_provider.rs` | Assistant chat, trusted proposal review and settings, and direct browser inference. |
 | `src/backend.rs` | The live backend (the sync engine) or the fixtures backend, including exact undo and dismissal of refused changes. |
 | `src/app/activity.rs` | The activity room, day groups, older pages and per-event undo feedback. |
 | `src/app/room_actions.rs` | List and collection menus, move and colour pickers, rename and delete dialogs, and the Not synced list. |
@@ -133,7 +134,7 @@ The page gets its own CSP:
 
 ```
 default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:;
-connect-src 'self'; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self';
+connect-src 'self' https: http://127.0.0.1:*; font-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self';
 object-src 'none'
 ```
 
@@ -142,7 +143,34 @@ object-src 'none'
 attributes, and the landscape's stroke widths and opacities are SVG presentation attributes. Room menus set
 only their measured screen coordinates, and the docked grid sets its detail width, via CSSOM custom
 properties. Neither needs inline style markup. Browser tests fail on any CSP violation. The rest of the
-server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page.
+server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page. The `connect-src`
+exceptions are for direct browser inference; external scripts, styles and forms remain disallowed.
+
+## AI assistant
+
+Open **Ask AI** beside Filter, or press **Ctrl+J** / **Cmd+J**. On wide screens the assistant docks with
+its own resizable divider and remembers the width in this browser. It opens as a drawer on medium windows
+and as a bottom sheet on phones. Enter sends, Shift+Enter inserts a newline, and **Stop** aborts the reply.
+Closing the panel preserves the chat until reload. Settings are also available under **Settings → AI assistant…**.
+
+**Your own server** supports an OpenAI-compatible Chat Completions endpoint with tool calling. Enter a
+base URL (for example `https://todo.example.com/v1`) and your server's model name. The browser sends
+`POST …/v1/chat/completions` directly, never through `todo-server`. The endpoint must answer the browser's
+CORS preflight (`OPTIONS`), allow the exact app origin, `POST`, and the `Content-Type` header, and include
+`Access-Control-Allow-Origin` on the reply, including its stream. No redirects, cookies, referrer,
+To-do credentials or API key are sent. Browsers may also request permission to access a locally hosted model.
+ChatGPT account sign-in and browser storage of model credentials are not supported.
+
+Only `127.0.0.1` is classified as **This device**; it may use HTTP or HTTPS. Everything else must use HTTPS
+and is treated as **Cloud**, including private host names that the browser cannot verify. Saving a Cloud
+endpoint requires explicit consent. Each list defaults to **Hidden**; **Private only** is excluded from Cloud,
+and **All models** opts in to both. Lists inherit the collection rule unless overridden. The shared assistant
+projects the confirmed replica before answering tools, and scope or provider changes clear the conversation.
+Settings and pane width are browser-local; conversation text is not persisted or synced.
+
+Model output cannot submit commands. **Approve** submits the exact reviewed effects through the same durable
+sync, digest and confirmed-revision checks as desktop; **Reject** submits nothing. Confirmed changes appear
+under **Assistant** in Activity and offer exact Undo. If a proposal becomes stale, request it again.
 
 ## Signing in and the API
 
@@ -624,7 +652,8 @@ The status bar shows shortcuts only when their actions are available.
   and clock, alert tests cover explicit permission, title-only delivery and task navigation, dedupe across tabs
   and reload, rescheduling and removal, and fallback actions. The docked splitter
   tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
-  and viewport changes, and wide-detail text and list layout. Settings tests use the keyboard to open
+  and viewport changes, and wide-detail text and list layout. Assistant tests cover focus, responsive layout,
+  a real streaming fetch and Stop, and exact outbound bodies for the model's list-access gate. Settings tests use the keyboard to open
   the same-origin admin pages from the desktop sidebar and phone drawer. Set `FIXTURE_PORT` to change the port
   from the default 4173.
 - **The screenshot gallery** (`e2e/tests/gallery.spec.mjs`): every screen in both themes — desktop My Day with
@@ -650,12 +679,14 @@ The status bar shows shortcuts only when their actions are available.
   `list-settings-{light,dark}.png` against the same renovation data as desktop.
   The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
-  CI uploads them as `web-gallery-fixtures-1` and `web-gallery-fixtures-2`. Compare them with the approved mockups (kept outside this repository)
-  after every UI change.
+  CI uploads them as `web-gallery-fixtures-1` and `web-gallery-fixtures-2`. Assistant shots (`ai-*.png`)
+  capture wide unconfigured, empty and edit states, medium batch and settings, and the narrow creation sheet at 2×.
+  Compare them with the approved mockups after every UI change.
 - **Live tests** (`e2e/live`, `live.config.mjs`): a real `todo-server` (from `target/debug`, or
   `$TODO_SERVER_BIN`) with a fresh data directory on loopback, and the real build from `apps/web/dist`. A
   virtual WebAuthn authenticator registers the first passkey with the setup code. The test then uses the app:
-  the session + CSRF API, a change from a second tab arriving over the event stream, an edit made while the
+  the session + CSRF API, an assistant batch approved in part and undone, a rejected edit, a stale review after
+  another tab writes, a change from a second tab arriving over the event stream, an edit made while the
   API is unreachable that survives a reload and is sent afterwards, **Sync now** reconnecting the event
   stream without waiting for backoff and being disabled while connecting, completing, and a request without the CSRF
   header being refused. Activity reads confirmed edits from another tab and undoes one through the session.

@@ -739,6 +739,48 @@ pub fn undo(target: &UndoTarget) -> Result<TrackedUndo, String> {
     })
 }
 
+/// Pin the confirmed state for inference; fixture inference can preview but cannot submit.
+pub fn assistant_snapshot() -> Option<todo_client::assistant::ConfirmedSnapshot> {
+    if let Some(client) = live() {
+        return client.assistant_snapshot();
+    }
+    #[cfg(feature = "fixtures")]
+    return BACKEND.with(|b| match &*b.borrow() {
+        Some(Backend::Local(local)) => Some(todo_client::assistant::ConfirmedSnapshot {
+            revision: todo_client::assistant::Revision {
+                epoch: Uuid::nil(),
+                cursor: local.counter,
+            },
+            state: local.state.clone(),
+            stale: false,
+        }),
+        _ => None,
+    });
+    #[cfg(not(feature = "fixtures"))]
+    None
+}
+
+pub fn approve_assistant<P: todo_client::assistant::provider::Provider>(
+    controller: &todo_client::assistant::Controller<P, BrowserClock, BrowserEntropy>,
+    id: CommandId,
+    digest: [u8; 32],
+) -> Result<todo_client::assistant::Approval, todo_client::assistant::ReviewError> {
+    use todo_client::assistant::ReviewError;
+    if status().read_only {
+        return Err(ReviewError::NotReady);
+    }
+    controller.approve(&live().ok_or(ReviewError::NotReady)?, id, digest)
+}
+
+pub fn assistant_outcome(
+    approval: &todo_client::assistant::Approval,
+) -> todo_client::assistant::ApprovalOutcome {
+    use todo_client::assistant::ApprovalOutcome;
+    live().map_or(ApprovalOutcome::Unavailable, |c| {
+        c.approval_outcome(approval)
+    })
+}
+
 /// The confirmed position, not the optimistic view; a change here may mean new feed entries.
 pub fn activity_revision() -> Option<(Option<todo_client::Epoch>, u64)> {
     live().map(|c| (c.epoch(), c.cursor()))

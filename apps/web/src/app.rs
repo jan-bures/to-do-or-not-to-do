@@ -2,6 +2,8 @@
 //! `tokens.css`; the view supplies state, including the user's preferred docked detail width.
 
 mod activity;
+mod assistant;
+mod assistant_provider;
 mod attachments;
 mod board;
 mod bulk;
@@ -117,6 +119,7 @@ pub struct Toast {
 pub struct Ctx {
     state: RwSignal<Arc<State>>,
     sync: RwSignal<Sync>,
+    ai: assistant::Ui,
     sign_in_started: StoredValue<bool>,
     synced_at: RwSignal<Option<Now>>,
     now: RwSignal<Now>,
@@ -205,6 +208,7 @@ impl Ctx {
             self.sign_in_started.set_value(true);
             platform::sign_in(&platform::path());
         }
+        self.ai.sync(s.signed_out);
         self.sync.set(s);
         self.failures.set(backend::failures());
         let revision = backend::activity_revision();
@@ -702,10 +706,16 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         cols
     });
     let narrow = RwSignal::new(platform::detail_overlays());
-    let detail_modal = Memo::new(move |_| narrow.get() && detail.with(Option::is_some));
+    let viewport = RwSignal::new(platform::viewport_width());
+    let ai = assistant::Ui::new(viewport, narrow);
+    let beside_ai = Memo::new(move |_| ai.open.get() && !narrow.get() && !ai.four_wide.get());
+    let detail_modal = Memo::new(move |_| {
+        !ai.modal.get() && (narrow.get() || beside_ai.get()) && detail.with(Option::is_some)
+    });
     let c = Ctx {
         state,
         sync: RwSignal::new(backend::status()),
+        ai,
         sign_in_started: StoredValue::new(false),
         synced_at: RwSignal::new(None),
         now,
@@ -819,6 +829,14 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         c.cancel_sidebar_drag();
         c.timeline_ui.cancel();
     });
+    let _resize = window_event_listener(leptos::ev::resize, move |_| {
+        viewport.set(platform::viewport_width())
+    });
+    let _ai_settings = window_event_listener(leptos::ev::storage, move |ev| {
+        if assistant::is_profile_key(ev.key().as_deref()) {
+            ai.reload_profile();
+        }
+    });
     let _folds = window_event_listener(leptos::ev::storage, move |ev| {
         if platform::is_fold_key(ev.key().as_deref())
             && let Some(ids) = platform::load_folded()
@@ -861,44 +879,89 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     }
 
     track_overlay_focus(c);
-    let detail_layout = detail_splitter::Layout::new();
-    let bulk_summary = Memo::new(move |_| !narrow.get() && c.multi_active());
-    let docked =
-        Memo::new(move |_| !narrow.get() && (detail.with(Option::is_some) || bulk_summary.get()));
+    use detail_splitter::{CHROME, Layout, Pane};
+    use todo_design::layout::{desktop, elevation};
+    let bulk_summary = Memo::new(move |_| !narrow.get() && !beside_ai.get() && c.multi_active());
+    let docked = Memo::new(move |_| {
+        !narrow.get() && !beside_ai.get() && (detail.with(Option::is_some) || bulk_summary.get())
+    });
+    let ai_docked = Memo::new(move |_| ai.open.get() && !narrow.get());
+    let detail_preferred = Layout::preferred(Pane::Detail);
+    let ai_layout = Layout::new(
+        Pane::Assistant,
+        Layout::preferred(Pane::Assistant),
+        viewport,
+        move || {
+            if docked.get() {
+                detail_preferred.get().min(viewport.get()) + elevation::HAIRLINE as i32
+            } else {
+                0
+            }
+        },
+    );
+    let ai_reserved = move || {
+        if ai_docked.get() {
+            ai_layout.width.get() + elevation::HAIRLINE as i32
+        } else {
+            0
+        }
+    };
+    let detail_layout = Layout::new(Pane::Detail, detail_preferred, viewport, ai_reserved);
+    let compact = move || {
+        let room_width = viewport.get()
+            - CHROME
+            - ai_reserved()
+            - if docked.get() {
+                detail_layout.width.get()
+            } else {
+                0
+            };
+        (docked.get() || ai_docked.get()) && room_width < desktop::LIST_MIN as i32
+    };
     let app = NodeRef::<html::Div>::new();
     Effect::new(move |_| {
-        let width = detail_layout.width.get();
-        let overridden = docked.get() && width != detail_splitter::DEFAULT;
+        let detail = docked.get().then(|| detail_layout.width.get());
+        let assistant = ai_docked.get().then(|| ai_layout.width.get());
         if let Some(app) = app.get() {
             let style = web_sys::HtmlElement::style(&app);
-            if overridden {
-                // Set one numeric CSSOM property, without inline style markup (the app's CSP).
-                let _ = style.set_property("--detail-pane-width", &format!("{width}px"));
-            } else {
-                let _ = style.remove_property("--detail-pane-width");
-                if style.length() == 0 {
-                    let _ = app.remove_attribute("style");
+            for (key, width, pane) in [
+                ("--detail-pane-width", detail, Pane::Detail),
+                ("--assistant-pane-width", assistant, Pane::Assistant),
+            ] {
+                if let Some(width) = width.filter(|w| *w != pane.default_width()) {
+                    // Numeric CSSOM properties, not inline style markup.
+                    let _ = style.set_property(key, &format!("{width}px"));
+                } else {
+                    let _ = style.remove_property(key);
                 }
+            }
+            if style.length() == 0 {
+                let _ = app.remove_attribute("style");
             }
         }
     });
     view! {
         <div class="app" node_ref=app class:has-detail=move || c.detail.with(Option::is_some)
             class:has-bulk-summary=move || bulk_summary.get()
-            class:compact-room=move || docked.get() && detail_layout.compact_room.get()
+            class:compact-room=compact class:assistant-open=move || ai.open.get()
+            class:ai-detail-overlay=move || beside_ai.get() && c.detail_modal.get()
+            class:assistant-modal=move || ai.modal.get()
             class:detail-modal=move || c.detail_modal.get() class:drawer-open=move || c.drawer.get()>
             <SidebarPane/>
             <div class="scrim" aria-hidden="true" on:click=move |_| {
-                if c.drawer.get_untracked() { c.drawer.set(false); } else { c.select(None); }
+                if ai.modal.get_untracked() { ai.dismiss(); }
+                else if c.drawer.get_untracked() { c.drawer.set(false); } else { c.select(None); }
             }></div>
-            <main class="main" inert=move || (c.drawer.get() && !c.drag_active()) || c.detail_modal.get()>
+            <main class="main" inert=move || (c.drawer.get() && !c.drag_active()) || c.detail_modal.get() || ai.modal.get()>
                 <AppBar/>
                 <RoomPane/>
                 <bulk::Bar/>
                 <ListFoot/>
             </main>
-            <detail_splitter::DetailSplitter layout=detail_layout docked=docked/>
+            <detail_splitter::Splitter layout=detail_layout docked=docked/>
             <DetailPane/>
+            <detail_splitter::Splitter layout=ai_layout docked=ai_docked/>
+            <assistant::Panel/>
             <Show when=move || bulk_summary.get()>
                 <aside class="bulk-summary" aria-label="Selection summary">
                     {icon(Icon::List)}
@@ -913,6 +976,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         <task_drag::Lift/>
         <sidebar_drag::Lift/>
         <bulk::DueDialog/>
+        <assistant::Settings/>
     }
 }
 
@@ -923,7 +987,10 @@ fn track_overlay_focus(c: Ctx) {
         let room = c.room.get();
         if modal && !prev.as_ref().is_some_and(|(open, _, _)| *open) {
             request_animation_frame(move || {
-                if c.detail_modal.get_untracked() {
+                if c.detail_modal.get_untracked()
+                    && !(c.ai.open.get_untracked()
+                        && pickers::focused().is_some_and(|el| el.id() == "assistant-prompt"))
+                {
                     platform::focus("task-detail");
                 }
             });
@@ -1017,9 +1084,12 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         }
         return;
     }
+    if assistant::key(c, ev, &key) {
+        return;
+    }
     let drawer = c.drawer.get_untracked();
     let modal = c.detail_modal.get_untracked();
-    if key == "tab" && (drawer || modal) {
+    if key == "tab" && (drawer || modal && !c.ai.open.get_untracked()) {
         platform::contain_tab(if drawer { "list-drawer" } else { "task-detail" }, ev);
         return;
     }
@@ -1554,7 +1624,7 @@ fn SidebarPane() -> impl IntoView {
         <aside class="sidebar" id="list-drawer" tabindex="-1" aria-label="Lists"
             role=move || c.drawer.get().then_some("dialog")
             aria-modal=move || c.drawer.get().then_some("true")
-            inert=move || c.detail_modal.get()
+            inert=move || c.detail_modal.get() || c.ai.modal.get()
         >
             <div class="brand">
                 <img class="brand-mark" src="/app/brand/icon-small.svg" alt="" />
@@ -1799,6 +1869,7 @@ fn SettingsMenu() -> impl IntoView {
                 "open-admin",
                 "sync-now",
                 "reminder-notification-setting",
+                "open-ai-settings",
                 "device-settings",
                 "date-format-setting",
                 "sign-out",
@@ -1808,6 +1879,7 @@ fn SettingsMenu() -> impl IntoView {
                 "open-admin",
                 "sync-now",
                 "reminder-notification-setting",
+                "open-ai-settings",
                 "device-settings",
                 "date-format-setting",
             ]
@@ -1863,6 +1935,9 @@ fn SettingsMenu() -> impl IntoView {
                         }
                     >{icon(Icon::RefreshCw)}{move || if c.sync.with(|s| s.connection == Connection::Syncing) { "Syncing…" } else { "Sync now" }}</button>
                     <reminder_alerts::Setting/>
+                    <button type="button" id="open-ai-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
+                        on:click=move |_| { menu.close(); c.ai.settings.set(Some(menu.trigger)); }
+                    >{icon(Icon::Sparkles)}"AI assistant…"</button>
                     <button type="button" id="device-settings" role="menuitem" tabindex="-1" aria-haspopup="dialog"
                         on:click=move |_| { menu.close(); c.device_settings_open.set(true); }
                     >{icon(Icon::Link)}"Devices…"</button>
@@ -1878,6 +1953,7 @@ fn SettingsMenu() -> impl IntoView {
                     {csrf.clone().map(|token| view! {
                         <form method="post" action="/auth/logout" role="none" on:submit=move |_| {
                             // The token may have changed since the page loaded (see `backend::csrf`).
+                            c.ai.sign_out();
                             if let (Some(i), Some(t)) = (field.get(), backend::csrf()) {
                                 i.set_value(&t);
                             }
@@ -1936,6 +2012,7 @@ fn AppBar() -> impl IntoView {
                     on:click=move |_| c.open_filter()
                 >{icon(Icon::Search)}<span>"Filter"</span><kbd class="keycap">"Ctrl K"</kbd></button>
             </Show>
+            <assistant::Trigger/>
             <Show when=move || c.filter_open.get()>
                 <div class="filter-field" role="search">
                     {icon(Icon::Search)}
@@ -2459,6 +2536,7 @@ fn TaskRow(row: Row, phase: Option<Phase>) -> impl IntoView {
     view! {
         <li
             class="row"
+            class:ai-updated=move || c.ai.highlights.with(|rows| rows.contains_key(&id))
             class:done=row.done
             class:task-dragging=move || c.dragging_row(id)
             class:task-drop-before=move || c.drop_target(task_drag::Target::Slot(todo_client::task_drag::Slot { row: id, after: false }))
@@ -2847,8 +2925,8 @@ fn DetailPane() -> impl IntoView {
     view! {
         <section class="detail" id="task-detail" tabindex="-1" aria-label="Task detail"
             role=move || c.detail_modal.get().then_some("dialog")
-            aria-modal=move || c.detail_modal.get().then_some("true")
-            inert=move || c.detail.with(Option::is_none)
+            aria-modal=move || (c.detail_modal.get() && !c.ai.open.get()).then_some("true")
+            inert=move || c.detail.with(Option::is_none) || c.ai.modal.get()
             on:dragover=move |ev| uploads.drag_over(c, ev)
             on:drop=move |ev| uploads.drop_files(c, ev)>
             <div class="detail-scroll" on:scroll=move |_| {
@@ -3420,7 +3498,7 @@ fn AddStep(id: TaskId) -> impl IntoView {
 fn StatusBar() -> impl IntoView {
     let c = ctx();
     view! {
-        <footer class="statusbar" inert=move || c.detail_modal.get()>
+        <footer class="statusbar" inert=move || c.detail_modal.get() || c.ai.modal.get()>
             <span class="sb-counts">
                 {move || c.room.with(|room| match room {
                     RoomId::Activity(agent) => Some(c.activity_feed.with(|f| {

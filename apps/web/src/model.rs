@@ -484,6 +484,7 @@ pub fn agent_mark(actor: &Actor) -> Option<AgentMark> {
         "claude" => ("C".to_owned(), Some("claude")),
         "codex" => ("X".to_owned(), Some("codex")),
         "pi" => ("π".to_owned(), Some("pi")),
+        "assistant" => ("A".to_owned(), Some("assistant")),
         other => (
             other
                 .chars()

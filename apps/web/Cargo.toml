@@ -25,7 +25,7 @@ fixtures = []
 
 [dependencies]
 todo-core = { path = "../../crates/todo-core" }
-todo-client = { path = "../../crates/todo-client", features = ["web"] }
+todo-client = { path = "../../crates/todo-client", features = ["web", "assistant"] }
 todo-design = { path = "../../crates/todo-design" }
 leptos = { version = "0.8.23", features = ["csr"] }
 serde = { version = "1", features = ["derive"] }
@@ -44,7 +44,9 @@ web-sys = { version = "0.3.77", features = [
     "KeyboardEvent", "DragEvent", "DataTransfer", "DataTransferItem", "DataTransferItemList", "FileSystemEntry",
     "File", "FileList", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
     "VisibilityState", "Storage", "StorageEvent", "CssStyleDeclaration", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
-    "DomRectReadOnly", "Headers", "RequestInit", "RequestCredentials", "Response", "Animation",
+    "DomRectReadOnly", "Headers", "Request", "RequestInit", "RequestCredentials", "RequestMode",
+    "RequestRedirect", "ReferrerPolicy", "Response", "Animation", "AbortController", "AbortSignal",
+    "ReadableStream", "ReadableStreamDefaultReader",
     "ScrollIntoViewOptions", "ScrollLogicalPosition", "ScrollToOptions", "ScrollBehavior", "FocusOptions",
 ] }
 

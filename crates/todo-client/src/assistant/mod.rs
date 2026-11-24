@@ -16,6 +16,7 @@ mod access;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;
+pub mod openai;
 pub mod provider;
 mod tools;
 pub mod wire;

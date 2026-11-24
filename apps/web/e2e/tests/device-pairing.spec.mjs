@@ -41,6 +41,8 @@ test("phone drawer yields Tab and Escape to the device settings dialog", async (
   await page.keyboard.press("ArrowDown");
   await expect(menu.getByRole("menuitem", { name: /reminder notifications/i })).toBeFocused();
   await page.keyboard.press("ArrowDown");
+  await expect(menu.getByRole("menuitem", { name: "AI assistant…" })).toBeFocused();
+  await page.keyboard.press("ArrowDown");
   await expect(devices).toBeFocused();
   await page.keyboard.press("Space");
   await expect(menu).toBeHidden();

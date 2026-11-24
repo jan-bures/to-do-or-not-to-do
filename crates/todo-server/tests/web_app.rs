@@ -605,6 +605,7 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
     }
     // The CSP allows wasm compilation but no inline script or style, and only this origin.
     assert!(APP_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
+    assert!(APP_CSP.contains("connect-src 'self' https: http://127.0.0.1:*;"));
     assert!(!APP_CSP.contains("unsafe-inline"));
     assert!(APP_CSP.contains("frame-ancestors 'none'"));
 

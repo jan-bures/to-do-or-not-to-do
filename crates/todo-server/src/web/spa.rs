@@ -16,8 +16,8 @@
 //!
 //! # Headers
 //!
-//! `index.html` gets [`APP_CSP`]: everything from this origin only, and `'wasm-unsafe-eval'` so the
-//! module can be compiled. No inline script or style is allowed. It carries the CSRF token, so it is
+//! `index.html` gets [`APP_CSP`]: app resources are same-origin, and `'wasm-unsafe-eval'` lets the
+//! browser compile the module. No inline script or style is allowed. It carries the CSRF token, so it is
 //! `no-store, no-transform` ([`NO_STORE`]): never cached, and never compressed by a proxy (BREACH).
 //! The other files hold no secret and are revalidated with an `ETag` (`private, no-cache`).
 //!
@@ -52,9 +52,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 
-/// The content security policy of the web app's page.
+/// The web app permits direct HTTPS and loopback model connections. Other assets stay same-origin.
 pub const APP_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-style-src 'self'; img-src 'self' data: blob:; connect-src 'self'; font-src 'self'; \
+style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https: http://127.0.0.1:*; font-src 'self'; \
 frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 
 /// The marker in `index.html` that is replaced with the session's CSRF meta tag.

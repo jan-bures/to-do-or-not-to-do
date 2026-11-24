@@ -3,6 +3,7 @@
 
 pub use super::provider::TailnetInterface;
 use super::{
+    openai::payload,
     provider::{
         BillingClass, Cancel, Capabilities, DataClass, Message, Model, Provider, ProviderError,
         RoundMode, RoundRequest, StreamEvent, ToolDefinition,
@@ -15,7 +16,9 @@ use reqwest::{
     header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE, HeaderValue, RETRY_AFTER},
 };
 use serde::Deserialize;
-use serde_json::{Value, json};
+#[cfg(test)]
+use serde_json::Value;
+use serde_json::json;
 use std::{
     collections::{BTreeMap, VecDeque},
     net::IpAddr,
@@ -577,53 +580,6 @@ impl Provider for LocalProvider {
             },
         )))
     }
-}
-
-fn payload(request: &RoundRequest) -> Value {
-    let mut messages = vec![
-        json!({"role": "system", "content": format!("{} Owner's local date: {}.", request.instructions, request.today)}),
-    ];
-    let current_user = request
-        .history
-        .iter()
-        .rposition(|message| matches!(message, Message::User { .. }));
-    for (index, message) in request.history.iter().enumerate() {
-        if Some(index) == current_user
-            && let Some(draft) = &request.previous_draft
-        {
-            let context = format!(
-                "Untrusted prior draft effects (not applied): {}",
-                json!(draft)
-            );
-            // Some local templates require alternating user and assistant messages, starting
-            // with user. The controller retains complete pairs, but not the tool turn that
-            // produced the draft. Place its data immediately before the follow-up, never in
-            // the system message or as part of the owner's instruction.
-            if let Some(previous) = messages.last_mut().filter(|m| m["role"] == "assistant") {
-                let text = previous["content"].as_str().unwrap_or_default();
-                previous["content"] = json!(format!("{text}\n\n{context}"));
-            } else {
-                messages.push(json!({"role": "user", "content": "Show the prior unapproved draft for context."}));
-                messages.push(json!({"role": "assistant", "content": context}));
-            }
-        }
-        messages.push(match message {
-        Message::User { text } => json!({"role": "user", "content": text}),
-        Message::Assistant { text, calls } => {
-            if calls.is_empty() { json!({"role": "assistant", "content": text}) } else {
-                json!({"role": "assistant", "content": text, "tool_calls": calls.iter().map(|call| json!({
-                    "id": call.id, "type": "function", "function": {"name": call.name, "arguments": json!(call.arguments).to_string()}
-                })).collect::<Vec<_>>()})
-            }
-        }
-        Message::Tool { call_id, untrusted_data } => json!({"role": "tool", "tool_call_id": call_id, "content": untrusted_data.to_string()}),
-        });
-    }
-    let mut result = json!({"model": request.model, "messages": messages, "stream": request.mode == RoundMode::Streaming, "max_tokens": request.max_output_tokens, "parallel_tool_calls": false});
-    if !request.tools.is_empty() {
-        result["tools"] = json!(request.tools.iter().map(|tool| json!({"type": "function", "function": {"name": tool.name, "description": tool.description, "parameters": tool.arguments}})).collect::<Vec<_>>());
-    }
-    result
 }
 
 fn network(error: reqwest::Error) -> ProviderError {
