@@ -105,15 +105,34 @@ impl ShellView {
             return card.child(text(
                 ty::META,
                 p.ink_3,
-                if self.ai.cloud.status.is_some() {
-                    "Not configured on your server."
-                } else {
-                    "Waiting for assistant settings from your server…"
-                },
+                self.ai
+                    .cloud
+                    .status
+                    .as_ref()
+                    .map_or(
+                        "Waiting for assistant settings from your server…",
+                        |status| {
+                            status
+                                .disabled_reason
+                                .as_deref()
+                                .unwrap_or("Not configured on your server.")
+                        },
+                    )
+                    .to_owned(),
             ));
         }
         let active = self.ai.cloud.active(&setup.draft);
         if cloud {
+            if let Some((_, label)) = &self.ai.cloud.signed_in {
+                card = card.child(text(
+                    ty::META,
+                    p.ink,
+                    format!(
+                        "Connected {}. Your selection hasn’t changed.",
+                        model::labels::one_line(label)
+                    ),
+                ));
+            }
             for (index, account) in self.ai.cloud.saved().into_iter().enumerate() {
                 let id = account.id;
                 let selected = Some(id) == setup.draft.chatgpt_account;
@@ -150,6 +169,12 @@ impl ShellView {
             }
             if self.ai.cloud.fixture_enabled
                 && let Some(account) = &active
+                && !self
+                    .ai
+                    .cloud
+                    .saved()
+                    .iter()
+                    .any(|saved| saved.id == account.id)
             {
                 card = card.child(text(
                     ty::META,
@@ -188,7 +213,7 @@ impl ShellView {
                     .children(device.then(|| {
                         self.ai_button(
                             "assistant-chatgpt-start-device",
-                            if active.is_some() {
+                            if active.is_some() || !self.ai.cloud.saved().is_empty() {
                                 "Add another ChatGPT account"
                             } else {
                                 "Sign in with ChatGPT"

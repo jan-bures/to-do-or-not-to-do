@@ -48,6 +48,11 @@ internal fun HostedAssistantSettings(ui: AssistantUi, model: AssistantModel?) {
         Label("Cloud", T.META_PHONE, r.ink3)
         Label("Sign in once to use your ChatGPT plan or available credits on paired devices.", T.BODY, r.ink2, maxLines = Int.MAX_VALUE)
         AiButton("Manage usage", { browser.openUri(USAGE_URL) }, quiet = true)
+        ui.signedIn?.let { account ->
+            Label("Connected ${account.label}. Your selection hasn’t changed.", T.BODY, r.ink,
+                Modifier.semantics { liveRegion = LiveRegionMode.Polite }, maxLines = Int.MAX_VALUE)
+        }
+        state?.disabledReason?.let { Label(it, T.BODY, r.ink2, maxLines = Int.MAX_VALUE) }
         state?.accounts.orEmpty().forEach { account ->
             val selected = state?.selectedAccount == account.id
             Label(account.label, T.BODY, r.ink, maxLines = 2)

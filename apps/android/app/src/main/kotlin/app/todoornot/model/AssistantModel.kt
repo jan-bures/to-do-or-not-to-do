@@ -4,6 +4,7 @@ import app.todoornot.core.AndroidAssistant
 import app.todoornot.core.AssistantAccess
 import app.todoornot.core.AssistantAccessRow
 import app.todoornot.core.AssistantDeviceCode
+import app.todoornot.core.AssistantHostedAccount
 import app.todoornot.core.AssistantHostedModel
 import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantPanelState
@@ -47,7 +48,7 @@ internal interface AssistantCore : Closeable {
     fun models(account: String?): List<AssistantHostedModel> = emptyList()
     fun useHosted(account: String?, model: String) {}
     fun startChatgpt(): AssistantDeviceCode? = null
-    fun pollChatgpt(attempt: String): String? = null
+    fun pollChatgpt(attempt: String): AssistantHostedAccount? = null
     fun signOutChatgpt(account: String): Boolean = false
     fun scopeReview(): AssistantScopeReview? = null
     fun approveScope(review: AssistantScopeReview) {}
@@ -89,6 +90,7 @@ internal data class AssistantUi(
     val busy: Boolean = false,
     val problem: String? = null,
     val code: AssistantDeviceCode? = null,
+    val signedIn: AssistantHostedAccount? = null,
     val hostedModels: List<AssistantHostedModel>? = null,
     val scopeReview: AssistantScopeReview? = null,
 )
@@ -246,7 +248,9 @@ internal class AssistantModel(
     }
     fun useHosted(account: String?, model: String) = act { core.useHosted(account, model) }
     fun signOutChatgpt(account: String) = act {
-        if (!core.signOutChatgpt(account)) throw FfiException.Invalid("Signed out on your server. If needed, disconnect the app in ChatGPT settings to revoke access there.")
+        val revoked = core.signOutChatgpt(account)
+        _ui.update { if (it.signedIn?.id == account) it.copy(signedIn = null) else it }
+        if (!revoked) throw FfiException.Invalid("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.")
     }
     fun startChatgpt() {
         if (!foreground || closed || signIn?.isCompleted == false) return
@@ -255,14 +259,17 @@ internal class AssistantModel(
                 val code = withContext(io) { serial.withLock {
                     if (!foreground || closed) null else { followLifecycle(); core.startChatgpt() }
                 } } ?: return@launch
-                _ui.update { it.copy(code = code, problem = null) }
+                _ui.update { it.copy(code = code, problem = null, signedIn = null) }
                 while (!closed) {
                     signInForeground.first { it }
                     delay(1000)
                     val account = withContext(io) { serial.withLock {
                         if (!foreground || closed) null else core.pollChatgpt(code.attempt).also { publish() }
                     } }
-                    if (account != null) break
+                    if (account != null) {
+                        _ui.update { it.copy(signedIn = account, code = null) }
+                        break
+                    }
                 }
             } catch (err: FfiException.Invalid) {
                 _ui.update { it.copy(problem = err.detail) }

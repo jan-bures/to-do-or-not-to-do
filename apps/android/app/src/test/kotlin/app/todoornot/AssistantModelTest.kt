@@ -5,6 +5,7 @@ import app.todoornot.core.AssistantAccessRow
 import app.todoornot.core.AssistantConnection
 import app.todoornot.core.AssistantDeviceCode
 import app.todoornot.core.AssistantHosted
+import app.todoornot.core.AssistantHostedAccount
 import app.todoornot.core.AssistantPanelState
 import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantProposal
@@ -41,6 +42,7 @@ class AssistantModelTest {
         var scope: AssistantScopeReview? = null
         var approvedScope: AssistantScopeReview? = null
         var pendingPolls = 0
+        var connected: AssistantHostedAccount? = null
         override fun listen(onChange: () -> Unit) { changed = onChange }
         override fun panel(now: LocalNow): AssistantPanelState { shownNow = now; return state }
         override fun resume() { foreground = true }
@@ -63,7 +65,10 @@ class AssistantModelTest {
         override fun undo(proposal: AssistantProposal) = Unit
         override fun close() { closed = true }
         override fun startChatgpt() = AssistantDeviceCode("fixture-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device")
-        override fun pollChatgpt(attempt: String): String? { pendingPolls++; return null }
+        override fun pollChatgpt(attempt: String): AssistantHostedAccount? {
+            pendingPolls++
+            return connected
+        }
         override fun scopeReview() = scope
         override fun approveScope(review: AssistantScopeReview) { approvedScope = review }
         fun replace(panel: AssistantPanelState) { state = panel; changed() }
@@ -142,10 +147,29 @@ class AssistantModelTest {
         assertEquals(null, model.ui.value.code)
     }
 
+    @Test fun deviceSignInNamesTheNewAccountWithoutChangingSelection() = runTest {
+        val core = Core()
+        val existing = AssistantHostedAccount("first", "first@example.com")
+        val added = AssistantHostedAccount("second", "second@example.com")
+        core.state = core.state.copy(hosted = AssistantHosted(
+            true, true, false, listOf(existing, added), existing.id, false, "sample-model", null))
+        val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }
+        model.foreground(true)
+        model.startChatgpt()
+        runCurrent()
+        core.connected = added
+        advanceTimeBy(1100)
+        runCurrent()
+        assertEquals(null, model.ui.value.code)
+        assertEquals(added, model.ui.value.signedIn)
+        assertEquals(existing.id, model.ui.value.panel.hosted?.selectedAccount)
+        assertEquals("sample-model", model.ui.value.panel.hosted?.model)
+    }
+
     @Test fun cloudSendWaitsForAnExplicitListScopeApproval() = runTest {
         val core = Core()
         core.state = core.state.copy(destination = "ChatGPT (cloud)",
-            hosted = AssistantHosted(true, true, false, emptyList(), "fixture-account", false, "sample-model"))
+            hosted = AssistantHosted(true, true, false, emptyList(), "fixture-account", false, "sample-model", null))
         val shown = AssistantScopeReview("fixture-account", "fixture-version", 3uL, listOf("fixture-list"), listOf("Inbox"))
         core.scope = shown
         val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }

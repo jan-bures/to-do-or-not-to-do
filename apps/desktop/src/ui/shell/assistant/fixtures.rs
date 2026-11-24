@@ -289,6 +289,29 @@ impl ShellView {
                         consented_lists: None,
                     });
                 }
+                if name == "ai-chatgpt-signed-in" {
+                    let added = todo_client::assistant::relay::Account {
+                        id: Uuid::from_u128(2),
+                        label: "second@example.com".into(),
+                        approved: false,
+                        approved_lists: BTreeSet::new(),
+                    };
+                    self.ai.cloud.signed_in = Some((added.id, added.label.clone()));
+                    self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
+                        chatgpt: true,
+                        chatgpt_device_code: true,
+                        accounts: vec![
+                            todo_client::assistant::relay::Account {
+                                id: Uuid::from_u128(1),
+                                label: "you@example.com".into(),
+                                approved: false,
+                                approved_lists: BTreeSet::new(),
+                            },
+                            added,
+                        ],
+                        ..Default::default()
+                    });
+                }
                 if let Some(view) = &mut self.ai.fixture {
                     if !signed_in {
                         view.composer = Composer::ChooseModel;

@@ -17,6 +17,7 @@ pub struct AssistantHosted {
     pub selected_account: Option<String>,
     pub private_selected: bool,
     pub model: String,
+    pub disabled_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -142,6 +143,7 @@ impl AndroidAssistant {
             },
             private_selected: session.settings.hosted == Some(Hosted::Private),
             model: session.settings.hosted_model.clone(),
+            disabled_reason: status.disabled_reason.clone(),
         })
     }
 
@@ -279,12 +281,18 @@ impl AndroidAssistant {
     }
 
     /// One bounded poll; None means the owner has not approved the code yet.
-    pub fn poll_chatgpt(&self, attempt: String) -> Result<Option<String>, FfiError> {
+    pub fn poll_chatgpt(
+        &self,
+        attempt: String,
+    ) -> Result<Option<AssistantHostedAccount>, FfiError> {
         match request(self.paired()?.poll(id(attempt)?))? {
             relay::Poll::Pending => Ok(None),
             relay::Poll::SignedIn { account } => {
                 self.refresh_relay()?;
-                Ok(Some(account.id.to_string()))
+                Ok(Some(AssistantHostedAccount {
+                    id: account.id.to_string(),
+                    label: one_line(&account.label),
+                }))
             }
             relay::Poll::Expired => Err(invalid("The ChatGPT sign-in code expired. Start again.")),
             relay::Poll::Failed => Err(invalid("ChatGPT sign-in didn’t finish. Start again.")),

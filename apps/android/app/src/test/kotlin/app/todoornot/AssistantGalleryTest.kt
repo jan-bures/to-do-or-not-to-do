@@ -72,7 +72,8 @@ class AssistantGalleryTest {
                         AssistantAccessRow("reading", "Reading", false, false, false, AssistantAccess.ALL_MODELS),
                     ), 1u, false, emptyList(), null, null)
                 val account = AssistantHostedAccount("example-account", "you@example.com")
-                val hosted = AssistantHosted(true, true, true, emptyList(), null, false, "")
+                val added = AssistantHostedAccount("example-second-account", "second@example.com")
+                val hosted = AssistantHosted(true, true, true, emptyList(), null, false, "", null)
                 val states = listOf(
                     "unconfigured" to base.copy(server = null, destination = null),
                     "empty" to base,
@@ -85,7 +86,7 @@ class AssistantGalleryTest {
                     "settings" to base.copy(connection = AssistantConnection.CONNECTED, support = "Streaming + task tools"),
                     "chatgpt_code" to base.copy(server = null, destination = null, hosted = hosted),
                     "chatgpt_account" to base.copy(server = null, destination = "ChatGPT (cloud)",
-                        hosted = hosted.copy(accounts = listOf(account), selectedAccount = account.id, model = "Example model")),
+                        hosted = hosted.copy(accounts = listOf(account, added), selectedAccount = account.id, model = "Example model")),
                     "chatgpt_consent" to base.copy(server = null, destination = "ChatGPT (cloud)",
                         hosted = hosted.copy(accounts = listOf(account), selectedAccount = account.id, model = "Example model")),
                 )
@@ -97,6 +98,7 @@ class AssistantGalleryTest {
                             CompositionLocalProvider(LocalSheetAtRest provides true) {
                                 val ui = AssistantUi(panel,
                                     code = AssistantDeviceCode("example-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device").takeIf { name == "chatgpt_code" },
+                                    signedIn = added.takeIf { name == "chatgpt_account" },
                                     scopeReview = AssistantScopeReview(account.id, "example-version", 0uL, listOf("reading"), listOf("Reading")).takeIf { name == "chatgpt_consent" })
                                 MainScreen(room, Actions.None, dark, wide, assistant = ui, initialAssistantOpen = true,
                                     fold = if (wide) PaneFold(436.dp, 440.dp) else null,

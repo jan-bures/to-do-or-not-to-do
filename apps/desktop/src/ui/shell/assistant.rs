@@ -1036,6 +1036,7 @@ impl ShellView {
     fn close_ai_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.ai.settings = None;
         self.ai.cloud.code = None;
+        self.ai.cloud.signed_in = None;
         self.ai.key.update(cx, |i, cx| i.set_text("", cx));
         if let Some(handle) = self.ai.close_to.take() {
             window.focus(&handle, cx);

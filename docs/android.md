@@ -255,8 +255,8 @@ In **AI settings**, choose **ChatGPT**, **Your private models (via your server)*
 The first two use the [server relay](hosting-linux.md#ai-assistant-relay) through the current pairing.
 The To-do server keeps the credentials. A ChatGPT account connected by another client is available here
 without a new sign-in. If device sign-in is configured, choose **Sign in with ChatGPT**, choose **Open ChatGPT**
-and enter the displayed code, then return to To-do. Only approve a sign-in you started. Choose the connected
-account and a model. **Sign out** disconnects that ChatGPT account from every paired client; **Disconnect
+and enter the displayed code, then return to To-do. Only approve a sign-in you started. Settings name
+which account connected without changing the current selection. Choose the connected account and a model. **Sign out** disconnects that ChatGPT account from every paired client; **Disconnect
 model** clears this phone's selection only. **Manage usage** opens ChatGPT's usage settings. No provider
 falls back to another automatically.
 
@@ -270,7 +270,8 @@ Lists start **Hidden**. **Private only** allows loopback and the private relay, 
 also allows ChatGPT. A list inherits its collection’s rule unless overridden. Changing a collection resets
 its members’ overrides. The relay shares its list rules and ChatGPT approval across paired devices; direct
 loopback rules are local to the phone. Confirm ChatGPT plan use and the list scope on first use or when the
-set of allowed lists grows. Provider or access changes clear the chat so it cannot reuse earlier context.
+set of allowed lists grows, including when a list is lowered and later made eligible again. Provider or
+access changes clear the chat so it cannot reuse earlier context.
 
 The assistant streams a reply until it finishes or you tap **Stop**. It can propose creating, editing, or
 changing a task's completion; unsupported and destructive operations are not offered. Expand a batch row

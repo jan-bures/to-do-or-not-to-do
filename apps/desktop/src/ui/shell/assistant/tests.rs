@@ -210,6 +210,41 @@ fn non_loopback_inference_cannot_be_enabled_directly() {
 }
 
 #[test]
+fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
+    use todo_client::assistant::relay;
+
+    let mut app = TestApp::new();
+    let mut window = shell(&mut app);
+    window.update(|shell, window, cx| {
+        shell.preview_assistant("ai-chatgpt-signed-in", window, cx);
+        let setup = shell.ai.settings.as_ref().expect("fixture settings");
+        let revision = setup.revision;
+        let before = setup.draft.chatgpt_account;
+        let model = setup.draft.model.clone();
+        let account = relay::Account {
+            id: Uuid::new_v4(),
+            label: "new@example.com".into(),
+            approved: false,
+            approved_lists: Default::default(),
+        };
+        shell.finish_chatgpt_sign_in(
+            revision,
+            account.clone(),
+            relay::Status {
+                chatgpt: true,
+                accounts: vec![account.clone()],
+                ..Default::default()
+            },
+            cx,
+        );
+        let setup = shell.ai.settings.as_ref().expect("fixture settings");
+        assert_eq!(setup.draft.chatgpt_account, before);
+        assert_eq!(setup.draft.model, model);
+        assert_eq!(shell.ai.cloud.signed_in, Some((account.id, account.label)));
+    });
+}
+
+#[test]
 fn errors_are_typed_and_use_owner_facing_words() {
     assert!(problem(ProviderError::Unauthorized).starts_with("API key required or invalid"));
     assert!(problem(ProviderError::Unavailable).contains("may be asleep"));

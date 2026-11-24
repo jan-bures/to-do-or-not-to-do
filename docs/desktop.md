@@ -453,15 +453,17 @@ PKCE verifier and exchanges the code; the app receives no OpenAI token. An accou
 client is available without signing in again. This does not sign the owner into To-do or expose past
 ChatGPT conversations.
 
-Choose a model from the account’s catalog. The first send asks to approve ChatGPT plan use and the
-**All models** list scope. It asks again if that scope grows. Approval is shared for the account across
+Settings name the account that connected without switching the selected account or model. Select the
+account, then choose a model from its catalog. The first send asks to approve ChatGPT plan use and
+all lists currently set to **All models**. It asks again if a new list becomes eligible, or if a list
+is lowered and later made eligible again. Approval is shared for the account across
 paired clients. **Hidden** and **Private only** lists, task notes, and attachments are not shared.
 The To-do server relays the chat to OpenAI with `store: false`, which is not a zero-retention promise.
 Eligible requests can use plan allowance or available credits. Use **Manage usage** to review limits;
 a usage failure stops the reply without automatically retrying it.
 
-**Sign out** removes that account and consent from the server and attempts remote revocation. If
-revocation cannot be confirmed, disconnect the app in ChatGPT settings. Upgrading deletes the old
+**Sign out** removes that account and consent from the server. If remote revocation fails, the server
+retries it; you can also disconnect the app in ChatGPT settings. Upgrading deletes the old
 local ChatGPT credential files and any old non-loopback model keys. Sign in again once with the
 server relay instead of transferring the old tokens.
 

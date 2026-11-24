@@ -43,6 +43,7 @@ pub(super) struct Cloud {
     pub fixture_enabled: bool,
     pub usage_paused: bool,
     pub code: Option<String>,
+    pub signed_in: Option<(Uuid, String)>,
     loading: bool,
     consenting: bool,
 }
@@ -192,9 +193,6 @@ impl ShellView {
                 setup.draft.access = status.access.clone();
                 setup.access_version = Some(status.access_version);
             }
-            if cloud && setup.draft.chatgpt_account.is_none() {
-                setup.draft.chatgpt_account = self.ai.cloud.saved().first().map(|a| a.id);
-            }
         } else {
             setup.draft.access = if self.ai.profile.uses_relay() {
                 Default::default()
@@ -227,6 +225,7 @@ impl ShellView {
         setup.abort = Some(abort);
         setup.check = Check::Running("Starting ChatGPT sign-in…");
         self.ai.cloud.code = None;
+        self.ai.cloud.signed_in = None;
         let start_relay = relay.clone();
         cx.spawn(async move |this, cx| {
             let started = session::spawn(&runtime, async move {
@@ -322,9 +321,7 @@ impl ShellView {
                 this.ai.cloud.code = None;
                 match completed {
                     Ok(Ok(Ok((account, status)))) => {
-                        this.cloud_job_finished(revision, Vec::new(), cx);
-                        this.apply_ai_relay_status(status, cx);
-                        this.choose_chatgpt_account(account.id, cx);
+                        this.finish_chatgpt_sign_in(revision, account, status, cx);
                     }
                     Ok(Ok(Err(error))) => this.cloud_job_failed(revision, error.to_string(), cx),
                     Ok(Err(_)) => {}
@@ -335,6 +332,19 @@ impl ShellView {
             });
         })
         .detach();
+        cx.notify();
+    }
+
+    pub(super) fn finish_chatgpt_sign_in(
+        &mut self,
+        revision: Uuid,
+        account: relay::Account,
+        status: relay::Status,
+        cx: &mut Context<Self>,
+    ) {
+        self.cloud_job_finished(revision, Vec::new(), cx);
+        self.apply_ai_relay_status(status, cx);
+        self.ai.cloud.signed_in = Some((account.id, account.label));
         cx.notify();
     }
 
@@ -438,7 +448,10 @@ impl ShellView {
                 Ok((done, status)) => {
                     this.cloud_job_finished(revision, Vec::new(), cx);
                     this.apply_ai_relay_status(status, cx);
-                    if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. If needed, disconnect the app in ChatGPT settings to revoke access there.".into()); }
+                    if this.ai.cloud.signed_in.as_ref().is_some_and(|(signed_in, _)| *signed_in == id) {
+                        this.ai.cloud.signed_in = None;
+                    }
+                    if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.".into()); }
                 }
                 Err(error) => this.cloud_job_failed(revision, cloud_problem(error), cx),
             });
