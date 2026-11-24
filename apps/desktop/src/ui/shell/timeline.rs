@@ -87,7 +87,7 @@ pub(super) struct TimelineUi {
     pub cursor: Option<TaskId>,
     lanes: ScrollHandle,
     lane_bar: kit::Scrollbar,
-    tray_scroll: ScrollHandle,
+    tray_scroll: kit::ScrollPane,
     grid: Rc<Cell<Bounds<Pixels>>>,
     drag: Option<Drag>,
     drag_frame: Duration,
@@ -104,7 +104,7 @@ impl TimelineUi {
             cursor: None,
             lanes: ScrollHandle::new(),
             lane_bar: kit::Scrollbar::default(),
-            tray_scroll: ScrollHandle::new(),
+            tray_scroll: kit::ScrollPane::default(),
             grid: Rc::default(),
             drag: None,
             drag_frame: Duration::ZERO,
@@ -121,7 +121,7 @@ impl TimelineUi {
         self.tray = None;
         self.zoom_in = Track::rest(1.);
         self.lane_bar.reset_to_top(&self.lanes);
-        self.tray_scroll.set_offset(point(px(0.), px(0.)));
+        self.tray_scroll.reset_to_top();
     }
 }
 
@@ -276,7 +276,7 @@ impl ShellView {
             .and_then(|t| t.unscheduled.iter().position(|r| r.id == id))
         {
             let row = i / self.tray_columns(window);
-            let scroll = &self.timeline.tray_scroll;
+            let scroll = &self.timeline.tray_scroll.handle;
             let bounds = scroll.bounds();
             let y = bounds.top()
                 + scroll.offset().y
@@ -1669,12 +1669,11 @@ impl ShellView {
             )
             .on_click(cx.listener(|this, _, window, cx| this.timeline_control(TRAY, window, cx)));
         let cards = (height > geometry::TRAY_COLLAPSED || open).then(|| {
-            div()
-                .id("unscheduled-cards")
-                .flex_1()
+            self.timeline
+                .tray_scroll
+                .viewport("unscheduled-cards")
+                .size_full()
                 .min_h_0()
-                .overflow_y_scroll()
-                .track_scroll(&self.timeline.tray_scroll)
                 .child(
                     div()
                         .flex()
@@ -1705,7 +1704,15 @@ impl ShellView {
                 .border_t_1()
                 .border_color(p.line)
                 .child(heading)
-                .children(cards),
+                .children(cards.map(|cards| {
+                    div().relative().flex_1().min_h_0().child(cards).child(
+                        self.timeline.tray_scroll.bar.overlay(
+                            &self.timeline.tray_scroll.handle,
+                            &p,
+                            self.animate,
+                        ),
+                    )
+                })),
         )
     }
 
@@ -1971,7 +1978,7 @@ mod tests {
                     grid.top() + px(geometry::LANE_ROW * 1.5),
                 );
                 let to = point(edge.x - px(axis.day_width()), edge.y);
-                let tray = view.timeline.tray_scroll.bounds();
+                let tray = view.timeline.tray_scroll.handle.bounds();
                 let tray_task = view
                     .shell
                     .room

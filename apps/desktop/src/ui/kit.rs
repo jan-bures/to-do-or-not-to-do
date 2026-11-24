@@ -4,7 +4,7 @@ mod caption;
 mod scrollbar;
 
 pub use caption::{CaptionPreview, caption_button_tints, window_controls};
-pub use scrollbar::Scrollbar;
+pub use scrollbar::{SCROLLBAR_GUTTER, ScrollPane, Scrollbar};
 
 use gpui::{Div, Hsla, IntoElement, SharedString, Styled, Svg, Window, div, prelude::*, px, svg};
 

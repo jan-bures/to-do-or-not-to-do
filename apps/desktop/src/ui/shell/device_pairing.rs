@@ -21,6 +21,7 @@ pub(super) struct Panel {
     busy: bool,
     message: Option<SharedString>,
     p: Palette,
+    scroll: kit::ScrollPane,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -116,6 +117,7 @@ impl Panel {
             busy: false,
             message: None,
             p,
+            scroll: kit::ScrollPane::default(),
         };
         if panel.net.is_none() && mode == Mode::Invite {
             panel.show(Invitation {
@@ -138,6 +140,7 @@ impl Panel {
     }
 
     fn show(&mut self, i: Invitation) {
+        self.scroll.reset_to_top();
         let expires = SystemTime::now() + Duration::from_secs(u64::from(i.expires_in));
         self.invite = Qr::encode(&i.link).map(|qr| (i, qr, expires));
     }
@@ -369,7 +372,10 @@ impl Panel {
                             .update(cx, |field, cx| field.set_text(String::new(), cx));
                         v.message = Some(format!("Approved {}.", d.device_name).into());
                     }
-                    Ok(d) => v.pending = Some((code, d)),
+                    Ok(d) => {
+                        v.scroll.reset_to_top();
+                        v.pending = Some((code, d));
+                    }
                     Err(e) => {
                         v.pending = None;
                         v.error(e);
@@ -423,6 +429,7 @@ impl Panel {
             Control::Review => self.review(false, cx),
             Control::Approve => self.review(true, cx),
             Control::Another if !self.busy => {
+                self.scroll.reset_to_top();
                 self.pending = None;
                 self.input.update(cx, |i, cx| i.set_text(String::new(), cx));
                 let handle = self.input.read(cx).focus_handle.clone();
@@ -491,7 +498,7 @@ impl Render for Panel {
             window.focus(&order[0], cx);
         }
         let p = self.p;
-        let mut body = kit::overlay(&p)
+        let dialog = kit::overlay(&p)
             .id("device-pairing-card")
             .track_focus(&self.focus)
             .role(gpui::Role::Dialog)
@@ -515,8 +522,11 @@ impl Render for Panel {
             .w(px(desktop::DETAIL + space::S10))
             .max_w_full()
             .max_h_full()
-            .overflow_y_scroll()
-            .occlude()
+            .relative()
+            .p_0()
+            .overflow_hidden()
+            .occlude();
+        let mut body = div()
             .p(px(space::S6))
             .flex()
             .flex_col()
@@ -622,9 +632,22 @@ impl Render for Panel {
                 )
                 .child(self.control(Control::Review, "review-device", "Review", window, cx));
         }
-        body.children(self.message.clone())
+        let body = body
+            .children(self.message.clone())
             .when(self.busy, |s| s.child("Contacting server…"))
-            .child(self.control(Control::Close, "close-device-pairing", "Close", window, cx))
+            .child(self.control(Control::Close, "close-device-pairing", "Close", window, cx));
+        dialog
+            .child(
+                self.scroll
+                    .viewport("device-pairing-body")
+                    .min_h_0()
+                    .child(body),
+            )
+            .child(
+                self.scroll
+                    .bar
+                    .overlay(&self.scroll.handle, &p, self.net.is_some()),
+            )
     }
 }
 

@@ -88,13 +88,13 @@ impl Cloud {
         let Some(hosted) = profile.hosted() else {
             return profile.selection();
         };
-        if !profile.enabled || !valid_model(&profile.model) {
+        if !valid_model(&profile.model) {
             return None;
         }
         let status = self.status.as_ref()?;
         let approved = match hosted {
             Hosted::Private if status.private_models => None,
-            Hosted::ChatGpt(_) => self.active(profile)?.consented_lists,
+            Hosted::ChatGpt(_) if status.chatgpt => self.active(profile)?.consented_lists,
             _ => return None,
         };
         Some(Selection {
@@ -142,6 +142,7 @@ impl ShellView {
         let old_status = self.ai.cloud.status.as_ref();
         let changed = old_status.is_none_or(|s| {
             s.access != status.access
+                || s.chatgpt != status.chatgpt
                 || s.private_models != status.private_models
                 || s.accounts != status.accounts
         });
@@ -183,16 +184,17 @@ impl ShellView {
         setup.invalidate();
         setup.draft.cloud = cloud;
         setup.draft.private_relay = private;
-        setup.draft.enabled = self.ai.profile.cloud == cloud
+        setup.draft.model = if self.ai.profile.cloud == cloud
             && self.ai.profile.private_relay == private
-            && self.ai.profile.enabled;
-        setup.draft.model = if setup.draft.enabled {
+            && (!cloud || setup.draft.chatgpt_account == self.ai.profile.chatgpt_account)
+        {
             self.ai.profile.model.clone()
         } else {
             String::new()
         };
         setup.models.clear();
         setup.pick_model = false;
+        self.ai.model_scroll.reset_to_top();
         self.ai.cloud.code = None;
         setup.access_version = None;
         if cloud || private {
@@ -411,7 +413,6 @@ impl ShellView {
             setup.draft.model.clear();
             setup.models.clear();
             setup.pick_model = false;
-            setup.draft.enabled = false;
         }
         cx.notify();
     }
@@ -467,6 +468,7 @@ impl ShellView {
         {
             setup.abort = None;
             setup.check = Check::NotTested;
+            self.ai.model_scroll.reset_to_top();
             setup.pick_model = !models.is_empty();
             setup.models = models;
             cx.notify();
@@ -524,7 +526,6 @@ impl ShellView {
                         setup.draft.chatgpt_account = None;
                         if setup.draft.cloud {
                             setup.draft.model.clear();
-                            setup.draft.enabled = false;
                         }
                     }
                     if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.".into()); }
@@ -604,6 +605,7 @@ impl ShellView {
         if account.covers(&scope.1) {
             return false;
         }
+        self.ai.consent_scroll.reset_to_top();
         self.ai.cloud.consent = Some(Consent::new(account, prompt.to_owned(), scope));
         cx.notify();
         true
@@ -628,6 +630,7 @@ impl ShellView {
                 .filter(|a| a.id == question.account)
             {
                 if !scope.1.is_subset(&question.lists) {
+                    self.ai.consent_scroll.reset_to_top();
                     self.ai.cloud.consent = Some(Consent::new(account, question.prompt, scope));
                 } else if let (Some(relay), Some(session), Some(status)) = (
                     self.ai.cloud.relay.clone(),

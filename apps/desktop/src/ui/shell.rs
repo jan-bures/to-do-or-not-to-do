@@ -304,7 +304,7 @@ pub struct ShellView {
     /// The open menu's, while it has the keyboard.
     menu_focus: FocusHandle,
     /// A long menu's scroll (the list picker).
-    menu_scroll: ScrollHandle,
+    menu_scroll: kit::ScrollPane,
     /// The open menu was dropped because its subject went away; the keyboard goes back to the list.
     menu_dropped: bool,
     /// Where each task row in the room was last painted: a task's menu opened from the keyboard hangs
@@ -539,7 +539,7 @@ impl ShellView {
             menu: None,
             menu_press: menu::PressGuard::default(),
             menu_focus: cx.focus_handle(),
-            menu_scroll: ScrollHandle::new(),
+            menu_scroll: kit::ScrollPane::default(),
             menu_dropped: false,
             row_bounds: Rc::default(),
             nav_bounds: Rc::default(),

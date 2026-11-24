@@ -6,14 +6,38 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    Bounds, DispatchPhase, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, Styled, Task, UniformListScrollHandle,
-    canvas, fill, point, px, size,
+    Bounds, DispatchPhase, Div, HitboxBehavior, IntoElement, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, Pixels, ScrollHandle, SharedString, Stateful, Styled, Task,
+    UniformListScrollHandle, canvas, div, fill, point, prelude::*, px, size,
 };
 
 use crate::model::motion::{Pace, ScrollbarMotion, Wake, mix};
 use crate::platform::win;
 use crate::theme::{Palette, chrome, desktop, with_alpha};
+
+pub const SCROLLBAR_GUTTER: f32 = desktop::SCROLLBAR_INSET + desktop::SCROLLBAR_HOVER_WIDTH;
+
+#[derive(Default)]
+pub struct ScrollPane {
+    pub handle: ScrollHandle,
+    pub bar: Scrollbar,
+}
+
+impl ScrollPane {
+    pub fn viewport(&self, id: impl Into<SharedString>) -> Stateful<Div> {
+        div()
+            .id(id.into())
+            .overflow_y_scroll()
+            .track_scroll(&self.handle)
+            // GPUI dispatches bubble listeners in reverse paint order, so its built-in
+            // scroll listener has already run here. Consume the event even at the edges.
+            .on_scroll(|_, _, cx| cx.stop_propagation())
+    }
+
+    pub fn reset_to_top(&self) {
+        self.bar.reset_to_top(&self.handle);
+    }
+}
 
 #[derive(Default)]
 pub struct Scrollbar {
@@ -125,6 +149,25 @@ impl Scrollbar {
         p: &Palette,
         animate: bool,
     ) -> impl IntoElement + use<> {
+        self.overlay_with_visibility(handle, p, animate, false)
+    }
+
+    pub fn overlay_pinned(
+        &self,
+        handle: &ScrollHandle,
+        p: &Palette,
+        animate: bool,
+    ) -> impl IntoElement + use<> {
+        self.overlay_with_visibility(handle, p, animate, true)
+    }
+
+    fn overlay_with_visibility(
+        &self,
+        handle: &ScrollHandle,
+        p: &Palette,
+        animate: bool,
+        pinned: bool,
+    ) -> impl IntoElement + use<> {
         let handle = handle.clone();
         let grab = self.grab.clone();
         let fade_state = self.fade.clone();
@@ -181,7 +224,7 @@ impl Scrollbar {
                         now,
                         f32::from(handle.offset().y),
                         hot,
-                        !cx.should_auto_hide_scrollbars(),
+                        pinned || !cx.should_auto_hide_scrollbars(),
                         pace,
                     );
                     match sample.wake {

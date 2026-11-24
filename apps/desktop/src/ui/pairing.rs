@@ -173,6 +173,7 @@ pub struct PairingView {
     confirm_focus: FocusHandle,
     waiting_focus: [FocusHandle; 3],
     step: Step,
+    scroll: kit::ScrollPane,
     /// The name the owner sees when approving.
     device_name: SharedString,
     /// Bumped by every new attempt and by Cancel, so a stale poll loop stops.
@@ -182,6 +183,11 @@ pub struct PairingView {
 impl EventEmitter<PairingEvent> for PairingView {}
 
 impl PairingView {
+    fn show_step(&mut self, step: Step) {
+        self.scroll.reset_to_top();
+        self.step = step;
+    }
+
     /// The live view. `server` prefills the address (the last one used), `error` explains why pairing
     /// is shown again (the server no longer accepts the token, say).
     pub fn new(
@@ -195,7 +201,7 @@ impl PairingView {
     ) -> Self {
         let mut this = Self::build(theme, config::device_name().into(), window, cx);
         this.wiring = Some(Wiring { rt, paths });
-        this.step = Step::Enter { error };
+        this.show_step(Step::Enter { error });
         if let Some(s) = server {
             this.input.update(cx, |i, cx| i.set_text(s, cx));
         }
@@ -216,13 +222,13 @@ impl PairingView {
         let mut this = Self::build(theme, "To-do on WORKSTATION".into(), window, cx);
         let host = server.trim_start_matches("https://").to_string();
         if waiting {
-            this.step = Step::Waiting(WaitingStep {
+            this.show_step(Step::Waiting(WaitingStep {
                 server: server.into(),
                 code: code.to_string().into(),
                 verify: pairing::approval_url(server, code),
                 expires: Instant::now() + Duration::from_secs(600),
                 note: None,
-            });
+            }));
         } else {
             this.input.update(cx, |i, cx| i.set_text(host, cx));
         }
@@ -270,6 +276,7 @@ impl PairingView {
             confirm_focus: cx.focus_handle(),
             waiting_focus: std::array::from_fn(|_| cx.focus_handle()),
             step: Step::Enter { error: None },
+            scroll: kit::ScrollPane::default(),
             device_name,
             attempt: 0,
         }
@@ -284,16 +291,16 @@ impl PairingView {
         let target = match device_pairing::redeem_target(&typed, &input, config::normalize_server) {
             Ok(target) => target,
             Err(error) => {
-                self.step = Step::Enter {
+                self.show_step(Step::Enter {
                     error: Some(error.to_string().into()),
-                };
+                });
                 cx.notify();
                 return;
             }
         };
         if let Some(host) = target.confirm_host.clone() {
             self.invite_target = Some(target);
-            self.step = Step::ConfirmInvite { host };
+            self.show_step(Step::ConfirmInvite { host });
             cx.notify();
         } else {
             self.send_invite(target, cx);
@@ -312,18 +319,18 @@ impl PairingView {
         };
         let device_pairing::RedeemTarget { server, secret, .. } = target;
         let Ok(transport) = HttpTransport::anonymous(&server) else {
-            self.step = Step::Enter {
+            self.show_step(Step::Enter {
                 error: Some("That server address can't be used.".into()),
-            };
+            });
             cx.notify();
             return;
         };
         self.attempt += 1;
         let attempt = self.attempt;
-        self.step = Step::Starting {
+        self.show_step(Step::Starting {
             server: server.clone(),
             redeeming: true,
-        };
+        });
         let name = self.device_name.to_string();
         self.invite
             .update(cx, |i, cx| i.set_text(String::new(), cx));
@@ -358,9 +365,9 @@ impl PairingView {
         let server = match config::normalize_server(&typed) {
             Ok(s) => s,
             Err(why) => {
-                self.step = Step::Enter {
+                self.show_step(Step::Enter {
                     error: Some(why.into()),
-                };
+                });
                 cx.notify();
                 return;
             }
@@ -368,19 +375,19 @@ impl PairingView {
         let transport = match HttpTransport::anonymous(&server) {
             Ok(t) => t,
             Err(e) => {
-                self.step = Step::Enter {
+                self.show_step(Step::Enter {
                     error: Some(format!("That address can't be used: {e}").into()),
-                };
+                });
                 cx.notify();
                 return;
             }
         };
         self.attempt += 1;
         let attempt = self.attempt;
-        self.step = Step::Starting {
+        self.show_step(Step::Starting {
             server: server.clone(),
             redeeming: false,
-        };
+        });
         cx.notify();
         let name = self.device_name.to_string();
         let started = {
@@ -400,9 +407,9 @@ impl PairingView {
                     tracing::debug!("pairing start failed");
                     let _ = this.update(cx, |v, cx| {
                         if v.attempt == attempt {
-                            v.step = Step::Enter {
+                            v.show_step(Step::Enter {
                                 error: Some(start_error(&e)),
-                            };
+                            });
                             cx.notify();
                         }
                     });
@@ -417,13 +424,13 @@ impl PairingView {
                 }
                 // Never the server's `verification_uri`: the page comes from the checked origin.
                 let verify = approval_page(&server, &started);
-                v.step = Step::Waiting(WaitingStep {
+                v.show_step(Step::Waiting(WaitingStep {
                     server: server.clone(),
                     code: started.user_code.clone().into(),
                     verify,
                     expires: Instant::now() + Duration::from_secs(u64::from(started.expires_in)),
                     note: None,
-                });
+                }));
                 cx.notify();
                 true
             });
@@ -517,17 +524,17 @@ impl PairingView {
                     Ok(()) => cx.emit(PairingEvent::Paired(pairing)),
                     Err(e) => {
                         tracing::error!("saving the pairing failed: {e:#}");
-                        self.step = Step::Enter {
+                        self.show_step(Step::Enter {
                             error: Some(
                                 format!("Approved, but saving the sign-in failed: {e}").into(),
                             ),
-                        };
+                        });
                     }
                 }
                 None
             }
             Next::Stop(why) => {
-                self.step = Step::Enter { error: Some(why) };
+                self.show_step(Step::Enter { error: Some(why) });
                 None
             }
         };
@@ -538,7 +545,7 @@ impl PairingView {
     fn cancel(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.invite_target = None;
         self.attempt += 1;
-        self.step = Step::Enter { error: None };
+        self.show_step(Step::Enter { error: None });
         let focus = self.input.read(cx).focus_handle.clone();
         window.focus(&focus, cx);
         cx.notify();
@@ -913,11 +920,28 @@ impl Render for PairingView {
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
             .child(
                 div()
-                    .id("pairing-content")
+                    .relative()
                     .flex_1()
                     .min_h_0()
-                    .overflow_y_scroll()
-                    .child(div().w(px(COLUMN)).mx_auto().py(px(space::S10)).child(body)),
+                    .child(
+                        self.scroll
+                            .viewport("pairing-content")
+                            .size_full()
+                            .px(px(kit::SCROLLBAR_GUTTER))
+                            .child(
+                                div()
+                                    .w(px(COLUMN))
+                                    .max_w_full()
+                                    .mx_auto()
+                                    .py(px(space::S10))
+                                    .child(body),
+                            ),
+                    )
+                    .child(
+                        self.scroll
+                            .bar
+                            .overlay(&self.scroll.handle, &p, self.wiring.is_some()),
+                    ),
             )
     }
 }

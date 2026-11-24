@@ -112,6 +112,18 @@ impl ShellView {
         f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
+        self.ai_clickable(id, contents, enabled, f, cx)
+            .when(enabled, |row| row.hover(|s| s.opacity(0.85)))
+    }
+
+    fn ai_clickable(
+        &self,
+        id: impl Into<SharedString>,
+        contents: Div,
+        enabled: bool,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
         let id = id.into();
         let p = self.palette;
         let element = contents.id(id.clone()).role(Role::Button);
@@ -121,7 +133,6 @@ impl ShellView {
         element
             .track_focus(&self.ai.focus_handle(&id, cx))
             .focus_visible(|d| d.border_1().border_color(p.accent_strong))
-            .hover(|d| d.opacity(0.85))
             .cursor_pointer()
             // GPUI maps a focused Enter/Space press-release to this same click. Handling
             // KeyDown separately would toggle controls twice for one gesture.
@@ -369,12 +380,12 @@ impl ShellView {
                 |this, window, cx| this.close_ai(window, cx),
                 cx,
             ));
-        let mut feed = div()
-            .id("assistant-feed")
-            .flex_1()
-            .min_h_0()
-            .overflow_y_scroll()
-            .track_scroll(&self.ai.scroll);
+        let mut feed = self
+            .ai
+            .feed
+            .viewport("assistant-feed")
+            .size_full()
+            .pr(px(kit::SCROLLBAR_GUTTER));
         if is_empty {
             feed = feed.child(
                 div()
@@ -432,7 +443,7 @@ impl ShellView {
                     text(ty::BUTTON_SMALL, p.accent_strong, "Jump up"),
                     true,
                     |this, _, cx| {
-                        this.ai.scroll.scroll_to_bottom();
+                        this.ai.feed.handle.scroll_to_bottom();
                         cx.notify();
                     },
                     cx,
@@ -471,7 +482,19 @@ impl ShellView {
                 }
             }))
             .child(header)
-            .child(feed)
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .child(feed)
+                    .child(
+                        self.ai
+                            .feed
+                            .bar
+                            .overlay(&self.ai.feed.handle, &p, self.animate),
+                    ),
+            )
             .children(self.ai.notice.as_ref().map(|notice| {
                 text(ty::META, p.danger_ink, notice.clone())
                     .bg(p.danger_bg)
@@ -806,12 +829,23 @@ impl ShellView {
                             .items_center()
                             .child(if ready {
                                 div()
-                                    .id("assistant-compose-field")
+                                    .relative()
                                     .w_full()
-                                    .max_h(px(desktop::AI_COMPOSER_MAX - space::S5))
-                                    .overflow_y_scroll()
-                                    .style(ty::BODY)
-                                    .child(self.ai.composer.clone())
+                                    .child(
+                                        self.ai
+                                            .composer_scroll
+                                            .viewport("assistant-compose-field")
+                                            .w_full()
+                                            .max_h(px(desktop::AI_COMPOSER_MAX - space::S5))
+                                            .pr(px(kit::SCROLLBAR_GUTTER))
+                                            .style(ty::BODY)
+                                            .child(self.ai.composer.clone()),
+                                    )
+                                    .child(self.ai.composer_scroll.bar.overlay(
+                                        &self.ai.composer_scroll.handle,
+                                        &p,
+                                        self.animate,
+                                    ))
                                     .into_any_element()
                             } else {
                                 text(ty::BODY, p.ink_3, placeholder).into_any_element()
@@ -1858,45 +1892,7 @@ impl ShellView {
             ),
             Check::Failed(message) => (None, p.danger_ink, message.clone()),
         };
-        let picker = if setup.pick_model {
-            Some(
-                box_panel(&p).max_h(px(desktop::AI_COMPOSER_MAX)).child(
-                    div()
-                        .id("assistant-model-catalog")
-                        .overflow_y_scroll()
-                        .max_h(px(desktop::AI_COMPOSER_MAX))
-                        .flex()
-                        .flex_col()
-                        .children(setup.models.iter().enumerate().map(|(index, model)| {
-                            let id = model.id.clone();
-                            let label = model::labels::one_line(&model.label);
-                            self.ai_action(
-                                format!("assistant-model-option-{index}"),
-                                one_line(text(ty::COUNT, p.ink, label.clone()))
-                                    .px(px(space::S2))
-                                    .py(px(space::S1))
-                                    .bg(if setup.draft.model == model.id {
-                                        p.wash
-                                    } else {
-                                        p.raised
-                                    }),
-                                true,
-                                move |this, _, cx| {
-                                    this.ai.model.update(cx, |i, cx| i.set_text(id.clone(), cx));
-                                    this.ai_setting_changed(Field::Model, cx);
-                                    if let Some(setup) = this.ai.settings.as_mut() {
-                                        setup.pick_model = false;
-                                    }
-                                },
-                                cx,
-                            )
-                            .aria_label(label)
-                        })),
-                ),
-            )
-        } else {
-            None
-        };
+        let picker = setup.pick_model.then(|| self.ai_model_picker(setup, cx));
         let provider = box_panel(&p).flex_none().border_color(p.accent).child(
             div().flex().w_full().child(
                 div()
@@ -2019,50 +2015,6 @@ impl ShellView {
                                 |this, _, cx| this.test_ai(true, cx),
                                 cx,
                             )),
-                    )
-                    .child(line(&p))
-                    .child(
-                        self.ai_action(
-                            "assistant-enabled",
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(space::S2))
-                                .p(px(space::S1))
-                                .rounded(px(radius::MD))
-                                .bg(if setup.draft.enabled {
-                                    p.wash
-                                } else {
-                                    p.raised
-                                })
-                                .child(kit::icon(
-                                    if setup.draft.enabled {
-                                        Icon::CircleCheck
-                                    } else {
-                                        Icon::Circle
-                                    },
-                                    component::ICON_SMALL,
-                                    if setup.draft.enabled {
-                                        p.accent_strong
-                                    } else {
-                                        p.ink_3
-                                    },
-                                ))
-                                .child(text(
-                                    ty::BUTTON_SMALL,
-                                    p.ink,
-                                    "Enable assistant on this device",
-                                )),
-                            true,
-                            |this, _, cx| {
-                                if let Some(setup) = this.ai.settings.as_mut() {
-                                    setup.draft.enabled = !setup.draft.enabled;
-                                    cx.notify();
-                                }
-                            },
-                            cx,
-                        )
-                        .aria_toggled(toggled(setup.draft.enabled)),
                     ),
             ),
         );
@@ -2084,7 +2036,8 @@ impl ShellView {
             .child(div().flex_none().px(px(space::S5)).py(px(space::S3)).flex().items_center().gap(px(space::S3)).border_b_1().border_color(p.line)
                 .child(kit::agent_mark(self.theme, Agent::Assistant, component::ICON_BUTTON)).child(text(ty::DETAIL_TITLE, p.ink, "AI Assistant").flex_1())
                 .child(self.ai_icon("assistant-settings-close", Icon::X, "Close AI settings without saving", true, |this, w, cx| this.close_ai_settings(w, cx), cx)))
-            .child(div().id("assistant-settings-scroll").min_h_0().overflow_y_scroll().px(px(space::S5)).py(px(space::S4)).flex().flex_col().gap(px(space::S3))
+            .child(div().relative().min_h_0().flex().flex_col()
+                .child(self.ai.settings_scroll.viewport("assistant-settings-scroll").min_h_0().px(px(space::S5)).py(px(space::S4)).flex().flex_col().gap(px(space::S3))
                 .child(kit::label(&p, "Model provider").flex_none())
                 .child(self.ai_provider_choices(setup, !running, cx))
                 .child(if setup.draft.uses_relay() { self.ai_hosted_settings(setup, cx) } else { provider })
@@ -2096,8 +2049,13 @@ impl ShellView {
                 .child(kit::label(&p, "Lists the assistant can see").flex_none())
                 .child(text(ty::META, p.ink_3, "Select a row to change its access. Lists inherit their collection’s choice unless set individually. Without a choice, lists are hidden.").flex_none())
                 .child(list_controls))
+                .child(self.ai.settings_scroll.bar.overlay(&self.ai.settings_scroll.handle, &p, self.animate)))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))
-                .when(setup.draft.uses_relay(), |footer| footer.justify_end())
+                .when(setup.draft.uses_relay() && setup.draft.model.is_empty(), |footer| footer.justify_end())
+                .when(setup.draft.uses_relay() && !setup.draft.model.is_empty(), |footer| footer.child(
+                    self.ai_button("assistant-disconnect-model", "Disconnect model", Tone::Quiet, !running,
+                        |this, _, cx| this.pick_chatgpt_model(String::new(), cx), cx),
+                ))
                 .when(!setup.draft.uses_relay(), |footer| footer.child(self.ai_button("assistant-forget", "Forget this device’s model", Tone::Quiet, setup.saved_file || !self.ai.profile.key.is_empty() || !setup.draft.key.is_empty(), |this, w, cx| this.forget_ai(w, cx), cx)))
                 .child(self.ai_button("assistant-save", "Done", Tone::Primary, !running, |this, w, cx| this.save_ai_settings(w, cx), cx)));
         Some(
@@ -2113,6 +2071,76 @@ impl ShellView {
                 .occlude()
                 .child(settings),
         )
+    }
+
+    fn ai_model_picker(&self, setup: &Setup, cx: &mut Context<Self>) -> Div {
+        let p = self.palette;
+        let hosted = setup.draft.uses_relay();
+        let (id, row_prefix) = if hosted {
+            ("assistant-chatgpt-model-picker", "assistant-chatgpt-model")
+        } else {
+            ("assistant-model-catalog", "assistant-model-option")
+        };
+        let enabled = !matches!(setup.check, Check::Running(_));
+        let scroll = &self.ai.model_scroll;
+        div()
+            .relative()
+            .flex_none()
+            .rounded(px(radius::MD))
+            .border_1()
+            .border_color(p.line)
+            .bg(p.canvas)
+            .overflow_hidden()
+            .child(
+                scroll
+                    .viewport(id)
+                    .max_h(px(desktop::AI_COMPOSER_MAX))
+                    .flex()
+                    .flex_col()
+                    .p(px(space::S1))
+                    .pr(px(space::S4))
+                    .children(setup.models.iter().enumerate().map(|(i, model)| {
+                        let id = model.id.clone();
+                        let selected = setup.draft.model == id;
+                        let label = model::labels::one_line(&model.label);
+                        self.ai_clickable(
+                            format!("{row_prefix}-{i}"),
+                            div()
+                                .flex_none()
+                                .w_full()
+                                .min_h(px(component::BUTTON_SMALL))
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .px(px(space::S2))
+                                .rounded(px(radius::SM))
+                                .when(selected, |row| row.bg(p.wash))
+                                .child(div().size(px(component::ICON_SMALL)).flex_none().children(
+                                    selected.then(|| {
+                                        kit::icon(
+                                            Icon::Check,
+                                            component::ICON_SMALL,
+                                            p.accent_strong,
+                                        )
+                                    }),
+                                ))
+                                .child(one_line(text(ty::BODY, p.ink, label.clone()))),
+                            enabled,
+                            move |this, _, cx| {
+                                if hosted {
+                                    this.pick_chatgpt_model(id.clone(), cx);
+                                } else {
+                                    this.pick_local_model(&id, cx);
+                                }
+                            },
+                            cx,
+                        )
+                        .when(enabled, |row| row.hover(|row| row.bg(p.hover)))
+                        .aria_label(label)
+                        .aria_toggled(toggled(selected))
+                    })),
+            )
+            .child(scroll.bar.overlay_pinned(&scroll.handle, &p, self.animate))
     }
 
     pub(super) fn ai_access_state(&self) -> Arc<State> {

@@ -265,49 +265,8 @@ impl ShellView {
                     )),
             )
             .when(setup.pick_model, |card| {
-                card.child(
-                    div()
-                        .id("assistant-chatgpt-model-picker")
-                        .max_h(px(desktop::AI_COMPOSER_MAX))
-                        .overflow_y_scroll()
-                        .children(setup.models.iter().enumerate().map(|(i, m)| {
-                            let id = m.id.clone();
-                            self.ai_button(
-                                format!("assistant-chatgpt-model-{i}"),
-                                model::labels::one_line(&m.label),
-                                if setup.draft.model == m.id {
-                                    Tone::Primary
-                                } else {
-                                    Tone::Quiet
-                                },
-                                !running,
-                                move |this, _, cx| this.pick_chatgpt_model(id.clone(), cx),
-                                cx,
-                            )
-                        })),
-                )
+                card.child(self.ai_model_picker(setup, cx))
             })
-            .child(
-                self.ai_button(
-                    "assistant-chatgpt-enabled",
-                    "Enable assistant on this device",
-                    if setup.draft.enabled {
-                        Tone::Primary
-                    } else {
-                        Tone::Outline
-                    },
-                    !running && valid_model(&setup.draft.model),
-                    |this, _, cx| {
-                        if let Some(setup) = &mut this.ai.settings {
-                            setup.draft.enabled = !setup.draft.enabled;
-                            this.ai.cloud.signed_in = None;
-                            cx.notify();
-                        }
-                    },
-                    cx,
-                )
-                .aria_toggled(toggled(setup.draft.enabled)),
-            )
     }
 
     pub(super) fn ai_manage_usage(
@@ -410,9 +369,11 @@ impl ShellView {
             .child(div().p(px(space::S5)).flex().flex_col().gap(px(space::S3))
                 .child(text(ty::DETAIL_TITLE, p.ink, "Share with ChatGPT?"))
                 .child(text(ty::BODY, p.ink_2, "ChatGPT is a cloud service. OpenAI receives this chat and the allowed task summaries used to answer it. Hidden and Private only lists, task notes, and attachments are not shared."))
-                .child(div().id("assistant-chatgpt-consent-scope").max_h(px(desktop::AI_COMPOSER_MAX)).overflow_y_scroll()
-                    .flex().flex_col().gap(px(space::S2))
-                    .children(scope.into_iter().map(|line| text(ty::BODY, p.ink, line))))
+                .child(div().relative()
+                    .child(self.ai.consent_scroll.viewport("assistant-chatgpt-consent-scope").max_h(px(desktop::AI_COMPOSER_MAX))
+                        .pr(px(space::S4)).flex().flex_col().gap(px(space::S2))
+                        .children(scope.into_iter().map(|line| text(ty::BODY, p.ink, line).flex_none())))
+                    .child(self.ai.consent_scroll.bar.overlay_pinned(&self.ai.consent_scroll.handle, &p, self.animate)))
                 .child(text(ty::META, p.ink_2, "This uses your ChatGPT plan or available credits. Manage usage and credit use in ChatGPT settings. To stop sharing, switch providers or sign out."))
                 .child(self.ai_manage_usage("assistant-chatgpt-consent-usage", Tone::Quiet, cx)))
             .child(kit::dialog_footer(&p, radius::XL).flex().justify_between().items_center().gap(px(space::S2)).px(px(space::S5)).py(px(space::S3))

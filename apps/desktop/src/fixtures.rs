@@ -116,6 +116,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "ai-chatgpt-signed-out"
         | "ai-chatgpt-device-code"
         | "ai-chatgpt-signed-in"
+        | "ai-chatgpt-model-picker"
         | "ai-chatgpt-account"
         | "ai-chatgpt-consent"
         | "ai-private-relay" => {

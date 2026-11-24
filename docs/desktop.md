@@ -445,7 +445,8 @@ Open **AI assistant…** in Settings and choose **This device**, **Your private 
 connection** lists models, and **Test model** checks streaming and tools with invented data. An untested
 or text-only loopback model cannot read or change tasks. **Your private models** uses the operator’s
 [server relay](hosting-linux.md#ai-assistant-relay), so the PC does not need the private model URL,
-key, or a Tailscale connection. Select a model and **Enable assistant on this device**, then choose **Done**.
+key, or a Tailscale connection. Select a model, then choose **Done** to activate the assistant.
+To stop using a server-hosted model on this device, choose **Disconnect model** and then **Done**.
 
 Choose which lists the assistant can read. A collection rule sets the default for lists added or moved
 into it; **Mixed** means its lists have different access. A change to a collection replaces its current

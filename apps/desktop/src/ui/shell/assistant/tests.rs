@@ -233,6 +233,110 @@ fn non_loopback_inference_cannot_be_enabled_directly() {
 }
 
 #[test]
+fn choosing_a_model_configures_each_available_route() {
+    use todo_client::{assistant::native_relay::Relay, native::HttpTransport};
+
+    let mut app = TestApp::new();
+    let mut window = shell(&mut app);
+    window.update(|shell, window, cx| {
+        shell.open_ai_settings(window, cx);
+        shell.ai.url.update(cx, |input, cx| {
+            input.set_text("http://127.0.0.1:11434/v1", cx);
+        });
+        shell.ai_setting_changed(Field::Url, cx);
+        shell.pick_local_model("fixture-local", cx);
+        let draft = &shell.ai.settings.as_ref().expect("settings").draft;
+        let chosen = draft.selection().expect("selected local model");
+        assert_eq!(chosen.model, "fixture-local");
+
+        shell.close_ai_settings(window, cx);
+        shell.preview_assistant("ai-chatgpt-model-picker", window, cx);
+        shell.ai.cloud.relay = Some(Relay::new(
+            HttpTransport::new("http://127.0.0.1:8080", "fixture").expect("relay transport"),
+        ));
+        shell.pick_chatgpt_model("fixture-mini".into(), cx);
+        let draft = &shell.ai.settings.as_ref().expect("settings").draft;
+        let chosen = shell
+            .ai
+            .cloud
+            .selection(draft)
+            .expect("selected hosted model");
+        assert_eq!(chosen.model, "fixture-mini");
+        assert!(!chosen.allow_billed);
+
+        shell.pick_chatgpt_model(String::new(), cx);
+        let draft = &shell.ai.settings.as_ref().expect("settings").draft;
+        assert!(shell.ai.cloud.selection(draft).is_none());
+        assert!(draft.chatgpt_account.is_some());
+
+        shell.choose_ai_provider(
+            Some(todo_client::assistant::native_relay::Hosted::Private),
+            cx,
+        );
+        shell.pick_chatgpt_model("fixture-private".into(), cx);
+        let draft = &shell.ai.settings.as_ref().expect("settings").draft;
+        assert_eq!(
+            shell
+                .ai
+                .cloud
+                .selection(draft)
+                .expect("selected private model")
+                .model,
+            "fixture-private"
+        );
+        shell
+            .ai
+            .cloud
+            .status
+            .as_mut()
+            .expect("relay status")
+            .private_models = false;
+        assert!(shell.ai.cloud.selection(draft).is_none());
+    });
+}
+
+#[test]
+fn overflowing_model_picker_keeps_wheel_input_inside_its_viewport() {
+    use gpui::{point, size};
+
+    let mut app = TestApp::new();
+    let mut window = shell(&mut app);
+    window.simulate_resize(size(px(1000.), px(650.)));
+    window.update(|shell, window, cx| {
+        shell.preview_assistant("ai-chatgpt-model-picker", window, cx);
+    });
+    window.draw();
+    let (picker, outer) = window.read(|shell, _| {
+        (
+            shell.ai.model_scroll.handle.clone(),
+            shell.ai.settings_scroll.handle.clone(),
+        )
+    });
+    assert!(picker.max_offset().y > px(12.));
+    assert!(outer.max_offset().y > px(0.));
+    let bounds = picker.bounds();
+    // Scroll over the scrollbar track itself, where the overlay must pass the event to the list.
+    let over_track = point(bounds.right() - px(4.), bounds.top() + px(20.));
+    let down = point(px(0.), px(-12.));
+    window.simulate_scroll(over_track, down);
+    window.draw();
+    assert_eq!(picker.offset().y, px(-12.));
+    assert_eq!(outer.offset().y, px(0.));
+
+    picker.set_offset(point(px(0.), -picker.max_offset().y));
+    window.draw();
+    window.simulate_scroll(over_track, down);
+    window.draw();
+    assert_eq!(picker.offset().y, -picker.max_offset().y);
+    assert_eq!(outer.offset().y, px(0.));
+
+    let bounds = outer.bounds();
+    window.simulate_scroll(point(bounds.left() + px(4.), bounds.top() + px(12.)), down);
+    window.draw();
+    assert!(outer.offset().y < px(0.));
+}
+
+#[test]
 fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
     use todo_client::assistant::relay;
 
@@ -282,7 +386,6 @@ fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
         let draft = &shell.ai.settings.as_ref().expect("settings").draft;
         assert_eq!(draft.chatgpt_account, Some(account.id));
         assert!(draft.model.is_empty());
-        assert!(!draft.enabled);
     });
 }
 

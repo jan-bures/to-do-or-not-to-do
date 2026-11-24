@@ -10,8 +10,8 @@
 //! (`model::motion::Overlay`); a closing menu is paint-only: it takes no clicks, keys or hovers.
 
 use gpui::{
-    Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, Role, ScrollHandle,
-    SharedString, Window, anchored, deferred, div, prelude::*, px,
+    Anchor, AnyElement, Context, Div, KeyDownEvent, Pixels, Point, Role, SharedString, Window,
+    anchored, deferred, div, prelude::*, px,
 };
 use todo_client::intent::organize::actionable_task;
 use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
@@ -477,7 +477,7 @@ impl ShellView {
             ..menu
         });
         // A new menu, or a new page of it, starts scrolled to its top.
-        self.menu_scroll = ScrollHandle::new();
+        self.menu_scroll = kit::ScrollPane::default();
         if keyboard {
             self.highlight_first();
         }
@@ -529,7 +529,7 @@ impl ShellView {
             menu.highlight = at.and_then(|i| menus::key_at(&entries, i));
         }
         if let Some(child) = child {
-            self.menu_scroll.scroll_to_item(child);
+            self.menu_scroll.handle.scroll_to_item(child);
         }
     }
 
@@ -646,7 +646,7 @@ impl ShellView {
             let first = menus::items(&self.menu_entries(menu.kind))
                 .next()
                 .map(|_| 0);
-            self.menu_scroll = ScrollHandle::new();
+            self.menu_scroll = kit::ScrollPane::default();
             self.highlight(first);
             cx.notify();
             return;
@@ -1386,7 +1386,7 @@ impl ShellView {
                     if let Some(m) = self.menu.as_mut() {
                         m.filter.clear();
                     }
-                    self.menu_scroll = ScrollHandle::new();
+                    self.menu_scroll = kit::ScrollPane::default();
                     let entries = self.menu_entries(menu.kind);
                     self.highlight(menus::index_of(&entries, &format!("tag-{tag}")));
                 }
@@ -1738,18 +1738,26 @@ impl ShellView {
             desktop::MENU
         };
         // A long menu (the list picker, many refused changes) scrolls past `MENU_ROWS` rows.
-        let items = div()
-            .id("menu-items")
+        let items = self
+            .menu_scroll
+            .viewport("menu-items")
             .opacity(look.content)
             .flex()
             .flex_col()
             .max_h(px(desktop::NAV_ROW * MENU_ROWS))
-            .overflow_y_scroll()
-            .track_scroll(&self.menu_scroll)
+            .pr(px(kit::SCROLLBAR_GUTTER))
             .children(rows);
         let contents = match kind {
             MenuKind::Date(calendar) => self.calendar_body(calendar, live, cx).into_any_element(),
-            _ => items.into_any_element(),
+            _ => div()
+                .relative()
+                .child(items)
+                .child(
+                    self.menu_scroll
+                        .bar
+                        .overlay(&self.menu_scroll.handle, &p, self.animate),
+                )
+                .into_any_element(),
         };
         // A closing menu is paint-only: it neither blocks nor takes the clicks meant for what's behind.
         let body = kit::overlay(&p)

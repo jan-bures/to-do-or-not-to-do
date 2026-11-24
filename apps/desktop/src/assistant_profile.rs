@@ -23,7 +23,6 @@ const MAX_PROFILE: u64 = 64 * 1024;
 pub struct Profile {
     pub url: String,
     pub model: String,
-    pub enabled: bool,
     #[serde(default)]
     pub cloud: bool,
     #[serde(default)]
@@ -65,7 +64,7 @@ impl Profile {
     }
 
     pub fn selection(&self) -> Option<Selection<DesktopProvider>> {
-        if self.uses_relay() || !self.enabled || !valid_model(&self.model) {
+        if self.uses_relay() || !valid_model(&self.model) {
             return None;
         }
         let mut provider = self.provider().ok()?;
@@ -120,20 +119,33 @@ impl Profile {
         };
         let plain = Zeroizing::new(dpapi::open(&sealed, PURPOSE)?);
         // A malformed secret record is neither logged nor returned in a message.
-        let mut profile: Self = serde_json::from_slice(&plain)
+        #[derive(Deserialize)]
+        struct StoredProfile {
+            enabled: Option<bool>,
+            #[serde(flatten)]
+            profile: Profile,
+        }
+
+        let StoredProfile {
+            enabled,
+            mut profile,
+        } = serde_json::from_slice(&plain)
             .map_err(|_| anyhow::anyhow!("Couldn't read assistant settings."))?;
         let removed_upstream = !profile.url.is_empty() && profile.endpoint().is_none();
         let removed_cloud_auth = profile.cloud && profile.chatgpt_account.is_none();
-        if removed_upstream || removed_cloud_auth {
+        let was_disabled = enabled == Some(false);
+        if was_disabled {
+            // An upgrade must not activate a model the owner had disabled.
+            profile.model.clear();
+        }
+        if removed_upstream || removed_cloud_auth || was_disabled {
             if removed_upstream {
                 profile.change_url(String::new());
                 if !profile.uses_relay() {
                     profile.model.clear();
-                    profile.enabled = false;
                 }
             }
             if removed_cloud_auth {
-                profile.enabled = false;
                 profile.cloud = false;
                 profile.model.clear();
             }
@@ -237,7 +249,7 @@ mod tests {
     use crate::config::{PairingId, Paths};
 
     #[test]
-    fn endpoint_model_and_key_are_sealed_and_disabled_profiles_cannot_send() {
+    fn endpoint_model_and_key_are_sealed_and_a_valid_profile_can_send() {
         let dir = tempfile::tempdir_in("target").expect("fixture profile directory");
         let paths = Paths::in_dir(dir.path().to_owned());
         let data = paths.data(&PairingId::random());
@@ -268,7 +280,7 @@ mod tests {
         assert_eq!(*loaded.key, *profile.key);
         assert_eq!(loaded.url, profile.url);
         assert_eq!(loaded.access, profile.access);
-        assert!(loaded.selection().is_none());
+        assert!(loaded.selection().is_some());
         Profile::forget(&data).expect("forget assistant profile");
         assert!(
             Profile::load(&data)
@@ -317,7 +329,6 @@ mod tests {
         Profile {
             url: "http://100.64.0.1:8030/v1".into(),
             model: "example-model".into(),
-            enabled: true,
             cloud: true,
             key: Zeroizing::new("legacy key".into()),
             ..Profile::default()
@@ -334,7 +345,10 @@ mod tests {
         }
         let profile = Profile::load(&data).expect("migrate");
         assert!(
-            profile.key.is_empty() && profile.url.is_empty() && !profile.cloud && !profile.enabled
+            profile.key.is_empty()
+                && profile.url.is_empty()
+                && !profile.cloud
+                && profile.model.is_empty()
         );
         assert_eq!(
             std::fs::read_dir(data.path())
@@ -367,6 +381,38 @@ mod tests {
         );
         assert!(locked.is_dir());
         assert!(!removable.exists());
+    }
+
+    #[test]
+    fn legacy_profiles_preserve_the_owners_activation_choice() {
+        let dir = tempfile::tempdir_in("target").expect("fixture directory");
+        let paths = Paths::in_dir(dir.path().to_owned());
+        for enabled in [true, false] {
+            let data = paths.data(&PairingId::random());
+            std::fs::create_dir_all(data.path()).expect("fixture pairing");
+            let legacy = serde_json::json!({
+                "url": "http://127.0.0.1:8030/v1",
+                "model": "fixture-model",
+                "enabled": enabled,
+                "lists": {},
+                "support": null,
+                "key": ""
+            });
+            let sealed =
+                dpapi::seal(legacy.to_string().as_bytes(), PURPOSE).expect("seal legacy profile");
+            todo_fs::create_private_file(&data.path().join(FILE))
+                .expect("create profile")
+                .write_all(&sealed)
+                .expect("write legacy profile");
+            let profile = Profile::load(&data).expect("load legacy profile");
+            assert_eq!(profile.selection().is_some(), enabled);
+            if !enabled {
+                assert!(profile.model.is_empty());
+                assert!(!profile.url.is_empty());
+            }
+            let reloaded = Profile::load(&data).expect("reload profile");
+            assert_eq!(reloaded.selection().is_some(), enabled);
+        }
     }
 
     #[test]

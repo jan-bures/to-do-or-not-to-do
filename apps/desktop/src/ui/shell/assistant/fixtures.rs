@@ -261,7 +261,6 @@ impl ShellView {
         };
         self.ai.profile.url = address.into();
         self.ai.profile.model = "local-model".into();
-        self.ai.profile.enabled = true;
         let capabilities = todo_client::assistant::local::LocalProvider::new(address, "")
             .map(|p| {
                 p.with_support("local-model".into(), Support::StreamingTools)
@@ -296,6 +295,7 @@ impl ShellView {
                 | "ai-chatgpt-signed-out"
                 | "ai-chatgpt-device-code"
                 | "ai-chatgpt-signed-in"
+                | "ai-chatgpt-model-picker"
                 | "ai-chatgpt-account"
                 | "ai-chatgpt-consent"
                 | "ai-private-relay"
@@ -396,6 +396,27 @@ impl ShellView {
                     }
                 } else {
                     self.open_ai_settings(window, cx);
+                    if name == "ai-chatgpt-model-picker"
+                        && let Some(setup) = &mut self.ai.settings
+                    {
+                        setup.pick_model = true;
+                        setup.models = [
+                            ("fixture-model", "GPT Sample"),
+                            ("fixture-mini", "GPT Sample Mini"),
+                            ("fixture-nano", "GPT Sample Nano"),
+                            ("fixture-fast", "GPT Sample Fast"),
+                            ("fixture-reasoning", "GPT Sample Reasoning"),
+                            ("fixture-coding", "GPT Sample Coding"),
+                            ("fixture-long", "GPT Sample Long Context"),
+                            ("fixture-preview", "GPT Sample Preview"),
+                        ]
+                        .into_iter()
+                        .map(|(id, label)| Model {
+                            id: id.into(),
+                            label: label.into(),
+                        })
+                        .collect();
+                    }
                 }
                 cx.notify();
                 return;

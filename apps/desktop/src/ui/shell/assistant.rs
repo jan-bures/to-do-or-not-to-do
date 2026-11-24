@@ -145,7 +145,11 @@ pub(super) struct Ai {
     panel: FocusHandle,
     dialog: FocusHandle,
     focus: RefCell<BTreeMap<String, FocusHandle>>,
-    scroll: ScrollHandle,
+    feed: kit::ScrollPane,
+    settings_scroll: kit::ScrollPane,
+    model_scroll: kit::ScrollPane,
+    composer_scroll: kit::ScrollPane,
+    consent_scroll: kit::ScrollPane,
     sequence: u64,
     notice: Option<String>,
     step_details: BTreeSet<Uuid>,
@@ -239,7 +243,11 @@ impl Ai {
             panel: cx.focus_handle(),
             dialog: cx.focus_handle(),
             focus: RefCell::default(),
-            scroll: ScrollHandle::new(),
+            feed: kit::ScrollPane::default(),
+            settings_scroll: kit::ScrollPane::default(),
+            model_scroll: kit::ScrollPane::default(),
+            composer_scroll: kit::ScrollPane::default(),
+            consent_scroll: kit::ScrollPane::default(),
             sequence: 0,
             notice,
             step_details: BTreeSet::new(),
@@ -332,7 +340,7 @@ impl Ai {
         self.flash.clear();
         self.step_details.clear();
         self.expanded_task_links.clear();
-        self.scroll.set_offset(gpui::point(px(0.), px(0.)));
+        self.feed.reset_to_top();
     }
 }
 
@@ -434,6 +442,7 @@ impl ShellView {
             .update_snapshot(session.client().assistant_snapshot());
         if self.ai.controller.view().generation != before {
             self.ai.clear_chat_state();
+            self.ai.composer_scroll.reset_to_top();
             self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         }
     }
@@ -476,6 +485,7 @@ impl ShellView {
         self.settle_detail();
         self.ai.clear_chat_state();
         self.ai.settings = None;
+        self.ai.composer_scroll.reset_to_top();
         self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         self.ai.key.update(cx, |i, cx| i.set_text("", cx));
     }
@@ -686,9 +696,10 @@ impl ShellView {
             .expanded_task_links
             .retain(|id| active_view.turns.iter().any(|t| t.id == *id));
         if clear_draft {
+            self.ai.composer_scroll.reset_to_top();
             self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         }
-        self.ai.scroll.scroll_to_bottom();
+        self.ai.feed.handle.scroll_to_bottom();
         let work = session::spawn(&rt, job);
         let mut version = self.ai.controller.view_version();
         cx.spawn(async move |this, cx| {
@@ -719,10 +730,10 @@ impl ShellView {
                 if this
                     .update(cx, |shell, cx| {
                         version = shell.ai.controller.view_version();
-                        let near_bottom = -shell.ai.scroll.offset().y + px(space::S10)
-                            >= shell.ai.scroll.max_offset().y;
+                        let near_bottom = -shell.ai.feed.handle.offset().y + px(space::S10)
+                            >= shell.ai.feed.handle.max_offset().y;
                         if near_bottom {
-                            shell.ai.scroll.scroll_to_bottom();
+                            shell.ai.feed.handle.scroll_to_bottom();
                         }
                         cx.notify();
                     })
@@ -807,6 +818,7 @@ impl ShellView {
         self.ai.controller.new_chat();
         self.ai.fixture = None;
         self.ai.clear_chat_state();
+        self.ai.composer_scroll.reset_to_top();
         self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         self.focus_ai(window, cx);
         cx.notify();
@@ -987,6 +999,8 @@ impl ShellView {
         if self.menu.is_some() {
             self.close_menu(false, window, cx);
         }
+        self.ai.settings_scroll.reset_to_top();
+        self.ai.model_scroll.reset_to_top();
         let p = &self.ai.profile;
         self.ai
             .url
@@ -1016,7 +1030,6 @@ impl ShellView {
             draft: Profile {
                 url: p.url.clone(),
                 model: p.model.clone(),
-                enabled: p.enabled,
                 cloud: p.cloud,
                 private_relay: p.private_relay,
                 chatgpt_account: p.chatgpt_account,
@@ -1062,6 +1075,14 @@ impl ShellView {
             window.focus(&self.account_focus, cx);
         }
         cx.notify();
+    }
+
+    fn pick_local_model(&mut self, id: &str, cx: &mut Context<Self>) {
+        self.ai.model.update(cx, |input, cx| input.set_text(id, cx));
+        self.ai_setting_changed(Field::Model, cx);
+        if let Some(setup) = &mut self.ai.settings {
+            setup.pick_model = false;
+        }
     }
 
     fn ai_setting_changed(&mut self, field: Field, cx: &mut Context<Self>) {
@@ -1185,6 +1206,7 @@ impl ShellView {
                                 elapsed,
                             }
                         };
+                        this.ai.model_scroll.reset_to_top();
                         setup.models = models;
                         setup.pick_model = !setup.models.is_empty();
                     }
@@ -1216,17 +1238,18 @@ impl ShellView {
         let (Some(setup), Some(session)) = (self.ai.settings.as_mut(), self.store.session()) else {
             return;
         };
-        if !setup.draft.uses_relay() && (!setup.draft.url.is_empty() || setup.draft.enabled) {
-            if let Err(error) = setup.draft.normalize() {
-                setup.check = Check::Failed(error.to_string());
-                cx.notify();
-                return;
-            }
-            if setup.draft.enabled && !valid_model(&setup.draft.model) {
-                setup.check = Check::Failed("Choose a model before enabling the assistant.".into());
-                cx.notify();
-                return;
-            }
+        if !setup.draft.model.is_empty() && !valid_model(&setup.draft.model) {
+            setup.check = Check::Failed("Choose a valid model.".into());
+            cx.notify();
+            return;
+        }
+        if !setup.draft.uses_relay()
+            && (!setup.draft.url.is_empty() || !setup.draft.model.is_empty())
+            && let Err(error) = setup.draft.normalize()
+        {
+            setup.check = Check::Failed(error.to_string());
+            cx.notify();
+            return;
         }
         if setup.draft.save(session.data()).is_err() {
             setup.check = Check::Failed("Couldn't save the protected assistant settings.".into());
@@ -1235,8 +1258,7 @@ impl ShellView {
         }
         let next = std::mem::take(&mut setup.draft);
         let old = &self.ai.profile;
-        let changing = old.enabled != next.enabled
-            || old.cloud != next.cloud
+        let changing = old.cloud != next.cloud
             || old.url != next.url
             || old.model != next.model
             || old.key != next.key
@@ -1266,6 +1288,7 @@ impl ShellView {
         }
         if self.ai.controller.view().generation != generation {
             self.ai.clear_chat_state();
+            self.ai.composer_scroll.reset_to_top();
             self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         }
         self.ai.profile = next;
@@ -1282,6 +1305,7 @@ impl ShellView {
         self.ai.profile = Profile::default();
         self.ai.rate_until = None;
         self.ai.connection = ConnectionHealth::Unknown;
+        self.ai.composer_scroll.reset_to_top();
         self.ai.composer.update(cx, |a, cx| a.set_text("", cx));
         self.ai.key.update(cx, |i, cx| {
             i.set_text("", cx);
