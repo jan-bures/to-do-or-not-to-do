@@ -80,6 +80,107 @@ fn snapshot(state: Arc<State>, cursor: u64) -> ConfirmedSnapshot {
 }
 
 #[test]
+fn proposal_dates_follow_the_phone_preference_and_local_year() {
+    use todo_client::assistant::{ListRef, TaskRef};
+    use todo_core::{
+        event::Change,
+        ids::{ListId, TaskId},
+        model::Priority,
+        time::Timestamp,
+    };
+
+    let before = Some("2026-11-19".parse().unwrap());
+    let after = Some("2026-11-23".parse().unwrap());
+    let next_year = Some("2027-01-04".parse().unwrap());
+    let task = TaskRef {
+        id: TaskId::from_uuid(Uuid::nil()),
+        title: "Review the budget".into(),
+        list: ListRef {
+            id: ListId::from_uuid(Uuid::nil()),
+            name: "Reading".into(),
+        },
+        due: after,
+    };
+    let edited = Effect::Edited {
+        task: task.clone(),
+        changes: vec![
+            Edit::Due(Change {
+                old: before,
+                new: after,
+            }),
+            Edit::StartDate(Change {
+                old: None,
+                new: next_year,
+            }),
+        ],
+    };
+    let created = Effect::Created {
+        task,
+        priority: Priority::None,
+        status: WorkflowStatus::Todo,
+        placement: Placement::Last,
+    };
+    for (format, old, new, next) in [
+        (None, "Thu 19.11.", "Mon 23.11.", "Mon 04.01.2027"),
+        (
+            Some("day_month_name"),
+            "Thu 19 Nov",
+            "Mon 23 Nov",
+            "Mon 4 Jan 2027",
+        ),
+        (
+            Some("month_name_day"),
+            "Thu Nov 19",
+            "Mon Nov 23",
+            "Mon Jan 4, 2027",
+        ),
+        (
+            Some("iso"),
+            "Thu 2026-11-19",
+            "Mon 2026-11-23",
+            "Mon 2027-01-04",
+        ),
+        (
+            Some("numeric_us"),
+            "Thu 11/19",
+            "Mon 11/23",
+            "Mon 01/04/2027",
+        ),
+    ] {
+        // Still 2026 in UTC, already 2027 in Prague. First exercise both years in 2026.
+        let mut phone = LocalNow {
+            epoch_ms: "2026-11-21T09:35:00Z"
+                .parse::<Timestamp>()
+                .unwrap()
+                .as_millisecond(),
+            zone_id: "Europe/Prague".into(),
+            date_format: format.map(str::to_owned),
+            ..now()
+        };
+        let dates = Now::new(phone.clone()).dates();
+        let edit = effect(&edited, dates, None);
+        assert_eq!(edit.fields[0].before.as_deref(), Some(old));
+        assert_eq!(edit.fields[0].after, new);
+        assert_eq!(edit.fields[1].before.as_deref(), Some("No date"));
+        assert_eq!(edit.fields[1].after, next);
+        assert_eq!(effect(&created, dates, None).fields[0].after, new);
+
+        phone.epoch_ms = "2026-12-31T23:30:00Z"
+            .parse::<Timestamp>()
+            .unwrap()
+            .as_millisecond();
+        let dates = Now::new(phone).dates();
+        assert_eq!(dates.today.year(), 2027);
+        let edit = effect(&edited, dates, None);
+        if format.is_none() {
+            assert_eq!(edit.fields[0].before.as_deref(), Some("Thu 19.11.2026"));
+            assert_eq!(edit.fields[0].after, "Mon 23.11.2026");
+            assert_eq!(edit.fields[1].after, "Mon 04.01.");
+        }
+    }
+}
+
+#[test]
 fn unverified_https_and_public_http_are_refused_and_access_is_inherited() {
     let (ai, _temp) = host();
     assert!(ai.panel(now()).server.is_none());

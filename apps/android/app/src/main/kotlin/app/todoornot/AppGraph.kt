@@ -252,7 +252,12 @@ class AppGraph(private val app: Context) {
                     pace = ::pace, listen = listen, zone = { ZoneId.systemDefault() },
                     syncStatus = { host.status(paired) },
                     now = ::displayNow,
-                    saveDateFormat = { key -> dateFormat.save(key).also { if (it) widgets.invalidate() } },
+                    saveDateFormat = { key -> dateFormat.save(key).also { saved ->
+                        if (saved) {
+                            assistant?.takeIf { it.first === e }?.second?.refreshDateLabels()
+                            widgets.invalidate()
+                        }
+                    } },
                 )
             }.also { m ->
                 if (host.isAuthorized(paired)) withContext(NonCancellable) {

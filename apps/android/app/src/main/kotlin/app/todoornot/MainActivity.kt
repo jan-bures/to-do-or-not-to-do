@@ -229,6 +229,7 @@ class MainActivity : ComponentActivity() {
                     val screen = requireNotNull(ui)
                     val assistant = graph.assistant?.takeIf { it.first === m.engine }?.second
                     val ai = assistant?.ui?.collectAsStateWithLifecycle()?.value
+                    LaunchedEffect(assistant, screen.today) { assistant?.refreshDateLabels() }
                     val push by graph.push.status.collectAsStateWithLifecycle()
                     HeaderClock(m)
                     val focus = composerRoom?.takeIf { it.first === m && it.second == screen.room.key && screen.activity == null }

@@ -101,6 +101,9 @@ internal class AssistantModel(
         changes.trySend(Unit)
     }
 
+    /** Re-label the existing chat after a date preference or the phone's local day changes. */
+    fun refreshDateLabels() { changes.trySend(Unit) }
+
     /** Revoke live inference before deleting the pairing directory. No new dispatch can start. */
     fun shutdown() {
         closed = true

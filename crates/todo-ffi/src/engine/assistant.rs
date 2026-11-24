@@ -22,6 +22,7 @@ use todo_client::{
         },
         provider::{DataClass, Provider, ProviderError},
     },
+    date_format::DateLabels,
     native::{OsEntropy, TokioClock},
     notify::Notify,
 };
@@ -385,7 +386,7 @@ impl AndroidAssistant {
     pub fn panel(&self, now: LocalNow) -> AssistantPanelState {
         let mut session = locked(&self.session);
         self.refresh_locked(&mut session);
-        let now = Now::new(now);
+        let dates = Now::new(now).dates();
         let view = self.chat.view();
         let state = self.chat.list_scope().0;
         session.receipts.retain(|id, _| {
@@ -446,7 +447,7 @@ impl AndroidAssistant {
                                             .unwrap_or(original)
                                             .effects
                                             .iter()
-                                            .map(|e| effect(e, &now, state.as_deref()))
+                                            .map(|e| effect(e, dates, state.as_deref()))
                                             .collect(),
                                     }
                                 })
@@ -1078,8 +1079,9 @@ fn access_rows(state: &State, rules: &AccessRules) -> (Vec<AssistantAccessRow>, 
     (rows, hidden)
 }
 
-fn effect(effect: &Effect, now: &Now, state: Option<&State>) -> AssistantEffect {
-    let date = |d: Option<Date>| d.map_or_else(|| "No date".into(), |d| now.dates().weekday(d));
+fn effect(effect: &Effect, dates: DateLabels, state: Option<&State>) -> AssistantEffect {
+    // Single cards and expanded batch rows get the same absolute civil date labels as desktop.
+    let date = |d: Option<Date>| d.map_or_else(|| "No date".into(), |d| dates.weekday(d));
     let field = |label: &str, before, after| AssistantField {
         label: label.into(),
         before,

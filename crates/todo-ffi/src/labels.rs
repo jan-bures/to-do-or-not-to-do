@@ -136,6 +136,7 @@ pub enum DateStyle {
     Full,
     Relative,
     Month,
+    Weekday,
 }
 
 /// Format an ISO date from the platform's calendar or time zone conversion.
@@ -148,6 +149,7 @@ pub fn display_date(date: String, now: LocalNow, style: DateStyle) -> Option<Str
         DateStyle::Full => dates.full(date),
         DateStyle::Relative => dates.relative(date),
         DateStyle::Month => dates.month(date),
+        DateStyle::Weekday => dates.weekday(date),
     })
 }
 

@@ -33,8 +33,9 @@ class AssistantModelTest {
         var failed = false
         var foreground = false
         var closed = false
+        var shownNow: LocalNow? = null
         override fun listen(onChange: () -> Unit) { changed = onChange }
-        override fun panel(now: LocalNow) = state
+        override fun panel(now: LocalNow): AssistantPanelState { shownNow = now; return state }
         override fun resume() { foreground = true }
         override fun pause() { foreground = false; stop() }
         override fun shutdown() { foreground = false }
@@ -91,6 +92,22 @@ class AssistantModelTest {
         runCurrent()
         assertEquals("", model.ui.value.draft)
         assertEquals(null, model.ui.value.problem)
+    }
+
+    @Test fun dateRefreshUsesTheNewPreferenceWithoutResettingChatOrSending() = runTest {
+        val core = Core()
+        var clock = FIXTURE_NOW
+        val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { clock }
+        model.foreground(true)
+        model.draft("Keep this draft")
+        runCurrent()
+        clock = clock.copy(dateFormat = "numeric_us")
+        model.refreshDateLabels()
+        runCurrent()
+        assertEquals("numeric_us", core.shownNow?.dateFormat)
+        assertEquals(3uL, model.ui.value.panel.generation)
+        assertEquals("Keep this draft", model.ui.value.draft)
+        assertTrue(core.prompts.isEmpty())
     }
 
     @Test fun reviewUsesPresentedProposalAndBackgroundPreventsSending() = runTest {

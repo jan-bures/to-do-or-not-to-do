@@ -16,6 +16,8 @@ import app.todoornot.core.AssistantProposal
 import app.todoornot.core.AssistantProposalStatus
 import app.todoornot.core.AssistantServer
 import app.todoornot.core.AssistantTurn
+import app.todoornot.core.DateStyle
+import app.todoornot.core.displayDate
 import app.todoornot.model.Actions
 import app.todoornot.model.AssistantUi
 import app.todoornot.model.TodoModel
@@ -47,10 +49,11 @@ class AssistantGalleryTest {
                     "First, check the library return. The house tasks can wait until the weekend.",
                     listOf("Checked permitted lists · 5 ms", "Searched visible tasks · 3 ms", "Waiting for the model…"),
                     null, emptyList(), null, null, false)
+                fun date(iso: String) = checkNotNull(displayDate(iso, FIXTURE_NOW, DateStyle.WEEKDAY))
                 val edit = AssistantEffect(AssistantEffectKind.EDIT, "Review quarterly budget", "Home paperwork", "clay", "sample-task",
-                    listOf(AssistantField("Due", "Thu Nov 19", "Mon Nov 23")))
+                    listOf(AssistantField("Due", date("2026-11-19"), date("2026-11-23"))))
                 val longCreate = AssistantEffect(AssistantEffectKind.CREATE, "Vrátit knihy do knihovny a vyzvednout rezervovaný slovník",
-                    "Errands", "rose", null, listOf(AssistantField("Due", null, "Mon Nov 23"), AssistantField("Priority", null, "None"),
+                    "Errands", "rose", null, listOf(AssistantField("Due", null, date("2026-11-23")), AssistantField("Priority", null, "None"),
                         AssistantField("Status", null, "To do"), AssistantField("Position", null, "End of the list")))
                 val change = streaming.copy(id = "proposal", prompt = "Move the budget review to Monday, and add a task to return the library books.",
                     prose = "I drafted these changes. Nothing has been saved yet.", stepSummary = "Checked 2 lists · Read 1 task · 1 hidden",
