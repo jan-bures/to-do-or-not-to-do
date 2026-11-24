@@ -342,7 +342,10 @@ test("assistant edits and selected batch items only sync after approval; reject 
   await expect(assistant.getByText("The task snapshot changed. Request a new proposal.")).toBeVisible();
   await expect(card.getByRole("button", { name: "Approve", exact: true })).toHaveCount(0);
   expect(submitted).toBe(2);
-  await other.getByRole("button", { name: "Undo", exact: true }).click();
+  await taskButton(other, remote).click();
+  await other.keyboard.press("Delete");
+  await expect(row(other, remote)).toHaveCount(0);
+  await expect(other.locator(".sync-text")).toHaveAttribute("title", /^Synced/);
   await other.close();
   await page.evaluate(() => localStorage.removeItem("todo.assistant.settings"));
   await page.close();
