@@ -34,11 +34,15 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.AssistantAccess
 import app.todoornot.core.AssistantAccessRow
 import app.todoornot.core.AssistantConnection
 import app.todoornot.core.AssistantServer
+import app.todoornot.core.FfiException
+import app.todoornot.core.assistantEndpoint
 import app.todoornot.core.AssistantTurn
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
@@ -61,11 +65,20 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
     var address by remember(server) { mutableStateOf(server?.address.orEmpty()) }
     var name by remember(server) { mutableStateOf(server?.model.orEmpty()) }
     var privateServer by remember(server) { mutableStateOf(server?.privateServer == true) }
+    var apiKey by remember(server) { mutableStateOf("") }
+    var removeKey by remember(server) { mutableStateOf(false) }
+    val clearKeyDraft = { apiKey = ""; removeKey = false }
     var editing by remember { mutableStateOf<String?>(null) }
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
     val draft = AssistantServer(address.trim(), name.trim(), privateServer)
-    val changed = draft != server
-    BottomSheet("AI settings", close, tall = true, color = r.pane, defaultFraction = P.AI_SHEET_DEFAULT_FRACTION) { overlay ->
+    val info = remember(draft.address, privateServer) {
+        if (draft.address.isEmpty()) null else runCatching { assistantEndpoint(draft.address, privateServer) }
+    }
+    val endpoint = info?.getOrNull()
+    val keySaved = server?.address == draft.address && state.hasApiKey && !removeKey
+    val replacementKey = apiKey.takeIf { it.isNotBlank() } ?: "".takeIf { removeKey }
+    val changed = draft != server || replacementKey != null
+    BottomSheet("AI settings", close, tall = true, color = r.pane, defaultFraction = P.SHEET_MAX_FRACTION) { overlay ->
         BackHandler(enabled = editing != null) { editing = null }
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = S.S4.dp, vertical = S.S2.dp),
             verticalArrangement = Arrangement.spacedBy(S.S3.dp)) {
@@ -75,25 +88,38 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon("link", r.accentStrong)
                     Label("Your own server", T.TASK_TITLE, r.ink, Modifier.weight(1f), maxLines = 2)
-                    Label("Private network", T.META_PHONE, r.ink2)
+                    endpoint?.let { Label(it.label, T.META_PHONE, r.ink2) }
                 }
-                Label("Prompts and allowed task fields go to this HTTPS server. Use a model it runs locally. There is no cloud fallback.",
+                Label("Prompts and allowed task fields go to this server. Use a model it runs locally. There is no cloud fallback.",
                     T.BODY, r.ink2, maxLines = Int.MAX_VALUE)
                 SettingsField("Base URL", "https://todo.example.com", address, {
-                    if (it != address) { address = it; privateServer = false }
+                    if (it != address) { address = it; privateServer = false; clearKeyDraft() }
                 }, KeyboardType.Uri)
-                SettingsField("Model", "Model name", name, { name = it }, KeyboardType.Text)
-                Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).toggleable(privateServer,
-                    role = Role.Checkbox, onValueChange = { privateServer = it }),
-                    horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
-                    AccessCheck(privateServer)
-                    Label("I control this private server", T.BODY, r.ink, maxLines = 2)
+                (info?.exceptionOrNull() as? FfiException.Invalid)?.let {
+                    Label(it.detail, T.META_PHONE, r.dangerInk, maxLines = Int.MAX_VALUE)
                 }
+                if (endpoint?.tailnetHttp == true) {
+                    Label("Unencrypted · relies on Tailscale", T.META_PHONE, r.sunInk, maxLines = 2)
+                }
+                if (endpoint?.needsAttestation == true) {
+                    Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).toggleable(privateServer,
+                        role = Role.Checkbox, onValueChange = { privateServer = it }),
+                        horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        AccessCheck(privateServer)
+                        Label("I control this private server", T.BODY, r.ink, maxLines = 2)
+                    }
+                }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.Bottom) {
+                    SettingsField("API key", if (keySaved) "Key saved · enter to replace" else "Optional bearer key", apiKey,
+                        { apiKey = it }, KeyboardType.Password, Modifier.weight(1f))
+                    if (keySaved) AiButton("Remove", { apiKey = ""; removeKey = true }, quiet = true)
+                }
+                SettingsField("Model", "Model name", name, { name = it }, KeyboardType.Text)
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                     AiButton("Test connection", { model?.test() }, Modifier.weight(1f),
-                        enabled = !ui.busy && !state.streaming && !changed && server != null && state.connection != AssistantConnection.TESTING)
-                    AiButton("Save server", { model?.save(draft) }, Modifier.weight(1f), primary = true,
-                        enabled = !ui.busy && changed && privateServer && address.isNotBlank() && name.isNotBlank())
+                        enabled = !ui.busy && !state.streaming && !changed && state.destination != null && state.connection != AssistantConnection.TESTING)
+                    AiButton("Save server", { model?.save(draft, replacementKey, clearKeyDraft) }, Modifier.weight(1f), primary = true,
+                        enabled = !ui.busy && changed && endpoint != null && (!endpoint.needsAttestation || privateServer) && name.isNotBlank())
                 }
                 val health = when (state.connection) {
                     AssistantConnection.UNTESTED -> null
@@ -130,7 +156,7 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
         }
         Row(Modifier.fillMaxWidth().heightIn(min = P.BOTTOM_BAR.dp).background(r.canvas).hairline(r.line, top = true)
             .padding(horizontal = S.S4.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            if (server != null) AiButton("Disconnect server", { model?.save(null) }, enabled = !ui.busy, quiet = true)
+            if (server != null) AiButton("Disconnect server", { model?.save(null, saved = clearKeyDraft) }, enabled = !ui.busy, quiet = true)
             else Spacer(Modifier.weight(1f))
             AiButton("Done", overlay::close, quiet = true)
         }
@@ -165,14 +191,17 @@ internal fun AccessCheck(checked: Boolean) {
 }
 
 @Composable
-private fun SettingsField(label: String, hint: String, value: String, onChange: (String) -> Unit, keyboardType: KeyboardType) {
+private fun SettingsField(label: String, hint: String, value: String, onChange: (String) -> Unit, keyboardType: KeyboardType,
+    modifier: Modifier = Modifier,
+) {
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
-    Column {
+    Column(modifier) {
         Label(label, T.META_PHONE, r.ink2)
         BasicTextField(value, onChange, Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
             .clip(shape).border(Tokens.Elevation.HAIRLINE.dp, r.control, shape).semantics { contentDescription = label },
             textStyle = (if (keyboardType == KeyboardType.Uri) T.COUNT else T.BODY).style(r.ink), singleLine = true,
+            visualTransformation = if (keyboardType == KeyboardType.Password) PasswordVisualTransformation() else VisualTransformation.None,
             cursorBrush = SolidColor(r.accentStrong), keyboardOptions = KeyboardOptions(keyboardType = keyboardType, autoCorrectEnabled = false),
             decorationBox = { field ->
                 Box(Modifier.heightIn(min = P.TOUCH.dp).padding(horizontal = S.S3.dp), contentAlignment = Alignment.CenterStart) {

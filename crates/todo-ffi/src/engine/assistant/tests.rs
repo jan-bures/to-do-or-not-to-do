@@ -1,8 +1,13 @@
 #![allow(clippy::unwrap_used)]
 
 use super::*;
-use axum::{Json, Router, http::HeaderMap, routing::post};
+use axum::{
+    Json, Router,
+    http::{HeaderMap, StatusCode},
+    routing::{get, post},
+};
 use serde_json::{Value, json};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use todo_client::assistant::{
     ConfirmedSnapshot, Revision,
@@ -28,12 +33,36 @@ fn server() -> AssistantServer {
     }
 }
 
+#[derive(Default)]
+struct FixturePlatform {
+    keys: Mutex<HashMap<Vec<u8>, Zeroizing<Vec<u8>>>>,
+    addresses: Vec<String>,
+}
+
+impl AssistantPlatform for FixturePlatform {
+    // A handle into fixture memory stands in for ciphertext; no fixture key goes on disk.
+    fn seal_key(&self, plain: Vec<u8>) -> Option<Vec<u8>> {
+        let handle = Uuid::new_v4().into_bytes().to_vec();
+        locked(&self.keys).insert(handle.clone(), Zeroizing::new(plain));
+        Some(handle)
+    }
+
+    fn open_key(&self, sealed: Vec<u8>) -> Option<Vec<u8>> {
+        locked(&self.keys).get(&sealed).map(|key| key.to_vec())
+    }
+
+    fn vpn_addresses(&self) -> Vec<String> {
+        self.addresses.clone()
+    }
+}
+
 fn host() -> (Arc<AndroidAssistant>, tempfile::TempDir) {
     let engine = TodoEngine::fixture("world".into(), now()).unwrap();
     let dir = tempfile::tempdir().unwrap();
     let ai = AndroidAssistant::open(
         engine,
         dir.path().join("assistant.json").to_string_lossy().into(),
+        Arc::new(FixturePlatform::default()),
     );
     ai.resume();
     (ai, dir)
@@ -51,23 +80,26 @@ fn snapshot(state: Arc<State>, cursor: u64) -> ConfirmedSnapshot {
 }
 
 #[test]
-fn only_explicit_https_settings_are_persisted_and_access_is_inherited() {
+fn unverified_https_and_public_http_are_refused_and_access_is_inherited() {
     let (ai, _temp) = host();
     assert!(ai.panel(now()).server.is_none());
     let mut bad = server();
     for address in [
-        "http://127.0.0.1",
         "http://todo.example.com",
+        "http://sample.example.ts.net.evil.example",
+        "http://100.63.255.255",
+        "http://100.128.0.1",
+        "http://192.168.0.1",
         "https://user@todo.example.com",
         "https://todo.example.com/?q=1",
     ] {
         bad.address = address.into();
-        assert!(ai.save_server(Some(bad.clone())).is_err());
+        assert!(ai.save_server(Some(bad.clone()), None).is_err());
     }
     bad = server();
     bad.private_server = false;
-    assert!(ai.save_server(Some(bad)).is_err());
-    ai.save_server(Some(server())).unwrap();
+    assert!(ai.save_server(Some(bad), None).is_err());
+    ai.save_server(Some(server()), None).unwrap();
     let before = ai.panel(now());
     assert!(
         before
@@ -87,7 +119,11 @@ fn only_explicit_https_settings_are_persisted_and_access_is_inherited() {
     assert!(member.inherited);
     ai.set_access(member.id.clone(), false, AssistantAccess::AllModels)
         .unwrap();
-    let reloaded = AndroidAssistant::open(ai.engine.clone(), ai.path.to_string_lossy().into());
+    let reloaded = AndroidAssistant::open(
+        ai.engine.clone(),
+        ai.path.to_string_lossy().into(),
+        ai.platform.clone(),
+    );
     let loaded = reloaded.panel(now());
     assert_eq!(loaded.server, Some(server()));
     assert_eq!(
@@ -102,6 +138,170 @@ fn only_explicit_https_settings_are_persisted_and_access_is_inherited() {
     reloaded.shutdown();
     assert!(reloaded.panel(now()).access.is_empty());
     assert!(reloaded.panel(now()).server.is_none());
+}
+
+#[tokio::test]
+async fn destination_classification_matches_desktop_and_tailnet_http_fails_closed_without_a_vpn() {
+    let (ai, _temp) = host();
+    for (address, label, tailnet_http) in [
+        ("http://127.0.0.1:8000", "This device", false),
+        ("http://sample.example.ts.net:8000/v1", "Tailscale", true),
+        ("http://100.64.0.1:8000/v1", "Tailscale", true),
+        ("https://sample.example.ts.net/v1", "Tailscale", false),
+    ] {
+        let info = assistant_endpoint(address.into(), false).unwrap();
+        assert_eq!(info.label, label);
+        assert_eq!(info.tailnet_http, tailnet_http);
+        assert!(!info.needs_attestation);
+        ai.save_server(
+            Some(AssistantServer {
+                address: address.into(),
+                private_server: false,
+                ..server()
+            }),
+            None,
+        )
+        .unwrap();
+        assert_eq!(ai.panel(now()).destination.as_deref(), Some(label));
+        let provider = locked(&ai.session).provider.clone().unwrap();
+        assert!(ListAccess::PrivateOnly.allows(provider.capabilities(MODEL).data_class));
+        if tailnet_http {
+            assert_eq!(
+                provider.list_models().await.unwrap_err(),
+                ProviderError::TailnetDisconnected
+            );
+            assert_eq!(
+                provider.probe(MODEL).await.unwrap_err(),
+                ProviderError::TailnetDisconnected
+            );
+        }
+    }
+    for (address, accepted) in [
+        ("192.168.0.8", false),
+        ("100.128.0.1", false),
+        ("100.64.0.1", true),
+        ("fd7a:115c:a1e0::1", true),
+    ] {
+        assert_eq!(
+            AndroidVpn(Arc::new(FixturePlatform {
+                addresses: vec![address.into()],
+                ..Default::default()
+            }))
+            .connected(),
+            accepted
+        );
+    }
+}
+
+const FIXTURE_BEARER: &str = "fixture-model-key";
+
+#[tokio::test]
+async fn bearer_is_sealed_bound_to_the_endpoint_and_never_sent_after_a_redirect() {
+    let (ai, _temp) = host();
+    let leaked = Arc::new(AtomicUsize::new(0));
+    let target = {
+        let leaked = leaked.clone();
+        Router::new().fallback(move || async move {
+            leaked.fetch_add(1, Ordering::Relaxed);
+            StatusCode::OK
+        })
+    };
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let redirect = format!("http://{}/elsewhere", tcp.local_addr().unwrap());
+    let target = tokio::spawn(async { axum::serve(tcp, target).await.unwrap() });
+    let authenticated = Arc::new(AtomicUsize::new(0));
+    let handler = {
+        let authenticated = authenticated.clone();
+        move |headers: HeaderMap| {
+            let redirect = redirect.clone();
+            let authenticated = authenticated.clone();
+            async move {
+                if headers
+                    .get("authorization")
+                    .and_then(|value| value.to_str().ok())
+                    == Some(&format!("Bearer {FIXTURE_BEARER}"))
+                {
+                    authenticated.fetch_add(1, Ordering::Relaxed);
+                    (StatusCode::TEMPORARY_REDIRECT, [("location", redirect)])
+                } else {
+                    (StatusCode::UNAUTHORIZED, [("location", String::new())])
+                }
+            }
+        }
+    };
+    let router = Router::new()
+        .route("/v1/models", get(handler.clone()))
+        .route("/v1/chat/completions", post(handler));
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let local = AssistantServer {
+        address: format!("http://{}", tcp.local_addr().unwrap()),
+        private_server: false,
+        ..server()
+    };
+    let origin = tokio::spawn(async { axum::serve(tcp, router).await.unwrap() });
+    ai.save_server(Some(local.clone()), None).unwrap();
+    let provider = locked(&ai.session).provider.clone().unwrap();
+    assert_eq!(
+        provider.list_models().await.unwrap_err(),
+        ProviderError::Unauthorized
+    );
+    ai.save_server(Some(local.clone()), Some(FIXTURE_BEARER.into()))
+        .unwrap();
+    let settings_file = fs::read_to_string(&ai.path).unwrap();
+    assert!(!settings_file.contains(FIXTURE_BEARER));
+    let reloaded = AndroidAssistant::open(
+        ai.engine.clone(),
+        ai.path.to_string_lossy().into(),
+        ai.platform.clone(),
+    );
+    reloaded.resume();
+    assert!(reloaded.panel(now()).has_api_key);
+    let provider = locked(&reloaded.session).provider.clone().unwrap();
+    assert_eq!(
+        provider.list_models().await.unwrap_err(),
+        ProviderError::InvalidResponse
+    );
+    assert!(provider.probe(MODEL).await.is_err());
+    assert!(authenticated.load(Ordering::Relaxed) >= 2);
+    assert_eq!(
+        leaked.load(Ordering::Relaxed),
+        0,
+        "not even a keyless redirected request is permitted"
+    );
+
+    let fail_closed = AndroidAssistant::open(
+        ai.engine.clone(),
+        ai.path.to_string_lossy().into(),
+        Arc::new(FixturePlatform::default()),
+    );
+    assert!(fail_closed.panel(now()).destination.is_none());
+    let saved = read_settings(&ai.path).unwrap();
+    assert!(
+        open_key(
+            &*ai.platform,
+            "https://todo.example.com",
+            saved.sealed_key.as_deref()
+        )
+        .is_err()
+    );
+    // Replacing the destination never carries the key forward, even if the model is unchanged.
+    reloaded.save_server(Some(server()), None).unwrap();
+    assert!(!reloaded.panel(now()).has_api_key);
+    reloaded
+        .save_server(Some(local.clone()), Some(FIXTURE_BEARER.into()))
+        .unwrap();
+    reloaded
+        .save_server(Some(local.clone()), Some(String::new()))
+        .unwrap();
+    assert!(!reloaded.panel(now()).has_api_key);
+    reloaded
+        .save_server(Some(local), Some(FIXTURE_BEARER.into()))
+        .unwrap();
+    reloaded.save_server(None, None).unwrap();
+    assert!(read_settings(&ai.path).unwrap().sealed_key.is_none());
+    assert!(!reloaded.panel(now()).has_api_key);
+    origin.abort();
+    target.abort();
 }
 
 #[tokio::test]
@@ -212,17 +412,15 @@ async fn mock_model(
     let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let local = format!("http://{}", tcp.local_addr().unwrap());
     let fixture = tokio::spawn(async { axum::serve(tcp, router).await.unwrap() });
-    {
-        let mut session = locked(&ai.session);
-        // Test-only connection, impossible to install through save_server on Android.
-        session.settings.server = Some(server());
-        session.provider = Some(
-            LocalProvider::new(&local, "")
-                .unwrap()
-                .with_support(MODEL.into(), Support::StreamingTools),
-        );
-        ai.install(&session);
-    }
+    ai.save_server(
+        Some(AssistantServer {
+            address: local,
+            private_server: false,
+            ..server()
+        }),
+        None,
+    )
+    .unwrap();
     fixture
 }
 
@@ -356,6 +554,7 @@ async fn approved_subset_syncs_once_and_can_be_undone() {
     let ai = AndroidAssistant::open(
         engine.clone(),
         cache.path().join("assistant.json").to_string_lossy().into(),
+        Arc::new(FixturePlatform::default()),
     );
     ai.resume();
     engine.start().unwrap();

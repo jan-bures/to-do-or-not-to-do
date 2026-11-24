@@ -42,6 +42,7 @@ tokio = { workspace = true, features = ["rt-multi-thread", "time", "sync"] }
 reqwest = { workspace = true, features = ["rustls-no-provider"] }
 rustls.workspace = true
 url.workspace = true
+zeroize.workspace = true
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni.workspace = true

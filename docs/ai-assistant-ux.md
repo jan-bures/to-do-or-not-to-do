@@ -171,9 +171,10 @@ The web app shares the desktop visual language and adapts cleanly across its thr
 
 Follows every invariant of [`docs/android-thumb-zone.md`](android-thumb-zone.md) and [`docs/android-header.md`](android-header.md): **Sky above, hands below**, `48 dp` minimum touch targets, flat opaque surfaces, zero blur, and zero controls crossing the hinge.
 
-The first Android release supports [Your own server over HTTPS](android.md#ai-assistant). It has no
-cloud fallback, separate credentials, voice control, destructive tools, or persisted chats. The
-History control navigates the current chat, and proposal counts are numbers, not lights.
+The first Android release supports [Your own server](android.md#ai-assistant), including plain HTTP
+over Tailscale and an optional bearer key. It has no cloud fallback, voice control, destructive tools,
+or persisted chats. The History control navigates the current chat, and proposal counts are numbers,
+not lights.
 
 ### 4.1 Bottom-dock reachability (both postures)
 

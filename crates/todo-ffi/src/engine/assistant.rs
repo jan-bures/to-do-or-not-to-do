@@ -16,7 +16,10 @@ use todo_client::{
         AccessRules, Approval, ApprovalOutcome, AssistantError, Composer, Controller, Edit, Effect,
         ListAccess, ProposalKind, ProposalStatus, Selection, SendIntent, StepKind, StepStatus,
         ToolKind,
-        local::{LocalProvider, Support, valid_model},
+        local::{
+            Destination, LocalProvider, Support, TailnetInterface, endpoint_info, is_tailnet_ip,
+            valid_model,
+        },
         provider::{DataClass, Provider, ProviderError},
     },
     native::{OsEntropy, TokioClock},
@@ -25,6 +28,7 @@ use todo_client::{
 use todo_core::{State, command::Placement, model::WorkflowStatus, time::Date};
 use tokio::task::JoinHandle;
 use uuid::Uuid;
+use zeroize::Zeroizing;
 
 use super::{ChangeListener, TodoEngine, collection_id, invalid, list_id, locked};
 use crate::{
@@ -105,6 +109,49 @@ pub struct AssistantServer {
     pub model: String,
     /// Explicit owner confirmation for this exact HTTPS URL, not a DNS heuristic.
     pub private_server: bool,
+}
+
+/// Android supplies the Keystore and the live address of its active VPN. No task data crosses this boundary.
+#[uniffi::export(with_foreign)]
+pub trait AssistantPlatform: Send + Sync {
+    fn seal_key(&self, plain: Vec<u8>) -> Option<Vec<u8>>;
+    fn open_key(&self, sealed: Vec<u8>) -> Option<Vec<u8>>;
+    fn vpn_addresses(&self) -> Vec<String>;
+}
+
+struct AndroidVpn(Arc<dyn AssistantPlatform>);
+
+impl TailnetInterface for AndroidVpn {
+    fn connected(&self) -> bool {
+        self.0
+            .vpn_addresses()
+            .into_iter()
+            .any(|address| address.parse().is_ok_and(is_tailnet_ip))
+    }
+}
+
+#[derive(Clone, Debug, uniffi::Record)]
+pub struct AssistantEndpoint {
+    pub label: String,
+    pub needs_attestation: bool,
+    pub tailnet_http: bool,
+}
+
+#[uniffi::export]
+pub fn assistant_endpoint(address: String, attested: bool) -> Result<AssistantEndpoint, FfiError> {
+    endpoint(&address, attested)
+}
+
+fn endpoint(address: &str, attested: bool) -> Result<AssistantEndpoint, FfiError> {
+    let info = endpoint_info(address, attested).map_err(|e| invalid(e.to_string()))?;
+    Ok(AssistantEndpoint {
+        label: info.destination.label().into(),
+        needs_attestation: matches!(
+            info.destination,
+            Destination::NotPrivate | Destination::YourServer
+        ),
+        tailnet_http: info.tailnet_http,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, uniffi::Enum)]
@@ -195,6 +242,7 @@ pub struct AssistantTurn {
 pub struct AssistantPanelState {
     pub generation: u64,
     pub server: Option<AssistantServer>,
+    pub has_api_key: bool,
     pub connection: AssistantConnection,
     pub destination: Option<String>,
     pub support: Option<String>,
@@ -209,6 +257,8 @@ pub struct AssistantPanelState {
 #[serde(default)]
 struct Settings {
     server: Option<AssistantServer>,
+    // Keystore-encrypted envelope bound to the exact saved address. No plaintext on disk.
+    sealed_key: Option<Vec<u8>>,
     support: Option<Support>,
     access: AccessRules,
 }
@@ -236,6 +286,7 @@ struct Session {
 pub struct AndroidAssistant {
     engine: Arc<TodoEngine>,
     path: PathBuf,
+    platform: Arc<dyn AssistantPlatform>,
     chat: Chat,
     session: Mutex<Session>,
     watch: Mutex<Option<JoinHandle<()>>>,
@@ -246,19 +297,24 @@ pub struct AndroidAssistant {
 impl AndroidAssistant {
     /// The app supplies a file inside this pairing's app-private, no-backup directory.
     #[uniffi::constructor]
-    pub fn open(engine: Arc<TodoEngine>, settings_path: String) -> Arc<Self> {
+    pub fn open(
+        engine: Arc<TodoEngine>,
+        settings_path: String,
+        platform: Arc<dyn AssistantPlatform>,
+    ) -> Arc<Self> {
         let path = PathBuf::from(settings_path);
         let mut session = Session::default();
         match read_settings(&path) {
-            Ok(settings) => match build(settings.server.as_ref(), settings.support) {
-                Ok(provider) => {
-                    session.settings = settings;
-                    session.provider = provider;
+            Ok(settings) => {
+                if let Some(server) = &settings.server {
+                    match open_key(&*platform, &server.address, settings.sealed_key.as_deref())
+                        .and_then(|key| build(server, key.as_str(), settings.support, platform.clone())) {
+                        Ok(provider) => session.provider = Some(provider),
+                        Err(_) => session.problem = Some("Check the saved server and replace or remove its API key in AI settings.".into()),
+                    }
                 }
-                Err(_) => {
-                    session.problem = Some("Check the saved AI server in AI settings.".into())
-                }
-            },
+                session.settings = settings;
+            }
             Err(_) => {
                 session.problem =
                     Some("Couldn't read the saved AI settings. List access is off.".into())
@@ -267,6 +323,7 @@ impl AndroidAssistant {
         let this = Arc::new(Self {
             engine,
             path,
+            platform,
             chat: Chat::new(TokioClock, OsEntropy),
             session: Mutex::new(session),
             watch: Mutex::default(),
@@ -347,7 +404,13 @@ impl AndroidAssistant {
         AssistantPanelState {
             generation: view.generation,
             server: session.settings.server.clone(),
-            destination: session.provider.as_ref().map(|_| "Private network".into()),
+            has_api_key: session.settings.sealed_key.is_some(),
+            destination: session
+                .provider
+                .as_ref()
+                .and(session.settings.server.as_ref())
+                .and_then(|server| endpoint(&server.address, server.private_server).ok())
+                .map(|info| info.label),
             connection: session.connection,
             support: session.settings.support.map(|s| s.label().into()),
             access,
@@ -395,14 +458,7 @@ impl AndroidAssistant {
                             .steps
                             .iter()
                             .any(|s| matches!(s.kind, StepKind::Tool(_))))
-                    .then(|| {
-                        format!(
-                            "{} lists checked · {} tasks read · {} hidden",
-                            turn.summary.lists_checked,
-                            turn.summary.tasks_read,
-                            turn.summary.private_lists
-                        )
-                    });
+                    .then(|| turn.summary.label());
                     AssistantTurn {
                         id: turn.id.to_string(),
                         prompt: turn.prompt,
@@ -422,7 +478,10 @@ impl AndroidAssistant {
                             })
                             .collect(),
                         proposal,
-                        problem: turn.error.map(|e| e.to_string()),
+                        problem: turn.error.map(|e| match e {
+                            AssistantError::Provider(error) => provider_problem(error),
+                            e => e.to_string(),
+                        }),
                         stale_snapshot: turn.stale_snapshot,
                     }
                 })
@@ -431,7 +490,13 @@ impl AndroidAssistant {
         }
     }
 
-    pub fn save_server(&self, server: Option<AssistantServer>) -> Result<(), FfiError> {
+    /// A missing replacement keeps the key only for the same address. An empty replacement removes it.
+    pub fn save_server(
+        &self,
+        server: Option<AssistantServer>,
+        replacement_key: Option<String>,
+    ) -> Result<(), FfiError> {
+        let replacement = replacement_key.map(Zeroizing::new);
         let mut session = locked(&self.session);
         self.require_active(&mut session)?;
         let server = server.map(|s| AssistantServer {
@@ -439,15 +504,50 @@ impl AndroidAssistant {
             model: s.model.trim().into(),
             private_server: s.private_server,
         });
-        if server == session.settings.server {
+        if server == session.settings.server && replacement.is_none() {
             return Ok(());
         }
-        let provider = build(server.as_ref(), None)?;
+        let same_address = session
+            .settings
+            .server
+            .as_ref()
+            .zip(server.as_ref())
+            .is_some_and(|(old, new)| old.address == new.address);
+        let kept_key = if same_address {
+            session.settings.sealed_key.as_deref()
+        } else {
+            None
+        };
+        let (provider, sealed_key) = if let Some(server) = &server {
+            let saved_key = if replacement.is_none() {
+                open_key(&*self.platform, &server.address, kept_key)?
+            } else {
+                Zeroizing::default()
+            };
+            let key = replacement
+                .as_ref()
+                .map_or(saved_key.as_str(), |key| key.trim());
+            let provider = build(server, key, None, self.platform.clone())?;
+            let sealed_key = if replacement.is_some() {
+                seal_key(&*self.platform, &server.address, key)?
+            } else {
+                kept_key.map(<[u8]>::to_vec)
+            };
+            (Some(provider), sealed_key)
+        } else {
+            (None, None)
+        };
         let settings = Settings {
             server,
+            sealed_key,
             support: None,
-            access: session.settings.access.clone(),
+            access: if session.settings.server.is_some() && !same_address {
+                AccessRules::default()
+            } else {
+                session.settings.access.clone()
+            },
         };
+        self.chat.cancel();
         save_settings(&self.path, &settings)?;
         stop_check(&mut session);
         session.settings = settings;
@@ -551,7 +651,10 @@ impl AndroidAssistant {
             let connection = match reply.await {
                 Ok(()) => AssistantConnection::Connected,
                 Err(AssistantError::Provider(
-                    ProviderError::Unavailable | ProviderError::Timeout | ProviderError::Tls,
+                    ProviderError::Unavailable
+                    | ProviderError::Timeout
+                    | ProviderError::Tls
+                    | ProviderError::TailnetDisconnected,
                 )) => AssistantConnection::Unreachable,
                 Err(_) => return,
             };
@@ -744,7 +847,7 @@ impl AndroidAssistant {
             }
             Err(error) => {
                 session.connection = AssistantConnection::Unreachable;
-                session.problem = Some(error.to_string());
+                session.problem = Some(provider_problem(error));
             }
         }
         this.changes.notify();
@@ -810,32 +913,78 @@ fn selection<P: Provider>(
     }
 }
 
-fn build(
-    server: Option<&AssistantServer>,
-    support: Option<Support>,
-) -> Result<Option<LocalProvider>, FfiError> {
-    let Some(server) = server else {
-        return Ok(None);
-    };
-    if !url::Url::parse(&server.address).is_ok_and(|url| url.scheme() == "https") {
-        return Err(invalid(
-            "Android requires an HTTPS address for your AI server.",
-        ));
+fn provider_problem(error: ProviderError) -> String {
+    match error {
+        ProviderError::TailnetDisconnected => {
+            "Connect to Tailscale on this phone and try again.".into()
+        }
+        ProviderError::Unauthorized => {
+            "The server rejected the API key. Check it in AI settings.".into()
+        }
+        error => error.to_string(),
     }
-    if !server.private_server {
+}
+
+fn build(
+    server: &AssistantServer,
+    key: &str,
+    support: Option<Support>,
+    platform: Arc<dyn AssistantPlatform>,
+) -> Result<LocalProvider, FfiError> {
+    if !valid_model(&server.model) {
+        return Err(invalid("Enter a valid model name."));
+    }
+    let provider = LocalProvider::configured(&server.address, key, server.private_server)
+        .map_err(|e| invalid(e.to_string()))?;
+    if provider.capabilities(&server.model).data_class != DataClass::Local {
         return Err(invalid(
             "Confirm that this HTTPS address is your own private server.",
         ));
     }
-    if !valid_model(&server.model) {
-        return Err(invalid("Enter a valid model name."));
+    Ok(provider
+        .with_tailnet_interface(AndroidVpn(platform))
+        .with_support(
+            server.model.clone(),
+            support.unwrap_or(Support::StreamingTools),
+        ))
+}
+
+fn seal_key(
+    platform: &dyn AssistantPlatform,
+    address: &str,
+    key: &str,
+) -> Result<Option<Vec<u8>>, FfiError> {
+    if key.is_empty() {
+        return Ok(None);
     }
-    let provider = LocalProvider::configured(&server.address, "", server.private_server)
-        .map_err(|e| invalid(e.to_string()))?;
-    Ok(Some(provider.with_support(
-        server.model.clone(),
-        support.unwrap_or(Support::StreamingTools),
-    )))
+    let mut plain = Zeroizing::new(Vec::with_capacity(address.len() + 1 + key.len()));
+    plain.extend_from_slice(address.as_bytes());
+    plain.push(0);
+    plain.extend_from_slice(key.as_bytes());
+    platform
+        .seal_key(std::mem::take(&mut *plain))
+        .map(Some)
+        .ok_or_else(|| invalid("Couldn't protect the API key on this phone."))
+}
+
+fn open_key(
+    platform: &dyn AssistantPlatform,
+    address: &str,
+    sealed: Option<&[u8]>,
+) -> Result<Zeroizing<String>, FfiError> {
+    let Some(sealed) = sealed else {
+        return Ok(Zeroizing::default());
+    };
+    let error = || invalid("Couldn't open the saved API key. Replace or remove it in AI settings.");
+    let plain = Zeroizing::new(platform.open_key(sealed.to_vec()).ok_or_else(error)?);
+    let split = plain.iter().position(|byte| *byte == 0).ok_or_else(error)?;
+    let (saved, key) = (&plain[..split], &plain[split + 1..]);
+    if saved != address.as_bytes() || key.is_empty() {
+        return Err(error());
+    }
+    Ok(Zeroizing::new(
+        std::str::from_utf8(key).map_err(|_| error())?.into(),
+    ))
 }
 
 const SETTINGS_LIMIT: u64 = 1024 * 1024;

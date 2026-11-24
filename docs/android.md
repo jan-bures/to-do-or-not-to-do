@@ -248,18 +248,32 @@ right pane and puts History, Model & Privacy, New, Settings, and Close in its lo
 does not close the chat. History jumps to earlier messages in the current chat. New chat clears it;
 conversations are not synced or stored on disk. Suggestions fill the message field without sending.
 
-In **AI settings**, enter the HTTPS base URL and model name for your own OpenAI-compatible server. The
-app adds `/v1` if needed. Use a certificate trusted by Android and connect to the private network before
-sending. Android does not allow cleartext AI traffic, even in debug builds; use HTTPS on the private
-network rather than opening the model server to the internet. Confirm that the destination is under your
-control and runs the model locally. There is no cloud fallback, ChatGPT sign-in, or separate API-key field.
-**Test connection** uses invented data to check streaming and tool support. A text-only model cannot read
-or change tasks. Before a test, the assistant expects streaming with tools.
+In **AI settings**, enter the base URL and model name for your own OpenAI-compatible server. The app
+adds `/v1` if needed. If your server requires a bearer credential, enter it under **API key**, then
+**Save server**. **Test connection** uses invented data to check streaming and tool support. A text-only
+model cannot read or change tasks. Before a test, the assistant expects streaming with tools. There is no
+cloud fallback or ChatGPT sign-in.
 
-The endpoint, model, and list rules live in the app-private, no-backup pairing directory and are removed
-with that pairing. Android uses the same Rust HTTPS transport as the native app, without redirects,
-proxies, or the task-sync token. Lists start **Hidden**. **Private only** permits reads by your own server
-and excludes those lists from any cloud-classified request; **All models** permits both classes. A list
+For a server on Tailscale that does not serve TLS, connect the phone to Tailscale, make sure this app
+is not excluded from the VPN, and use `http://<machine>.<tailnet>.ts.net:<port>/v1`. Tailscale MagicDNS
+names and addresses in `100.64.0.0/10`
+or `fd7a:115c:a1e0::/48` count as private, as on desktop. Before each plain HTTP request, Rust requires
+the phone's active app VPN to have a Tailscale address. The Rust connector only accepts Tailscale IPs
+from DNS for a MagicDNS name. Plain HTTP is otherwise allowed only to this device's loopback addresses.
+Use HTTPS for other destinations, with a certificate Android trusts, and confirm that the server is yours
+and runs the model locally. Prefer HTTPS when available; with plain HTTP on a tailnet, transport privacy
+relies on Tailscale.
+
+Assistant requests use Rust (`reqwest`), not the Android platform HTTP stack. The assistant's own Rust
+policy enforces these exceptions in both release and debug; the Android network security config is
+unchanged. The assistant never follows redirects or uses proxies or the task-sync token. It sends its
+optional bearer credential only to the saved endpoint. The key is encrypted with a per-pairing Android
+Keystore key and bound to the exact saved URL. **Disconnect server** or saving a different URL discards
+the old key and list grants. To remove only the key, choose **Remove** and save. The endpoint, encrypted
+key, model, and rules live in the app-private, no-backup pairing directory.
+
+Lists start **Hidden**. **Private only** permits reads by your own server, including Tailscale, and
+excludes those lists from any cloud-classified request; **All models** permits both classes. A list
 inherits its collection's default unless overridden. Changing a collection resets its members' overrides.
 Changes to provider or access clear the current conversation so earlier model context is not reused.
 

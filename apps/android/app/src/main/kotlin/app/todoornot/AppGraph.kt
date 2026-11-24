@@ -32,6 +32,7 @@ import app.todoornot.reminders.reconcileReminders
 import app.todoornot.reminders.syncForReminder
 import app.todoornot.session.EngineHost
 import app.todoornot.session.Host
+import app.todoornot.session.AndroidAssistantPlatform
 import app.todoornot.session.KeystoreCipher
 import app.todoornot.session.PairingFiles
 import app.todoornot.session.PrefsKeyValues
@@ -257,7 +258,7 @@ class AppGraph(private val app: Context) {
                 if (host.isAuthorized(paired)) withContext(NonCancellable) {
                     val ai = withContext(Dispatchers.IO) {
                         val file = pairingFiles.dir(paired.session.pairingId).resolve("assistant.json")
-                        val native = AndroidAssistant.open(e, file.absolutePath)
+                        val native = AndroidAssistant.open(e, file.absolutePath, AndroidAssistantPlatform(app, paired.session.pairingId))
                         AssistantModel(NativeAssistant(native), ms, Dispatchers.IO, ::displayNow)
                     }
                     assistant = e to ai
@@ -419,7 +420,10 @@ class AppGraph(private val app: Context) {
             Unpaired.Clean, Unpaired.DataLeft -> {
                 session?.let {
                     PushWork.cancel(app, it.pairingId)
-                    scope.launch(Dispatchers.IO) { push.unpair(it) }
+                    scope.launch(Dispatchers.IO) {
+                        AndroidAssistantPlatform.forgetKey(it.pairingId)
+                        push.unpair(it)
+                    }
                 }
                 val previousCleanup = transferCleanup
                 transferCleanup = scope.launch(Dispatchers.IO) {

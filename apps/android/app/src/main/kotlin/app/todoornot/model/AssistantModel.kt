@@ -26,7 +26,7 @@ internal interface AssistantCore : Closeable {
     fun resume()
     fun pause()
     fun shutdown()
-    fun save(server: AssistantServer?)
+    fun save(server: AssistantServer?, replacementKey: String?)
     fun test()
     fun access(row: AssistantAccessRow, access: AssistantAccess)
     fun send(generation: ULong, sequence: ULong, prompt: String, now: LocalNow)
@@ -47,7 +47,7 @@ internal class NativeAssistant(private val native: AndroidAssistant) : Assistant
     override fun pause() = native.pause()
     override fun shutdown() = native.shutdown()
     override fun close() = native.close()
-    override fun save(server: AssistantServer?) = native.saveServer(server)
+    override fun save(server: AssistantServer?, replacementKey: String?) = native.saveServer(server, replacementKey)
     override fun test() = native.testServer()
     override fun access(row: AssistantAccessRow, access: AssistantAccess) = native.setAccess(row.id, row.collection, access)
     override fun send(generation: ULong, sequence: ULong, prompt: String, now: LocalNow) =
@@ -173,7 +173,7 @@ internal class AssistantModel(
     }
 
     private fun send(shown: AssistantUi, prompt: String, clearDraft: Boolean) {
-        if (prompt.isBlank() || shown.panel.streaming || shown.panel.server == null) return
+        if (prompt.isBlank() || shown.panel.streaming || shown.panel.destination == null) return
         act {
             core.send(shown.panel.generation, ++sequence, prompt, now())
             if (clearDraft) _ui.update { if (it.draft == prompt) it.copy(draft = "") else it }
@@ -182,7 +182,11 @@ internal class AssistantModel(
 
     fun stop() = act(core::stop)
     fun newChat() = act(core::newChat)
-    fun save(server: AssistantServer?) = act { core.save(server) }
+    fun save(server: AssistantServer?, replacementKey: String? = null, saved: () -> Unit = {}) = act {
+        core.save(server, replacementKey)
+        // UI state is updated from the action's result, never from the Android key store.
+        scope.launch { saved() }
+    }
     fun test() = act(core::test)
     fun access(row: AssistantAccessRow, access: AssistantAccess) = act { core.access(row, access) }
     fun select(proposal: AssistantProposal, indices: List<UInt>) = act { core.select(proposal, indices) }

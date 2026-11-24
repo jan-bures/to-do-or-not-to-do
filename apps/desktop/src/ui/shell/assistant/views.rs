@@ -982,16 +982,7 @@ impl ShellView {
                                 space::S3,
                                 p.ink_3,
                             ))
-                            .child(text(
-                                ty::META,
-                                p.ink_3,
-                                format!(
-                                    "Checked {} lists · Read {} tasks · {} hidden",
-                                    summary.lists_checked,
-                                    summary.tasks_read,
-                                    summary.private_lists
-                                ),
-                            )),
+                            .child(text(ty::META, p.ink_3, summary.label())),
                         true,
                         move |this, _, cx| {
                             if !this.ai.step_details.remove(&id) {

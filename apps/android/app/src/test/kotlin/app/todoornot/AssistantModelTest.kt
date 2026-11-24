@@ -25,7 +25,7 @@ import org.junit.Test
 class AssistantModelTest {
     private class Core : AssistantCore {
         private lateinit var changed: () -> Unit
-        var state = AssistantPanelState(3uL, AssistantServer("https://todo.example.com", "test-model", true),
+        var state = AssistantPanelState(3uL, AssistantServer("https://todo.example.com", "test-model", true), false,
             AssistantConnection.UNTESTED, "Private network", null, emptyList(), 0u, false, emptyList(), null)
         val prompts = mutableListOf<Triple<ULong, ULong, String>>()
         var review: AssistantProposal? = null
@@ -38,7 +38,7 @@ class AssistantModelTest {
         override fun resume() { foreground = true }
         override fun pause() { foreground = false; stop() }
         override fun shutdown() { foreground = false }
-        override fun save(server: AssistantServer?) { replace(state.copy(server = server)) }
+        override fun save(server: AssistantServer?, replacementKey: String?) { replace(state.copy(server = server)) }
         override fun test() = Unit
         override fun access(row: AssistantAccessRow, access: AssistantAccess) = newChat()
         override fun send(generation: ULong, sequence: ULong, prompt: String, now: LocalNow) {

@@ -233,7 +233,7 @@ internal fun AssistantPane(
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = scroll, reverseLayout = true,
             contentPadding = PaddingValues(horizontal = if (inner) S.S5.dp else S.S4.dp, vertical = S.S4.dp),
             verticalArrangement = Arrangement.spacedBy(S.S4.dp, Alignment.Bottom)) {
-            if (turns.isEmpty()) item("empty") { AssistantEmpty(state.server != null, settings, draft) }
+            if (turns.isEmpty()) item("empty") { AssistantEmpty(state.destination != null, settings, draft) }
             items(turns, key = { it.id }) { turn ->
                 ChatTurn(turn, active = state.streaming && turn.id == turns.firstOrNull()?.id,
                     left = left, enabled = !ui.busy && !state.streaming, model = model, onTask = onTask, onSettings = settings,
@@ -265,7 +265,7 @@ internal fun AssistantPane(
                 }
             }
         }
-        ChatComposer(ui.draft, draft, state.server != null, state.streaming, ui.busy || state.connection == AssistantConnection.TESTING,
+        ChatComposer(ui.draft, draft, state.destination != null, state.streaming, ui.busy || state.connection == AssistantConnection.TESTING,
             if (pending) "Approve above, or reply…" else if (inner) "Ask about $room…" else "Ask anything…",
             onSend = { model?.send() }, onStop = { model?.stop() })
         if (inner && !keyboard) {

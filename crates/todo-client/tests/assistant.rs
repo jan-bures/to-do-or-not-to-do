@@ -20,6 +20,7 @@ use todo_client::{
     assistant::{
         AccessRules, AssistantError, Composer, ConfirmedSnapshot, Controller, Edit, Effect,
         ListAccess, ProposalStatus, ReviewError, Revision, Selection, SendIntent, StepStatus,
+        StepSummary,
         fake::{CAPABILITIES, FakeProvider, FakeRound, MODEL},
         provider::{
             BillingClass, Capabilities, DataClass, Message, Provider, ProviderError, RoundMode,
@@ -147,6 +148,26 @@ fn round(events: impl IntoIterator<Item = StreamEvent>) -> Result<FakeRound, Pro
     Ok(FakeRound::new(
         events.into_iter().chain([StreamEvent::Finished]).map(Ok),
     ))
+}
+
+#[test]
+fn activity_summary_pluralizes_each_count_independently() {
+    for (lists_checked, tasks_read, expected) in [
+        (0, 0, "Checked 0 lists · Read 0 tasks · 7 hidden"),
+        (1, 1, "Checked 1 list · Read 1 task · 7 hidden"),
+        (2, 1, "Checked 2 lists · Read 1 task · 7 hidden"),
+        (1, 2, "Checked 1 list · Read 2 tasks · 7 hidden"),
+    ] {
+        assert_eq!(
+            StepSummary {
+                lists_checked,
+                tasks_read,
+                private_lists: 7
+            }
+            .label(),
+            expected
+        );
+    }
 }
 
 #[test]

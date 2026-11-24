@@ -53,10 +53,10 @@ class AssistantGalleryTest {
                     "Errands", "rose", null, listOf(AssistantField("Due", null, "Mon Nov 23"), AssistantField("Priority", null, "None"),
                         AssistantField("Status", null, "To do"), AssistantField("Position", null, "End of the list")))
                 val change = streaming.copy(id = "proposal", prompt = "Move the budget review to Monday, and add a task to return the library books.",
-                    prose = "I drafted these changes. Nothing has been saved yet.", stepSummary = "2 lists checked · 1 task read · 1 hidden",
+                    prose = "I drafted these changes. Nothing has been saved yet.", stepSummary = "Checked 2 lists · Read 1 task · 1 hidden",
                     proposal = AssistantProposal("proposal", ByteArray(32), AssistantProposalStatus.PENDING, null,
                         listOf(AssistantItem(0u, true, listOf(edit)), AssistantItem(1u, true, listOf(longCreate)))))
-                val base = AssistantPanelState(0uL, AssistantServer("https://todo.example.com", "qwen3-14b", true),
+                val base = AssistantPanelState(0uL, AssistantServer("https://todo.example.com", "qwen3-14b", true), false,
                     AssistantConnection.UNTESTED, "Private network", null,
                     listOf(
                         AssistantAccessRow("home", "Home", true, false, false, null),

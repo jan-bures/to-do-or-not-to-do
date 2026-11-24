@@ -201,6 +201,22 @@ pub struct StepSummary {
     pub private_lists: usize,
 }
 
+impl StepSummary {
+    /// Compact activity disclosure for all clients.
+    pub fn label(self) -> String {
+        let Self {
+            lists_checked,
+            tasks_read,
+            private_lists,
+        } = self;
+        let list = if lists_checked == 1 { "list" } else { "lists" };
+        let task = if tasks_read == 1 { "task" } else { "tasks" };
+        format!(
+            "Checked {lists_checked} {list} · Read {tasks_read} {task} · {private_lists} hidden"
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ProposalStatus {
     Pending,
