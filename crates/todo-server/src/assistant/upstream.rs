@@ -286,8 +286,37 @@ async fn read_json_within<T: DeserializeOwned>(
     })
 }
 
-pub(super) fn relay(
-    res: reqwest::Response,
+/// Whether a body's first bytes are an event stream: a field or a comment line.
+fn looks_like_event_stream(first: &[u8]) -> bool {
+    let start = first.trim_ascii_start();
+    [&b"event:"[..], b"data:", b"id:", b"retry:", b":"]
+        .iter()
+        .any(|field| start.starts_with(field))
+}
+
+/// The shape of an unexpected body, never its values: size, kind and top-level JSON keys.
+fn log_unexpected_body(status: StatusCode, first: &[u8]) {
+    let start = first.trim_ascii_start();
+    let keys = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(start)
+        .map(|map| map.keys().take(8).cloned().collect::<Vec<_>>().join(","))
+        .unwrap_or_default();
+    let kind = match start.first() {
+        None => "empty",
+        Some(b'{' | b'[') => "json",
+        Some(b'<') => "markup",
+        Some(_) => "other",
+    };
+    tracing::warn!(
+        status = status.as_u16(),
+        bytes = first.len(),
+        kind,
+        keys = %keys,
+        "assistant upstream reply was not a stream"
+    );
+}
+
+pub(super) async fn relay(
+    mut res: reqwest::Response,
     permit: OwnedSemaphorePermit,
     private: bool,
 ) -> Result<Response, Error> {
@@ -307,9 +336,25 @@ pub(super) fn relay(
         .and_then(|value| value.to_str().ok())
         .and_then(|s| s.split(';').next())
         .map(str::trim);
+    let mut first = None;
     let content_type = match media {
         Some(s) if s.eq_ignore_ascii_case("text/event-stream") => "text/event-stream",
         Some(s) if private && s.eq_ignore_ascii_case("application/json") => "application/json",
+        // Some providers stream without a Content-Type. Accept the body only if it reads as SSE.
+        None => {
+            let status = res.status();
+            let chunk = res
+                .chunk()
+                .await
+                .map_err(network_error)?
+                .unwrap_or_default();
+            if chunk.len() > limit || !looks_like_event_stream(&chunk) {
+                log_unexpected_body(status, &chunk);
+                return Err(Error::Upstream);
+            }
+            first = Some(chunk);
+            "text/event-stream"
+        }
         other => {
             // The media type only, bounded; never the body.
             let media: String = other
@@ -326,13 +371,17 @@ pub(super) fn relay(
             return Err(Error::Upstream);
         }
     };
+    let used = first.as_ref().map_or(0, |chunk| chunk.len());
     let body = Body::from_stream(stream::try_unfold(
-        (res, permit, 0usize),
-        move |(mut res, permit, used)| async move {
+        (res, permit, used, first),
+        move |(mut res, permit, used, first)| async move {
+            if let Some(chunk) = first {
+                return Ok(Some((chunk, (res, permit, used, None))));
+            }
             match res.chunk().await {
                 Ok(Some(chunk)) if chunk.len() <= limit - used => {
                     let used = used + chunk.len();
-                    Ok(Some((chunk, (res, permit, used))))
+                    Ok(Some((chunk, (res, permit, used, None))))
                 }
                 Ok(None) => Ok(None),
                 // Never propagate upstream errors or their headers. Drop the socket and the slot.

@@ -872,11 +872,7 @@ async fn private_chat(
         .clone()
         .try_acquire_owned()
         .map_err(|_| Error::Rate(1))?;
-    Ok(upstream::relay(
-        upstream.chat(&input.request).await?,
-        permit,
-        true,
-    )?)
+    Ok(upstream::relay(upstream.chat(&input.request).await?, permit, true).await?)
 }
 
 async fn chatgpt_models(
@@ -924,7 +920,7 @@ async fn chatgpt_chat(
     if res.status() == StatusCode::UNAUTHORIZED {
         let _ = service.credential(id, Some(&auth.access)).await;
     }
-    Ok(upstream::relay(res, permit, false)?)
+    Ok(upstream::relay(res, permit, false).await?)
 }
 
 fn validate_request(input: &mut relay::Chat, class: DataClass) -> Result<(), Error> {

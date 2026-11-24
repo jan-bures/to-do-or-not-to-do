@@ -82,7 +82,8 @@ async fn connector_refuses_redirects_and_relay_caps_chunked_or_known_length_stre
                 response,
                 sem.clone().acquire_owned().await.unwrap(),
                 private
-            ),
+            )
+            .await,
             Err(Error::Upstream)
         ));
         let response = http.get(format!("{base}/stream")).send().await.unwrap();
@@ -92,6 +93,7 @@ async fn connector_refuses_redirects_and_relay_caps_chunked_or_known_length_stre
             sem.clone().acquire_owned().await.unwrap(),
             private,
         )
+        .await
         .unwrap()
         .into_body()
         .into_data_stream();
@@ -111,6 +113,61 @@ async fn connector_refuses_redirects_and_relay_caps_chunked_or_known_length_stre
         assert_eq!(sem.available_permits(), 1);
     }
     server.abort();
+}
+
+#[tokio::test]
+async fn untyped_replies_relay_only_when_they_read_as_event_streams() {
+    use futures_util::StreamExt;
+    // axum adds no Content-Type for a raw Body.
+    let mock = Router::new()
+        .route(
+            "/sse",
+            get(|| async { Body::from("event: response.created\ndata: {}\n\n") }),
+        )
+        .route("/json", get(|| async { Body::from(r#"{"output":[]}"#) }))
+        .route("/empty", get(|| async { Body::empty() }));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = format!("http://{}", listener.local_addr().unwrap());
+    let server = tokio::spawn(async move { axum::serve(listener, mock).await.unwrap() });
+    let http = client().build().unwrap();
+    let sem = Arc::new(Semaphore::new(1));
+    let send = |path: &str| http.get(format!("{base}/{path}")).send();
+
+    let response = send("sse").await.unwrap();
+    assert!(response.headers().get(header::CONTENT_TYPE).is_none());
+    let relayed = relay(response, sem.clone().acquire_owned().await.unwrap(), false)
+        .await
+        .unwrap();
+    assert_eq!(relayed.headers()[header::CONTENT_TYPE], "text/event-stream");
+    let mut body = relayed.into_body().into_data_stream();
+    let mut text = Vec::new();
+    while let Some(chunk) = body.next().await {
+        text.extend_from_slice(&chunk.unwrap());
+    }
+    assert_eq!(text, b"event: response.created\ndata: {}\n\n");
+    for path in ["json", "empty"] {
+        let response = send(path).await.unwrap();
+        let refused = relay(response, sem.clone().acquire_owned().await.unwrap(), false).await;
+        assert!(matches!(refused, Err(Error::Upstream)), "{path}");
+    }
+    assert_eq!(sem.available_permits(), 1);
+    server.abort();
+}
+
+#[test]
+fn event_stream_detection_reads_only_field_or_comment_lines() {
+    for body in [
+        "event: x",
+        "data: {}",
+        "\n: keep-alive",
+        "id: 1",
+        "retry: 10",
+    ] {
+        assert!(looks_like_event_stream(body.as_bytes()), "{body}");
+    }
+    for body in ["", "{\"data\":1}", "<html>", "hello"] {
+        assert!(!looks_like_event_stream(body.as_bytes()), "{body}");
+    }
 }
 
 #[tokio::test]
