@@ -5,7 +5,7 @@ use crate::config::Config;
 use axum::{Router, body::Bytes, http::HeaderMap, routing::post};
 use p256::ecdsa::signature::Verifier;
 use serde_json::json;
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicUsize, Ordering};
 use todo_core::{Actor, Command};
 use uuid::Uuid;
 
@@ -36,6 +36,20 @@ fn rfc8291_example() {
     let body = b"When I grow up, I want to be a watermelon";
     let encrypted = encrypt(body, &sender, &receiver, &B64.decode(AUTH).unwrap(), &salt).unwrap();
     assert_eq!(B64.encode(encrypted), EXPECTED);
+}
+
+#[test]
+fn encrypted_payload_fits_the_4096_byte_limit() {
+    let sender = secret_key().unwrap();
+    let receiver = PublicKey::from_sec1_bytes(&B64.decode(RECEIVER).unwrap()).unwrap();
+    let auth = B64.decode(AUTH).unwrap();
+    assert_eq!(
+        encrypt(&[0; 3993], &sender, &receiver, &auth, &[0; 16])
+            .unwrap()
+            .len(),
+        4096
+    );
+    assert!(encrypt(&[0; 3994], &sender, &receiver, &auth, &[0; 16]).is_none());
 }
 
 #[test]
@@ -162,13 +176,17 @@ async fn server() -> (tempfile::TempDir, Server) {
     server_with(Options::default()).await
 }
 
-async fn server_with(options: Options) -> (tempfile::TempDir, Server) {
-    let dir = tempfile::tempdir().unwrap();
-    let config = Config {
-        data_dir: dir.path().to_owned(),
+fn server_config(dir: &Path) -> Config {
+    Config {
+        data_dir: dir.to_owned(),
         bind: "127.0.0.1:0".parse().unwrap(),
         ..Config::default()
-    };
+    }
+}
+
+async fn server_with(options: Options) -> (tempfile::TempDir, Server) {
+    let dir = tempfile::tempdir().unwrap();
+    let config = server_config(dir.path());
     let server = Server::bind(&config, options).await.unwrap();
     // Only the database foreign key matters here; no WebAuthn ceremony or deployment credentials.
     let connection = rusqlite::Connection::open(config.database_path()).unwrap();
@@ -258,6 +276,107 @@ async fn cap_durable_claims_and_session_revocation() {
             .unwrap(),
         Registered::MissingSession
     ));
+}
+
+fn push_row_counts(config: &Config) -> (i64, i64, i64) {
+    rusqlite::Connection::open(config.database_path())
+        .unwrap()
+        .query_row(
+            "SELECT (SELECT count(*) FROM web_push_browsers),
+                    (SELECT count(*) FROM web_push_subscriptions),
+                    (SELECT count(*) FROM web_push_claims)",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .unwrap()
+}
+
+#[tokio::test]
+async fn revoking_a_passkey_and_resetting_the_owner_cascade_to_browser_rows() {
+    let (dir, server) = server().await;
+    let config = Config {
+        public_origin: Some("http://localhost".into()),
+        ..server_config(dir.path())
+    };
+    let connection = rusqlite::Connection::open(config.database_path()).unwrap();
+    connection.execute("INSERT INTO passkeys (id, cred_id, name, passkey, created_at) VALUES (2, 'second', 'Second', '{}', 1)", []).unwrap();
+    drop(connection);
+    let auth = server.auth_service();
+    let store = auth.store();
+    let now = auth.now();
+    let signed_in = |id: &str, passkey| {
+        let row = SessionRow {
+            id_hash: id.into(),
+            csrf: format!("{id}-csrf"),
+            created_at: now,
+            last_seen_at: now,
+            verified_at: now,
+        };
+        store.create_session(&row, passkey).unwrap();
+        store
+            .register_web_push(id, "key", &subscription(passkey), now)
+            .unwrap();
+        let browser = store.web_push_browsers(id, now).unwrap()[0].id;
+        assert!(
+            store
+                .claim_web_push(browser, "task", now, now)
+                .unwrap()
+                .is_some()
+        );
+        row
+    };
+    let first = signed_in("first", 1);
+    let second = signed_in("second", 2);
+    // An expired session never hides an orphan: the browser and claims outlive it by design.
+    store.expire_session(&second.id_hash).unwrap();
+    assert_eq!(push_row_counts(&config), (2, 2, 2));
+    auth.revoke_passkey(&first, 2, None).unwrap();
+    assert_eq!(push_row_counts(&config), (1, 1, 1));
+    assert!(
+        store
+            .has_web_push(
+                &first.id_hash,
+                subscription(1).endpoint.as_str(),
+                "key",
+                now
+            )
+            .unwrap()
+    );
+    server.spawn().unwrap().shutdown().await.unwrap();
+
+    AuthService::reset_owner(&config, false, false).unwrap();
+    assert_eq!(push_row_counts(&config), (0, 0, 0));
+}
+
+#[tokio::test]
+async fn startup_prunes_even_without_a_vapid_key() {
+    let (dir, server) = server().await;
+    let config = server_config(dir.path());
+    let auth = server.auth_service();
+    let store = auth.store();
+    let now = auth.now();
+    let stale_at = now - INACTIVITY_MS;
+    let recent_at = stale_at + INACTIVITY_MS / 2;
+    for (id, at) in [(0, stale_at), (1, recent_at)] {
+        store
+            .register_web_push("fixture", "key", &subscription(id), at)
+            .unwrap();
+    }
+    let fresh = store.web_push_browsers("fixture", now).unwrap()[0].id;
+    for at in [recent_at, now] {
+        assert!(
+            store
+                .claim_web_push(fresh, "task", at, now)
+                .unwrap()
+                .is_some()
+        );
+    }
+    assert_eq!(push_row_counts(&config), (2, 2, 2));
+    server.spawn().unwrap().shutdown().await.unwrap();
+
+    let restarted = Server::bind(&config, Options::default()).await.unwrap();
+    assert_eq!(push_row_counts(&config), (1, 1, 1));
+    restarted.spawn().unwrap().shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -491,23 +610,29 @@ async fn confirmation_refreshes_browser_activity_after_a_new_sign_in() {
     );
 }
 
-#[tokio::test]
-async fn retries_503_and_429_without_exceeding_ttl() {
-    const START: i64 = 1_800_000_000_000;
+const START: i64 = 1_800_000_000_000;
+
+async fn server_with_clock() -> (tempfile::TempDir, Server, Arc<AtomicI64>) {
     let clock = Arc::new(AtomicI64::new(START));
     let reading = clock.clone();
-    let (_dir, server) = server_with(Options {
+    let (dir, server) = server_with(Options {
         clock: Arc::new(move || {
             Timestamp::from_millisecond(reading.load(Ordering::Relaxed)).unwrap()
         }),
         ..Options::default()
     })
     .await;
+    (dir, server, clock)
+}
+
+#[tokio::test]
+async fn retries_503_and_429_without_exceeding_ttl() {
+    let (_dir, server, clock) = server_with_clock().await;
     let auth = server.auth_service();
     let engine = server.engine();
     let mut sender = Sender::new(secret_key().unwrap(), None).unwrap();
     sender.client = Client::builder().no_proxy().build().unwrap();
-    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let calls = Arc::new(AtomicUsize::new(0));
     let count = calls.clone();
     let router = Router::new().fallback(post(move |headers: HeaderMap| async move {
         let n = count.fetch_add(1, Ordering::Relaxed);
@@ -534,6 +659,7 @@ async fn retries_503_and_429_without_exceeding_ttl() {
     sender.test_destination =
         Some(Url::parse(&format!("http://{}/send", listener.local_addr().unwrap())).unwrap());
     let mock = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    let sender = Arc::new(sender);
     auth.store()
         .register_web_push("fixture", sender.public_key(), &subscription(0), START)
         .unwrap();
@@ -581,6 +707,199 @@ async fn retries_503_and_429_without_exceeding_ttl() {
         Some(START + 60_000)
     );
     mock.abort();
+}
+
+#[tokio::test]
+async fn connection_failure_retries_but_timeout_after_post_keeps_the_claim() {
+    struct FailingDns;
+    impl reqwest::dns::Resolve for FailingDns {
+        fn resolve(&self, _: reqwest::dns::Name) -> reqwest::dns::Resolving {
+            Box::pin(async { Err(io::Error::other("fixture DNS failure").into()) })
+        }
+    }
+
+    let (_dir, server, clock) = server_with_clock().await;
+    let auth = server.auth_service();
+    let engine = server.engine();
+    let mut sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    sender.client = Client::builder()
+        .no_proxy()
+        .retry(reqwest::retry::never())
+        .dns_resolver(FailingDns)
+        .timeout(Duration::from_secs(1))
+        .build()
+        .unwrap();
+    sender.test_destination = Some(Url::parse("http://push.example.test/send").unwrap());
+    let mut sender = Arc::new(sender);
+    auth.store()
+        .register_web_push("fixture", sender.public_key(), &subscription(0), START)
+        .unwrap();
+    commit_alarm(
+        &engine,
+        Timestamp::from_millisecond(START).unwrap(),
+        "Test delivery",
+    );
+    let mut finished = BTreeSet::new();
+    assert_eq!(
+        sender.rescan(&engine, &auth, &mut finished).await,
+        Some(START + 15_000)
+    );
+
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let router = Router::new().fallback(post(move |_: Bytes| async move {
+        count.fetch_add(1, Ordering::Relaxed);
+        std::future::pending::<StatusCode>().await
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    Arc::get_mut(&mut sender).unwrap().test_destination =
+        Some(Url::parse(&format!("http://{}/send", listener.local_addr().unwrap())).unwrap());
+    let mock = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    clock.store(START + 15_000, Ordering::Relaxed);
+    assert_eq!(sender.rescan(&engine, &auth, &mut finished).await, None);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the timed-out request reached the provider"
+    );
+    clock.store(START + 60_000, Ordering::Relaxed);
+    assert_eq!(sender.rescan(&engine, &auth, &mut finished).await, None);
+    assert_eq!(
+        calls.load(Ordering::Relaxed),
+        1,
+        "the claimed delivery was not retried"
+    );
+    mock.abort();
+}
+
+#[tokio::test]
+async fn rescan_sends_at_most_eight_at_once_and_does_not_wait_for_the_slowest() {
+    let (_dir, server, _) = server_with_clock().await;
+    let auth = server.auth_service();
+    let engine = server.engine();
+    let mut sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    sender.client = Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .unwrap();
+    let (holds, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let router = Router::new().fallback(post(move || async move {
+        let (release, wait) = tokio::sync::oneshot::channel();
+        holds.send(release).unwrap();
+        wait.await.unwrap();
+        StatusCode::CREATED
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sender.test_destination =
+        Some(Url::parse(&format!("http://{}/send", listener.local_addr().unwrap())).unwrap());
+    let mock = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    auth.store()
+        .register_web_push("fixture", sender.public_key(), &subscription(0), START)
+        .unwrap();
+    for _ in 0..10 {
+        commit_alarm(
+            &engine,
+            Timestamp::from_millisecond(START).unwrap(),
+            "Concurrent reminder",
+        );
+    }
+    let scan = tokio::spawn(async move {
+        Arc::new(sender)
+            .rescan(&engine, &auth, &mut BTreeSet::new())
+            .await
+    });
+    let mut pending = Vec::new();
+    for _ in 0..8 {
+        pending.push(
+            tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    assert!(
+        tokio::time::timeout(Duration::from_millis(200), requests.recv())
+            .await
+            .is_err()
+    );
+    for _ in 0..2 {
+        pending.pop().unwrap().send(()).unwrap();
+        pending.push(
+            tokio::time::timeout(Duration::from_secs(5), requests.recv())
+                .await
+                .unwrap()
+                .unwrap(),
+        );
+    }
+    for release in pending {
+        release.send(()).unwrap();
+    }
+    assert_eq!(scan.await.unwrap(), None);
+    mock.abort();
+}
+
+#[tokio::test]
+async fn sends_with_one_second_left_but_skips_a_zero_second_ttl() {
+    let (_dir, server, clock) = server_with_clock().await;
+    let auth = server.auth_service();
+    let engine = server.engine();
+    let mut sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    sender.client = Client::builder().no_proxy().build().unwrap();
+    let (headers, mut requests) = tokio::sync::mpsc::unbounded_channel();
+    let router = Router::new().fallback(post(move |request: HeaderMap| async move {
+        headers.send(request["ttl"].clone()).unwrap();
+        StatusCode::CREATED
+    }));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sender.test_destination =
+        Some(Url::parse(&format!("http://{}/send", listener.local_addr().unwrap())).unwrap());
+    let mock = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    auth.store()
+        .register_web_push("fixture", sender.public_key(), &subscription(0), START)
+        .unwrap();
+    commit_alarm(
+        &engine,
+        Timestamp::from_millisecond(START).unwrap(),
+        "999 ms left",
+    );
+    commit_alarm(
+        &engine,
+        Timestamp::from_millisecond(START + 1).unwrap(),
+        "1000 ms left",
+    );
+    clock.store(START + TTL_MS - 999, Ordering::Relaxed);
+    let sender = Arc::new(sender);
+    assert_eq!(
+        sender.rescan(&engine, &auth, &mut BTreeSet::new()).await,
+        None
+    );
+    assert_eq!(requests.try_recv().unwrap(), "1");
+    assert!(requests.try_recv().is_err());
+    mock.abort();
+}
+
+#[test]
+fn only_explicitly_retryable_provider_statuses_are_retried() {
+    let sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    for (code, delivery) in [
+        (400, Delivery::Failed),
+        (401, Delivery::Failed),
+        (403, Delivery::Failed),
+        (429, Delivery::Retry(Some(RetryAfter::Delay(2_000)))),
+        (500, Delivery::Unknown),
+        (501, Delivery::Unknown),
+        (502, Delivery::Retry(Some(RetryAfter::Delay(2_000)))),
+        (503, Delivery::Retry(Some(RetryAfter::Delay(2_000)))),
+        (504, Delivery::Retry(Some(RetryAfter::Delay(2_000)))),
+        (505, Delivery::Unknown),
+    ] {
+        assert_eq!(
+            sender.rejected(StatusCode::from_u16(code).unwrap(), Some("2")),
+            delivery,
+            "HTTP {code}"
+        );
+    }
 }
 
 #[test]

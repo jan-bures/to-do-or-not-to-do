@@ -6,7 +6,6 @@ use crate::engine::Engine;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
-use futures_util::{StreamExt, stream::FuturesUnordered};
 use hkdf::Hkdf;
 use p256::ecdh::diffie_hellman;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
@@ -23,9 +22,11 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use todo_client::intent::reminder::{Alarm, alarms};
 use todo_core::{ids::TaskId, time::Timestamp};
 use tokio::sync::{Notify, watch};
+use tokio::task::{JoinError, JoinSet};
 use zeroize::Zeroizing;
 
 const TTL_MS: i64 = 15 * 60 * 1000;
+const MIN_TTL_MS: i64 = 1000;
 const INACTIVITY_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const RESCAN: Duration = Duration::from_secs(60);
 const PARALLEL_SENDS: usize = 8;
@@ -166,6 +167,7 @@ pub(crate) enum Delivery {
     Accepted,
     Gone,
     Failed,
+    Unknown,
     Retry(Option<RetryAfter>),
 }
 
@@ -196,7 +198,7 @@ fn next_retry(at: i64, now: i64, attempt: u32, retry_after: Option<RetryAfter>) 
         None => now,
     };
     let next = now.saturating_add(backoff).max(requested);
-    (next < at.saturating_add(TTL_MS)).then_some(next)
+    (next <= at.saturating_add(TTL_MS - MIN_TTL_MS)).then_some(next)
 }
 
 #[derive(Serialize)]
@@ -346,18 +348,29 @@ impl Sender {
                     .get(RETRY_AFTER)
                     .and_then(|value| value.to_str().ok()),
             ),
-            Err(error) if error.is_connect() || error.is_timeout() => Delivery::Retry(None),
-            // A reqwest error can include the endpoint, and the provider may echo it in its body.
+            Err(error) if error.is_connect() && !error.is_timeout() => Delivery::Retry(None),
+            // A timeout or other transport error can happen after acceptance. Keep the claim.
+            // Do not log the error, which can include the secret endpoint.
             Err(_) => {
-                tracing::debug!("Web Push transport failed");
-                Delivery::Failed
+                tracing::debug!("Web Push delivery outcome unknown after a transport error");
+                Delivery::Unknown
             }
         }
     }
 
     fn rejected(&self, status: StatusCode, retry_after: Option<&str>) -> Delivery {
-        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        if matches!(
+            status,
+            StatusCode::TOO_MANY_REQUESTS
+                | StatusCode::SERVICE_UNAVAILABLE
+                | StatusCode::BAD_GATEWAY
+                | StatusCode::GATEWAY_TIMEOUT
+        ) {
             return Delivery::Retry(retry_after.and_then(RetryAfter::parse));
+        }
+        // Other 5xx responses may come from a service that already accepted the message.
+        if status.is_server_error() {
+            return Delivery::Unknown;
         }
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             let mut last = self
@@ -394,7 +407,12 @@ impl Sender {
         }
     }
 
-    async fn schedule(&self, engine: &Engine, auth: &Arc<AuthService>, wake: &Notify) {
+    async fn schedule(
+        self: &Arc<Self>,
+        engine: &Arc<Engine>,
+        auth: &Arc<AuthService>,
+        wake: &Notify,
+    ) {
         let mut finished = BTreeSet::new();
         loop {
             let next = self.rescan(engine, auth, &mut finished).await;
@@ -410,8 +428,8 @@ impl Sender {
     }
 
     async fn rescan(
-        &self,
-        engine: &Engine,
+        self: &Arc<Self>,
+        engine: &Arc<Engine>,
         auth: &Arc<AuthService>,
         finished: &mut BTreeSet<Occurrence>,
     ) -> Option<i64> {
@@ -420,17 +438,11 @@ impl Sender {
         let cutoff_ms = now_ms.saturating_sub(TTL_MS);
         let cutoff = Timestamp::from_millisecond(cutoff_ms).unwrap_or(Timestamp::MIN);
         finished.retain(|(at, _)| *at > cutoff_ms);
-        let db = auth.clone();
-        if !matches!(
-            tokio::task::spawn_blocking(move || db.store().prune_web_push(now_ms, cutoff_ms)).await,
-            Ok(Ok(()))
-        ) {
-            tracing::warn!("could not prune Web Push subscriptions and claims");
-        }
+        prune(auth, now_ms).await;
 
         let mut next = None;
         let mut seen = BTreeSet::new();
-        let mut sends = FuturesUnordered::new();
+        let mut sends = JoinSet::new();
         for alarm in alarms(&engine.state(), cutoff) {
             let at = alarm.at.as_millisecond();
             if alarm.at > now {
@@ -438,7 +450,10 @@ impl Sender {
                 break;
             }
             let occurrence = (at, alarm.task);
-            if at <= cutoff_ms || finished.contains(&occurrence) || !seen.insert(occurrence) {
+            if at < cutoff_ms.saturating_add(MIN_TTL_MS)
+                || finished.contains(&occurrence)
+                || !seen.insert(occurrence)
+            {
                 continue;
             }
             let (db, key, task) = (
@@ -457,20 +472,22 @@ impl Sender {
             if targets.is_empty() {
                 finished.insert(occurrence);
             }
-            // One bound across all alarms, not one network round trip per alarm.
+            // Spawn immediately so sends progress during target lookups. The JoinSet bounds
+            // concurrency across alarms and aborts outstanding sends when shutdown cancels rescan.
             for (id, retry_at) in targets {
                 if let Some(retry) = retry_at.filter(|&retry| retry > now_ms) {
                     next = earliest(next, Some(retry));
                     continue;
                 }
-                sends.push(self.remind(engine, auth, alarm, id));
                 if sends.len() >= PARALLEL_SENDS {
-                    next = earliest(next, sends.next().await.flatten());
+                    next = earliest(next, sends.join_next().await.and_then(retry_from_send));
                 }
+                let (sender, engine, auth) = (self.clone(), engine.clone(), auth.clone());
+                sends.spawn(async move { sender.remind(&engine, &auth, alarm, id).await });
             }
         }
-        while let Some(retry) = sends.next().await {
-            next = earliest(next, retry);
+        while let Some(result) = sends.join_next().await {
+            next = earliest(next, retry_from_send(result));
         }
         next
     }
@@ -485,7 +502,7 @@ impl Sender {
         let at = alarm.at.as_millisecond();
         let expires = at.saturating_add(TTL_MS);
         let now = engine.now().as_millisecond();
-        if now >= expires || !alarm.is_current(&engine.state()) {
+        if expires.saturating_sub(now) < MIN_TTL_MS || !alarm.is_current(&engine.state()) {
             return None;
         }
         let task = alarm.task.to_string();
@@ -503,7 +520,7 @@ impl Sender {
         let remaining = expires.saturating_sub(engine.now().as_millisecond());
         let body = {
             let state = engine.state();
-            if remaining <= 0 || !alarm.is_current(&state) {
+            if remaining < MIN_TTL_MS || !alarm.is_current(&state) {
                 return None;
             }
             let task_row = state.tasks.get(&alarm.task)?;
@@ -526,6 +543,27 @@ impl Sender {
             return None;
         }
         Some(next)
+    }
+}
+
+pub(crate) async fn prune(auth: &Arc<AuthService>, now: i64) {
+    let db = auth.clone();
+    let cutoff = now.saturating_sub(TTL_MS);
+    if !matches!(
+        tokio::task::spawn_blocking(move || db.store().prune_web_push(now, cutoff)).await,
+        Ok(Ok(()))
+    ) {
+        tracing::warn!("could not prune Web Push subscriptions and claims");
+    }
+}
+
+fn retry_from_send(result: Result<Option<i64>, JoinError>) -> Option<i64> {
+    match result {
+        Ok(retry) => retry,
+        Err(_) => {
+            tracing::warn!("Web Push send task did not complete");
+            None
+        }
     }
 }
 

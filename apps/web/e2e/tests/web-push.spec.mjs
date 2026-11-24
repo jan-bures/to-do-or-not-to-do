@@ -72,7 +72,7 @@ test("the worker notifies even when the tab won the claim, then opens the task w
         postMessage: data => {
           log.actions.push(data);
           const source = { scriptURL: new URL("/app/reminder-worker.js", location.origin).href };
-          navigator.serviceWorker.dispatchEvent(Object.assign(new Event("message"), { data, source }));
+          navigator.serviceWorker.dispatchEvent(Object.assign(new Event("message"), { data, source, origin: location.origin }));
         },
       }] : [],
       openWindow: async path => log.actions.push(path),
@@ -97,10 +97,10 @@ test("the worker notifies even when the tab won the claim, then opens the task w
     } });
     await window.clickReminder();
   }, { task, at, title: REMINDER_TASK });
-  expect(await page.evaluate(() => window.workerMock.notifications.map(({ title, options }) => [title, options.tag]))).toEqual([
-    [REMINDER_TASK, `todo-reminder:${task}@${at}`],
-    ["Reminder", `todo-reminder:${task}@${at}`],
-    ["Reminder", "todo-reminder"],
+  expect(await page.evaluate(() => window.workerMock.notifications.map(({ title, options }) => [title, options.tag, options.renotify]))).toEqual([
+    [REMINDER_TASK, `todo-reminder:${task}@${at}`, false],
+    ["Reminder", `todo-reminder:${task}@${at}`, false],
+    ["Reminder", "todo-reminder", false],
   ]);
   await expect(page.locator(".detail .d-title")).toHaveText(REMINDER_TASK);
   await expect(page).toHaveURL(new RegExp(`/app/list/[^/]+/task/${task}`));
@@ -111,6 +111,36 @@ test("the worker notifies even when the tab won the claim, then opens the task w
   await page.evaluate(async () => { window.workerMock.windows = false; await window.clickReminder(); });
   expect(await page.evaluate(() => window.workerMock.actions.at(-1))).toBe(`/app/all/task/${task}`);
   await w.check();
+});
+
+test("only reminder-worker messages from this origin with UUID task IDs are forwarded", async ({ page, context }) => {
+  await open(page);
+  const task = "01234567-89ab-4cde-8fab-0123456789ab";
+  const data = { type: "todo-open-reminder", task };
+  const workerStarted = context.waitForEvent("serviceworker");
+  await page.evaluate(async data => {
+    const { onReminderOpen } = await import("/app/reminder-browser.js");
+    window.openedReminders = [];
+    onReminderOpen(task => window.openedReminders.push(task));
+    const scriptURL = `${location.origin}/app/reminder-worker.js`;
+    const message = (fields) => navigator.serviceWorker.dispatchEvent(Object.assign(new Event("message"), {
+      origin: location.origin, source: { scriptURL }, data, ...fields,
+    }));
+    message({ origin: "https://example.com" });
+    message({ source: { scriptURL: `${location.origin}/app/other-worker.js` } });
+    message({ data: { ...data, task: "not-a-uuid" } });
+    await navigator.serviceWorker.register(scriptURL, { scope: "/app", type: "module" });
+    await navigator.serviceWorker.ready;
+  }, data);
+  expect(await page.evaluate(() => window.openedReminders)).toEqual([]);
+  // Check that the browser supplies the expected origin and source for a real worker message.
+  const worker = await workerStarted;
+  await worker.evaluate(async data => {
+    for (const client of await self.clients.matchAll({ type: "window", includeUncontrolled: true })) {
+      client.postMessage(data);
+    }
+  }, data);
+  await expect.poll(() => page.evaluate(() => window.openedReminders)).toEqual([task]);
 });
 
 test("the reminder worker installs at the app scope without prompting", async ({ page }) => {

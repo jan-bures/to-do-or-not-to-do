@@ -177,11 +177,12 @@ impl AuthStore {
         )?)
     }
 
-    pub(crate) fn unregister_web_push(&self, session: &str, endpoint: &str) -> Result<()> {
+    pub(crate) fn unregister_web_push(&self, endpoint: &str) -> Result<()> {
+        // An owner passkey session can use the secret endpoint before the browser rebinds.
         self.conn().execute(
-            "DELETE FROM web_push_browsers WHERE session = ?1 AND id IN
-             (SELECT id FROM web_push_subscriptions WHERE endpoint = ?2)",
-            params![session, endpoint],
+            "DELETE FROM web_push_browsers WHERE id IN
+             (SELECT id FROM web_push_subscriptions WHERE endpoint = ?1)",
+            [endpoint],
         )?;
         Ok(())
     }

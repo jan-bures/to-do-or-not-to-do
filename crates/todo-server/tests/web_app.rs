@@ -228,6 +228,50 @@ async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
     env.offset.store(122 * 60 * 1000, Ordering::SeqCst);
     assert_eq!(b.get("/app").await.status, StatusCode::SEE_OTHER);
     assert_eq!(b.login().await.status, StatusCode::OK);
+    assert_eq!(
+        api(
+            &b,
+            Method::DELETE,
+            config,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(endpoint)
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT,
+        "the browser can turn reminders off before rebinding to the new session"
+    );
+    assert_eq!(
+        api(
+            &b,
+            Method::POST,
+            &status,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(sub.clone())
+        )
+        .await
+        .2,
+        json!({"active":false})
+    );
+    assert_eq!(
+        api(
+            &b,
+            Method::PUT,
+            config,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(sub.clone())
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    // Revoke from another session so the final status check stays signed in.
+    env.offset.store(183 * 60 * 1000, Ordering::SeqCst);
+    assert_eq!(b.get("/app").await.status, StatusCode::SEE_OTHER);
+    assert_eq!(b.login().await.status, StatusCode::OK);
     let devices = b.get("/admin/devices").await;
     assert!(devices.body.contains("Background reminders"));
     assert!(!devices.body.contains(sub["endpoint"].as_str().unwrap()));

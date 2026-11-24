@@ -113,14 +113,14 @@ pub(crate) async fn unregister(
     RequestCancel(cancel): RequestCancel,
     ApiJson(body): ApiJson<Endpoint>,
 ) -> Result<StatusCode, ApiError> {
-    let session = session(caller)?;
+    session(caller)?;
     let endpoint = body.validate()?;
     let auth = app.authsvc.clone();
     blocking(&app, Work::Write, move || {
         if !cancel.begin_commit() {
             return Err(ApiError::timeout());
         }
-        auth.store().unregister_web_push(&session, &endpoint)?;
+        auth.store().unregister_web_push(&endpoint)?;
         Ok(StatusCode::NO_CONTENT)
     })
     .await?
@@ -192,6 +192,11 @@ pub(crate) async fn test(
             StatusCode::GONE,
             "subscription_expired",
             "enable Web Push again",
+        )),
+        Delivery::Unknown => Err(ApiError::new(
+            StatusCode::BAD_GATEWAY,
+            "push_unknown",
+            "the push service may have accepted the notification",
         )),
         Delivery::Failed | Delivery::Retry(_) => Err(ApiError::new(
             StatusCode::BAD_GATEWAY,

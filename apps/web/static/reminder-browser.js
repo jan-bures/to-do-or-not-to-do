@@ -28,7 +28,7 @@ export function showReminderNotification(title, task, key, open) {
   try {
     if (reminderPermission() !== "granted") return false;
     // No body, list name or notes go to the system. The opaque tag matches Web Push.
-    const notification = new Notification(title, { tag: reminderTag(key) });
+    const notification = new Notification(title, { tag: reminderTag(key), renotify: false });
     notification.onclick = (event) => {
       event.preventDefault();
       try { window.focus(); } catch { /* The browser can refuse a focus request. */ }
@@ -94,10 +94,15 @@ export function reminderTag(key) {
   return `todo-reminder:${key}`;
 }
 
+export function validReminderTask(task) {
+  return typeof task === "string" && /^[\da-f]{8}-[\da-f]{4}-[\da-f]{4}-[\da-f]{4}-[\da-f]{12}$/i.test(task);
+}
+
 export function onReminderOpen(open) {
-  navigator.serviceWorker?.addEventListener?.("message", ({ data, source }) => {
-    if (source?.scriptURL === new URL("/app/reminder-worker.js", location.origin).href
-        && data?.type === "todo-open-reminder" && typeof data.task === "string") {
+  navigator.serviceWorker?.addEventListener?.("message", ({ data, source, origin }) => {
+    if (origin === location.origin
+        && source?.scriptURL === new URL("/app/reminder-worker.js", location.origin).href
+        && data?.type === "todo-open-reminder" && validReminderTask(data.task)) {
       open(data.task);
     }
   });

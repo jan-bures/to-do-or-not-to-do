@@ -489,6 +489,7 @@ impl Server {
         } else {
             None
         };
+        crate::web_push::prune(&authsvc, authsvc.now()).await;
         let web_push = if let Some(path) = config.web_push.vapid_key_file.clone() {
             let subject = config
                 .origin()?
