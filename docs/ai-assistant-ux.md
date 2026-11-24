@@ -96,8 +96,8 @@ Keep conversation management lightweight — no nested sidebar inside the Assist
 - **Settled step log (collapsed by default):** Collapses cleanly (`PANEL` `200 ms`) into one `24 px` disclosure line above the prose:
   - `▸ Checked 4 lists · Read 2 tasks · 1 private skipped`
   - Clicking expands inline to reveal every tool call, scope, duration, and any excluded lists skipped for privacy.
-- **Prose replies:** Rendered directly on the `pane` background in `NOTES` (`14/24`, Geist 400, `ink`) — no heavy speech bubble around assistant text. User prompts sit right-aligned (max `88%` width) in a subtle `wash` inset (`radius::LG` `10 px`, `1 px` `line` border, `9 px 12 px` padding) so turns scan effortlessly.
-- **Clickable task links:** Any task referenced in prose renders as an inline or stacked interactive reference card (`raised`, `radius::MD` `6 px`, `1 px` `line` border): task title (`weight 500`, 1-line ellipsis) + optional mono due/overdue label + trailing `12 px` `arrow-up-right`. Clicking opens the task per §2.1.
+- **Replies** sit directly on the `pane` background in `NOTES` typography. Desktop, Web, and Android share a Markdown parser for headings, paragraphs, lists, emphasis, and code. HTML and external URLs remain inert text. User prompts sit right-aligned in a subtle `wash` inset.
+- **Task links** appear below the prose for titles mentioned from search results and tasks read individually. Links follow first mention order, with any remaining individually read tasks last. Each turn starts with up to five links and a quiet “Show N more” control when more are available. Clicking a task link opens the task per §2.1.
 
 ### 2.7 Proposal cards (single & batched)
 

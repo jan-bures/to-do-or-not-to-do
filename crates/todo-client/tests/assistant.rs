@@ -651,14 +651,115 @@ fn a_new_head_makes_review_stale_and_a_scope_or_epoch_change_forgets_history() {
 
 #[test]
 fn a_read_then_move_outside_scope_cancels_and_clears_in_flight_chat() {
+    for (read, expected_links) in [
+        (call("one", "get_task", json!({"task_id":LIVE})), 1),
+        (call("one", "query_tasks", json!({})), 0),
+    ] {
+        let (chat, provider) = fixture(
+            CAPABILITIES,
+            [
+                round([read]),
+                Ok(FakeRound::new([Ok(StreamEvent::Text("Partial reply".into()))]).stall()),
+                round([]),
+            ],
+        );
+        let mut reply = pin!(chat.start(intent(&chat, 1)).unwrap());
+        assert!(
+            reply
+                .as_mut()
+                .poll(&mut Context::from_waker(noop_waker_ref()))
+                .is_pending()
+        );
+        assert_eq!(provider.requests().len(), 2);
+        assert_eq!(chat.view().turns[0].task_links.len(), expected_links);
+        let mut moved = state();
+        apply_command(
+            &mut moved,
+            json!({"cmd":"move_task","id":LIVE,"list":HIDDEN}),
+        );
+        chat.update_snapshot(Some(snapshot(8, moved)));
+        assert_eq!(block_on(reply), Err(AssistantError::Cancelled));
+        assert!(chat.view().turns.is_empty());
+        block_on(chat.start(intent(&chat, 2)).unwrap()).unwrap();
+        assert_eq!(provider.requests()[2].history.len(), 1);
+    }
+}
+
+#[test]
+fn a_broad_search_links_only_bounded_mentions_in_reply_order() {
+    let mut base = state();
+    base.tasks.remove(&LIVE);
+    add_tasks(&mut base, 98, |index| match index {
+        0 => "Změna adresy".into(),
+        1 => "Call the library".into(),
+        2 => "Buy milk".into(),
+        3 => "File receipts".into(),
+        4 => "a".into(),
+        5 => "it".into(),
+        _ => format!("Open task {index}"),
+    });
     let (chat, provider) = fixture(
         CAPABILITIES,
         [
-            round([call("one", "get_task", json!({"task_id":LIVE}))]),
-            Ok(FakeRound::new([Ok(StreamEvent::Text("Partial reply".into()))]).stall()),
-            round([]),
+            round([call(
+                "search",
+                "query_tasks",
+                json!({"query":"not done", "limit":100}),
+            )]),
+            round([
+                StreamEvent::Text("Start with **File receipts** and __Zmena".into()),
+                StreamEvent::Text(
+                    " adresy__. Buy milk, then call the library. Secret title.".into(),
+                ),
+            ]),
         ],
     );
+    chat.update_snapshot(Some(snapshot(8, base)));
+    block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
+    assert_eq!(
+        tool_page(&provider.requests()[1].history)["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        98
+    );
+    let view = chat.view();
+    let titles: Vec<_> = view.turns[0]
+        .task_links
+        .iter()
+        .map(|link| link.title.as_str())
+        .collect();
+    assert_eq!(
+        titles,
+        [
+            "File receipts",
+            "Změna adresy",
+            "Buy milk",
+            "Call the library"
+        ]
+    );
+}
+
+#[test]
+fn streaming_rechecks_word_boundaries_and_keeps_inspected_tasks_once() {
+    let mut base = state();
+    add_tasks(&mut base, 1, |_| "it".into());
+    let (chat, _) = fixture(
+        CAPABILITIES,
+        [
+            round([call("search", "query_tasks", json!({}))]),
+            round([call("inspect", "get_task", json!({"task_id":LIVE}))]),
+            Ok(FakeRound::new([
+                Ok(StreamEvent::Text("Perhaps it".into())),
+                Ok(StreamEvent::Text("self. Also, it".into())),
+                Ok(StreamEvent::Text(
+                    "inerary. Keep item_it_ready unchanged.".into(),
+                )),
+            ])
+            .stall()),
+        ],
+    );
+    chat.update_snapshot(Some(snapshot(8, base)));
     let mut reply = pin!(chat.start(intent(&chat, 1)).unwrap());
     assert!(
         reply
@@ -666,17 +767,19 @@ fn a_read_then_move_outside_scope_cancels_and_clears_in_flight_chat() {
             .poll(&mut Context::from_waker(noop_waker_ref()))
             .is_pending()
     );
-    assert_eq!(provider.requests().len(), 2);
-    let mut moved = state();
-    apply_command(
-        &mut moved,
-        json!({"cmd":"move_task","id":LIVE,"list":HIDDEN}),
+    let view = chat.view();
+    assert_eq!(
+        view.turns[0].prose,
+        "Perhaps itself. Also, itinerary. Keep item_it_ready unchanged."
     );
-    chat.update_snapshot(Some(snapshot(8, moved)));
-    assert_eq!(block_on(reply), Err(AssistantError::Cancelled));
-    assert!(chat.view().turns.is_empty());
-    block_on(chat.start(intent(&chat, 2)).unwrap()).unwrap();
-    assert_eq!(provider.requests()[2].history.len(), 1);
+    assert_eq!(
+        view.turns[0]
+            .task_links
+            .iter()
+            .map(|link| link.id)
+            .collect::<Vec<_>>(),
+        [LIVE]
+    );
 }
 
 #[test]

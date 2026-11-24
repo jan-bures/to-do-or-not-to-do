@@ -18,6 +18,7 @@ pub mod endpoint;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;
+pub mod markdown;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod native_relay;
 pub mod openai;
@@ -114,6 +115,8 @@ const MAX_PROMPT_BYTES: usize = 8 * 1024;
 const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SCHEMA_BYTES: usize = 12 * 1024;
 const MAX_PROSE_BYTES: usize = 24 * 1024;
+/// Number of task links clients show before the user expands a reply.
+pub const VISIBLE_TASK_LINKS: usize = 5;
 pub(super) const MAX_ARGUMENT_BYTES: usize = 8 * 1024;
 pub(super) const MAX_CALL_LABEL_BYTES: usize = 128;
 const MAX_ROUNDS: usize = MAX_COMMANDS + 1;
@@ -412,6 +415,62 @@ struct MemoryTurn {
     // titles and results; replaying it under the Assistant role would launder the trust boundary.
     final_prose: Option<String>,
     observed: References,
+    inspected: Vec<TaskRef>,
+    search_candidates: Vec<TaskRef>,
+}
+
+impl MemoryTurn {
+    fn refresh_task_links(&mut self) {
+        if self.inspected.is_empty() && self.search_candidates.is_empty() {
+            return;
+        }
+        let prose = todo_core::query::fold(&self.view.prose);
+        let mut seen = BTreeSet::new();
+        let mut links: Vec<_> = self
+            .inspected
+            .iter()
+            .map(|task| (task, true))
+            .chain(self.search_candidates.iter().map(|task| (task, false)))
+            .filter(|(task, _)| seen.insert(task.id))
+            .filter_map(|(task, inspected)| {
+                let position = first_title_mention(&prose, &todo_core::query::fold(&task.title));
+                (inspected || position.is_some()).then_some((position.unwrap_or(usize::MAX), task))
+            })
+            .collect();
+        links.sort_by_key(|(position, _)| *position);
+        self.view.task_links = links.into_iter().map(|(_, task)| task.clone()).collect();
+    }
+}
+
+fn first_title_mention(prose: &str, title: &str) -> Option<usize> {
+    if title.trim().is_empty() {
+        return None;
+    }
+    let word = |c: char| c.is_alphanumeric() || c == '_';
+    let bounded = |before: &str, after: &str| {
+        !before.chars().next_back().is_some_and(word) && !after.chars().next().is_some_and(word)
+    };
+    // Check each start so a rejected occurrence cannot hide an overlapping, bounded match.
+    let mut from = 0;
+    while let Some(offset) = prose[from..].find(title) {
+        let start = from + offset;
+        let end = start + title.len();
+        let (before, after) = (&prose[..start], &prose[end..]);
+        // Paired underscore emphasis can surround a title, while underscores in
+        // identifiers are still word characters.
+        if bounded(before, after)
+            || ["_", "__"].into_iter().any(|marker| {
+                before
+                    .strip_suffix(marker)
+                    .zip(after.strip_prefix(marker))
+                    .is_some_and(|(before, after)| bounded(before, after))
+            })
+        {
+            return Some(start);
+        }
+        from = start + title.chars().next()?.len_utf8();
+    }
+    None
 }
 
 struct Active {
@@ -487,6 +546,7 @@ impl<P, C, E> Inner<P, C, E> {
             let Ok(turn) = chat.active_turn(id) else {
                 return false;
             };
+            turn.refresh_task_links();
             match result {
                 Ok(finished) => {
                     turn.final_prose = finished.final_prose;
@@ -922,6 +982,8 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
             chat.turns.push_back(MemoryTurn {
                 final_prose: None,
                 observed: References::default(),
+                inspected: Vec::new(),
+                search_candidates: Vec::new(),
                 view: TurnView {
                     id,
                     prompt: intent.prompt,
@@ -1162,6 +1224,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
                             return Err(LimitKind::Reply.exceeded(bytes, MAX_PROSE_BYTES));
                         }
                         turn.view.prose.push_str(&delta);
+                        turn.refresh_task_links();
                         text.push_str(&delta);
                         Ok(())
                     })??;
@@ -1257,11 +1320,12 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             if visible {
                 turn.observed.lists.extend(result.references.lists);
                 turn.observed.tasks.extend(result.references.tasks);
-                for link in result.links {
-                    if !turn.view.task_links.iter().any(|prior| prior.id == link.id) {
-                        turn.view.task_links.push(link);
-                    }
+                match kind {
+                    ToolKind::Task => turn.inspected.extend(result.links),
+                    ToolKind::Search => turn.search_candidates.extend(result.links),
+                    _ => {}
                 }
+                turn.refresh_task_links();
                 match kind {
                     ToolKind::Lists => turn.view.summary.lists_checked += result.count,
                     ToolKind::Search | ToolKind::Task => {

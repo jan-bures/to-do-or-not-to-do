@@ -15,6 +15,7 @@ import app.todoornot.core.AssistantHosted
 import app.todoornot.core.AssistantHostedAccount
 import app.todoornot.core.AssistantScopeReview
 import app.todoornot.core.AssistantItem
+import app.todoornot.core.AssistantLink
 import app.todoornot.core.AssistantPanelState
 import app.todoornot.core.AssistantProposal
 import app.todoornot.core.AssistantProposalStatus
@@ -78,6 +79,17 @@ class AssistantGalleryTest {
                     "unconfigured" to base.copy(server = null, destination = null, hosted = hosted),
                     "empty" to base,
                     "streaming" to base.copy(streaming = true, turns = listOf(streaming)),
+                    "markdown" to base.copy(turns = listOf(streaming.copy(
+                        id = "markdown",
+                        prompt = "Help me plan my weekend.",
+                        prose = "## Weekend plan\n\nStart with **Renew passport appointment**, then *Pack the weekend bag*.\n\n" +
+                            "- Return the library books\n- Check the tire pressure\n\n" +
+                            "Later, Back up the photos, File the receipts, and Clean out the inbox.",
+                        steps = emptyList(),
+                        links = listOf("Renew passport appointment", "Pack the weekend bag", "Return the library books",
+                            "Check the tire pressure", "Back up the photos", "File the receipts", "Clean out the inbox")
+                            .mapIndexed { index, title -> AssistantLink("example-task-$index", title) },
+                    ))),
                     "proposal" to base.copy(turns = listOf(change.copy(proposal = change.proposal?.copy(
                         items = listOf(AssistantItem(0u, true, listOf(edit))))))),
                     "create" to base.copy(turns = listOf(change.copy(proposal = change.proposal?.copy(

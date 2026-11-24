@@ -149,6 +149,10 @@ pub fn css() -> String {
         "weight-notes-bold".into(),
         typography::NOTES_BOLD.to_string(),
     ));
+    root.push((
+        "weight-assistant-bold".into(),
+        typography::ASSISTANT_BOLD.to_string(),
+    ));
     for (k, v) in space::ALL {
         root.push((format!("space-{k}"), format!("{v}px")));
     }
@@ -409,7 +413,10 @@ pub fn json() -> String {
             "colors": colors_json(chrome::COLORS.to_vec()),
             "opacities": numbers_json(&chrome::OPACITIES),
         },
-        "fonts": { "faces": faces, "weights": { "notes-bold": typography::NOTES_BOLD } },
+        "fonts": { "faces": faces, "weights": {
+            "assistant-bold": typography::ASSISTANT_BOLD,
+            "notes-bold": typography::NOTES_BOLD,
+        } },
         "type": type_scale,
         "space": numbers_json(&space::ALL),
         "radius": radii,

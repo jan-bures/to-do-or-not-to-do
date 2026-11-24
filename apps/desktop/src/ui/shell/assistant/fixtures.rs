@@ -109,6 +109,44 @@ impl ShellView {
             stale_snapshot: false,
         };
         let (turns, composer) = match name {
+            "ai-markdown" => {
+                let titles = [
+                    "Renew passport appointment",
+                    "Pack the weekend bag",
+                    "Return the library books",
+                    "Check the tire pressure",
+                    "Back up the photos",
+                    "File the receipts",
+                    "Clean out the inbox",
+                ];
+                let mut turn = draft(
+                    5,
+                    "Help me plan my weekend.",
+                    "## Weekend plan\n\nStart with **Renew passport appointment**, then *Pack the weekend bag*.\n\n\
+                     - Return the library books\n- Check the tire pressure\n\n\
+                     Later, Back up the photos, File the receipts, and Clean out the inbox.",
+                    None,
+                    None,
+                );
+                turn.task_links = titles
+                    .into_iter()
+                    .filter_map(|title| {
+                        let task = state.tasks.values().find(|task| task.title == title)?;
+                        let list = state.lists.get(&task.list)?;
+                        Some(TaskRef {
+                            id: task.id,
+                            title: task.title.clone(),
+                            due: task.due,
+                            list: ListRef {
+                                id: list.id,
+                                name: list.name.clone(),
+                            },
+                        })
+                    })
+                    .collect();
+                turn.summary.tasks_read = turn.task_links.len();
+                (vec![turn], Composer::Ready)
+            }
             "ai-proposal" | "ai-pending" => {
                 let item = ProposalItem {
                     index: 0,

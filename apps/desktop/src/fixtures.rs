@@ -104,6 +104,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "ai-empty"
         | "ai-unconfigured"
         | "ai-typing"
+        | "ai-markdown"
         | "ai-proposal"
         | "ai-pending"
         | "ai-batch"

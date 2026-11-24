@@ -17,6 +17,7 @@ use todo_client::{
         ListAccess, ProposalKind, ProposalStatus, Selection, SendIntent, StepKind, StepStatus,
         ToolKind,
         local::{Destination, LocalProvider, Support, endpoint_info, valid_model},
+        markdown::{self, MarkdownBlock, MarkdownSpan},
         native_relay::{Hosted, NativeProvider, Relay},
         provider::{DataClass, Provider, ProviderError},
         relay,
@@ -68,6 +69,9 @@ opaque_debug!(
     AssistantItem,
     AssistantProposal,
     AssistantLink,
+    AssistantMarkdownSpan,
+    AssistantMarkdownItem,
+    AssistantMarkdownBlock,
     AssistantTurn,
     AssistantPanelState
 );
@@ -222,6 +226,90 @@ pub struct AssistantProposal {
 pub struct AssistantLink {
     pub id: String,
     pub title: String,
+}
+
+#[derive(uniffi::Enum)]
+pub enum AssistantMarkdownSpan {
+    Text { text: String },
+    Bold { text: String },
+    Italic { text: String },
+    Code { text: String },
+}
+
+#[derive(uniffi::Record)]
+pub struct AssistantMarkdownItem {
+    pub number: u32,
+    pub spans: Vec<AssistantMarkdownSpan>,
+}
+
+#[derive(uniffi::Enum)]
+pub enum AssistantMarkdownBlock {
+    Heading {
+        level: u8,
+        spans: Vec<AssistantMarkdownSpan>,
+    },
+    Paragraph {
+        spans: Vec<AssistantMarkdownSpan>,
+    },
+    UnorderedList {
+        items: Vec<Vec<AssistantMarkdownSpan>>,
+    },
+    OrderedList {
+        items: Vec<AssistantMarkdownItem>,
+    },
+    Code {
+        text: String,
+    },
+}
+
+#[uniffi::export]
+pub fn assistant_visible_task_links() -> u32 {
+    todo_client::assistant::VISIBLE_TASK_LINKS as u32
+}
+
+#[uniffi::export]
+pub fn parse_assistant_markdown(source: String) -> Vec<AssistantMarkdownBlock> {
+    fn spans(source: Vec<MarkdownSpan>) -> Vec<AssistantMarkdownSpan> {
+        source
+            .into_iter()
+            .map(|span| match span {
+                MarkdownSpan::Text(text) => AssistantMarkdownSpan::Text { text },
+                MarkdownSpan::Bold(text) => AssistantMarkdownSpan::Bold { text },
+                MarkdownSpan::Italic(text) => AssistantMarkdownSpan::Italic { text },
+                MarkdownSpan::Code(text) => AssistantMarkdownSpan::Code { text },
+            })
+            .collect()
+    }
+
+    use AssistantMarkdownBlock as Block;
+    markdown::parse(&source)
+        .into_iter()
+        .map(|block| match block {
+            MarkdownBlock::Heading {
+                level,
+                spans: content,
+            } => Block::Heading {
+                level,
+                spans: spans(content),
+            },
+            MarkdownBlock::Paragraph(content) => Block::Paragraph {
+                spans: spans(content),
+            },
+            MarkdownBlock::UnorderedList(items) => Block::UnorderedList {
+                items: items.into_iter().map(spans).collect(),
+            },
+            MarkdownBlock::OrderedList(items) => Block::OrderedList {
+                items: items
+                    .into_iter()
+                    .map(|item| AssistantMarkdownItem {
+                        number: item.number,
+                        spans: spans(item.spans),
+                    })
+                    .collect(),
+            },
+            MarkdownBlock::Code(text) => Block::Code { text },
+        })
+        .collect()
 }
 
 #[derive(Clone, uniffi::Record)]

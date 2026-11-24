@@ -1,6 +1,7 @@
 //! Web presentation of the shared assistant controller. Only explicit review gestures submit.
 
 mod hosted;
+mod markdown;
 mod review;
 mod settings;
 
@@ -10,7 +11,7 @@ use leptos::prelude::*;
 use std::{collections::BTreeMap, time::Duration};
 use todo_client::assistant::{
     Approval, AssistantError, AssistantView, Composer, Controller, SendIntent, StepKind,
-    StepStatus, TaskRef, ToolKind, TurnView, provider::ProviderError, relay,
+    StepStatus, TaskRef, ToolKind, TurnView, VISIBLE_TASK_LINKS, provider::ProviderError, relay,
 };
 use todo_client::web::{BrowserClock, BrowserEntropy};
 use todo_core::ids::TaskId;
@@ -555,6 +556,7 @@ fn Turn(id: Uuid) -> impl IntoView {
         ai.view
             .with(|v| matches!(v.composer, Composer::Streaming { turn } if turn == id))
     });
+    let prose = Memo::new(move |_| field(|t| t.prose.clone())());
     let links = Memo::new(move |_| {
         ai.view.with(|v| {
             v.turns
@@ -587,6 +589,9 @@ fn Turn(id: Uuid) -> impl IntoView {
                 })
         })
     });
+    let links_expanded = RwSignal::new(false);
+    let more = move || links.with(|links| links.len().saturating_sub(VISIBLE_TASK_LINKS));
+    let has_more = move || more() > 0;
     let error = Memo::new(move |_| {
         ai.view
             .with(|v| v.turns.iter().find(|t| t.id == id).and_then(|t| t.error))
@@ -606,8 +611,23 @@ fn Turn(id: Uuid) -> impl IntoView {
                     }).collect_view()))}</ul>
                 </details>
             </Show>
-            <p class="ai-prose" aria-busy=move || active.get().to_string()>{field(|t| t.prose.clone())}</p>
-            <For each=move || links.get() key=|task| task.id children=move |task| view! { <TaskLink task/> }/>
+            <div class="ai-prose" aria-busy=move || active.get().to_string()>
+                {move || prose.with(|text| markdown::reply(text))}
+            </div>
+            <For each=move || {
+                let mut visible = links.get();
+                if !links_expanded.get() {
+                    visible.truncate(VISIBLE_TASK_LINKS);
+                }
+                visible
+            } key=|task| task.id children=move |task| view! { <TaskLink task/> }/>
+            <Show when=has_more>
+                <button type="button" class="ai-link ai-link-toggle"
+                    aria-expanded=move || links_expanded.get().to_string()
+                    on:click=move |_| links_expanded.update(|expanded| *expanded = !*expanded)>
+                    {move || if links_expanded.get() { "Show fewer".into() } else { format!("Show {} more", more()) }}
+                </button>
+            </Show>
             <review::Proposal turn=id/>
             {move || error.get().map(|error| view! {
                 <div class="ai-error" role="status"><p>{match error {

@@ -149,6 +149,7 @@ pub(super) struct Ai {
     sequence: u64,
     notice: Option<String>,
     step_details: BTreeSet<Uuid>,
+    expanded_task_links: BTreeSet<Uuid>,
     review: Review,
     receipts: BTreeMap<CommandId, Receipt>,
     flash: HashMap<TaskId, Duration>,
@@ -242,6 +243,7 @@ impl Ai {
             sequence: 0,
             notice,
             step_details: BTreeSet::new(),
+            expanded_task_links: BTreeSet::new(),
             review: Review::default(),
             receipts: BTreeMap::new(),
             flash: HashMap::new(),
@@ -329,6 +331,7 @@ impl Ai {
         self.receipts.clear();
         self.flash.clear();
         self.step_details.clear();
+        self.expanded_task_links.clear();
         self.scroll.set_offset(gpui::point(px(0.), px(0.)));
     }
 }
@@ -678,6 +681,9 @@ impl ShellView {
         });
         self.ai
             .step_details
+            .retain(|id| active_view.turns.iter().any(|t| t.id == *id));
+        self.ai
+            .expanded_task_links
             .retain(|id| active_view.turns.iter().any(|t| t.id == *id));
         if clear_draft {
             self.ai.composer.update(cx, |a, cx| a.set_text("", cx));

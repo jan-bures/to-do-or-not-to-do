@@ -29,12 +29,14 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -57,20 +59,32 @@ import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.paneTitle
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontStyle
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.AssistantConnection
+import app.todoornot.core.AssistantMarkdownBlock
+import app.todoornot.core.AssistantMarkdownSpan
 import app.todoornot.core.AssistantPanelState
 import app.todoornot.core.AssistantProposalStatus
 import app.todoornot.core.AssistantTurn
+import app.todoornot.core.assistantVisibleTaskLinks
+import app.todoornot.core.parseAssistantMarkdown
+import app.todoornot.design.Fonts
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
+import app.todoornot.design.TextToken
 import app.todoornot.design.cubic
 import app.todoornot.design.style
 import app.todoornot.model.AssistantModel
@@ -375,6 +389,8 @@ private fun ChatTurn(turn: AssistantTurn, active: Boolean, left: Boolean, enable
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
     var expanded by rememberSaveable(turn.id) { mutableStateOf(false) }
+    var linksExpanded by rememberSaveable(turn.id) { mutableStateOf(false) }
+    val visibleLinks = remember { assistantVisibleTaskLinks().toInt() }
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
         Label(turn.prompt, T.NOTES, r.ink,
             Modifier.align(Alignment.End).fillMaxWidth(0.88f).background(r.wash, shape)
@@ -393,14 +409,76 @@ private fun ChatTurn(turn: AssistantTurn, active: Boolean, left: Boolean, enable
                 Label(step, T.META_PHONE, r.ink3, Modifier.weight(1f), maxLines = 2)
             }
         }
-        if (turn.prose.isNotBlank()) Label(turn.prose, T.NOTES, r.ink, maxLines = Int.MAX_VALUE)
-        turn.links.forEach { link -> AiButton(link.title, { onTask(link.id) }, icon = "arrow-up-right", modifier = Modifier.fillMaxWidth()) }
+        if (turn.prose.isNotBlank()) AssistantReply(turn.prose)
+        val links = if (linksExpanded) turn.links else turn.links.take(visibleLinks)
+        links.forEach { link -> AiButton(link.title, { onTask(link.id) }, icon = "arrow-up-right", modifier = Modifier.fillMaxWidth()) }
+        val more = turn.links.size - visibleLinks
+        if (more > 0) {
+            AiButton(if (linksExpanded) "Show fewer" else "Show $more more", { linksExpanded = !linksExpanded }, quiet = true)
+        }
         turn.problem?.let {
             if (it == "the reply was stopped") Label("Reply stopped", T.META_PHONE, r.ink3)
             else AssistantProblem(it, onSettings, onRetry)
         }
         turn.proposal?.let { AssistantProposalCard(it, left, enabled, model, onTask) }
     }
+}
+
+@Composable
+private fun AssistantReply(prose: String) {
+    val r = LocalDesign.current.room
+    val blocks = remember(prose) { parseAssistantMarkdown(prose) }
+    Column(verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+        for (block in blocks) when (block) {
+            is AssistantMarkdownBlock.Paragraph -> ReplyText(block.spans)
+            is AssistantMarkdownBlock.Heading -> {
+                val type = when (block.level.toInt()) {
+                    1 -> T.NOTES_H1
+                    2 -> T.NOTES_H2
+                    else -> T.NOTES_H3
+                }
+                ReplyText(block.spans, Modifier.semantics { heading() }, type)
+            }
+            is AssistantMarkdownBlock.UnorderedList -> Column(verticalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+                block.items.forEach { ReplyItem("•", it) }
+            }
+            is AssistantMarkdownBlock.OrderedList -> Column(verticalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+                block.items.forEach { ReplyItem("${it.number}.", it.spans) }
+            }
+            is AssistantMarkdownBlock.Code -> BasicText(block.text,
+                Modifier.fillMaxWidth().background(r.wash, RoundedCornerShape(Tokens.Radius.BUTTON.dp)).padding(S.S2.dp),
+                style = T.NOTES_CODE.style(r.ink))
+        }
+    }
+}
+
+@Composable
+private fun ReplyItem(marker: String, spans: List<AssistantMarkdownSpan>) {
+    val r = LocalDesign.current.room
+    Row(horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
+        Box(Modifier.widthIn(min = C.ICON_SMALL.dp), contentAlignment = Alignment.TopEnd) {
+            Label(marker, T.NOTES, r.ink2, Modifier.semantics { hideFromAccessibility() })
+        }
+        ReplyText(spans, Modifier.weight(1f))
+    }
+}
+
+@Composable
+private fun ReplyText(spans: List<AssistantMarkdownSpan>, modifier: Modifier = Modifier, type: TextToken = T.NOTES) {
+    val r = LocalDesign.current.room
+    val text = remember(spans, r.wash) {
+        buildAnnotatedString {
+            for (span in spans) when (span) {
+                is AssistantMarkdownSpan.Text -> append(span.text)
+                is AssistantMarkdownSpan.Bold -> withStyle(SpanStyle(fontWeight = FontWeight(Tokens.Weight.ASSISTANT_BOLD))) {
+                    append(span.text)
+                }
+                is AssistantMarkdownSpan.Italic -> withStyle(SpanStyle(fontStyle = FontStyle.Italic)) { append(span.text) }
+                is AssistantMarkdownSpan.Code -> withStyle(SpanStyle(fontFamily = Fonts.mono, background = r.wash)) { append(span.text) }
+            }
+        }
+    }
+    BasicText(text, modifier, style = type.style(r.ink))
 }
 
 @Composable

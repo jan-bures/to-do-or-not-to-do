@@ -94,7 +94,7 @@ test("task links keep both panes visible and only dock detail from 1600 px", asy
   await configure(page, { Planning: "all" });
   await modelRoute(page, (body) => toolResults(body).length === 0
     ? call("find", "query_tasks", { query: "November board update" })
-    : words("Here is the task I found."));
+    : words("I found Prepare the November board update."));
   await send(page, "Find the board update");
   const task = "Prepare the November board update";
   const link = panel(page).getByRole("button", { name: new RegExp(task) });

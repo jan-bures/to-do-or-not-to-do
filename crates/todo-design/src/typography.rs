@@ -127,6 +127,8 @@ pub const NOTES_H2: TextStyle = TextStyle::new(UI, 600, 16.0, 24.0);
 pub const NOTES_H3: TextStyle = NOTES.with_weight(600);
 /// Weight of strong text in notes, including within headings.
 pub const NOTES_BOLD: u16 = 700;
+/// Weight of strong text in an assistant reply.
+pub const ASSISTANT_BOLD: u16 = 600;
 /// Fixed-width text in code blocks and inline code.
 pub const NOTES_CODE: TextStyle = TextStyle::new(MONO, 400, 14.0, 24.0);
 /// Quick-add input text.

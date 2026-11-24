@@ -1,6 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { open, watch } from "./helpers.mjs";
-import { aiSettings, panel, send, words } from "./assistant-helpers.mjs";
+import { aiSettings, call, panel, send, toolResults, words } from "./assistant-helpers.mjs";
 
 const id = "11111111-1111-4111-8111-111111111111";
 const attempt = "22222222-2222-4222-8222-222222222222";
@@ -173,13 +173,13 @@ test("private models use the paired server, not a client-held key", async ({ con
 test("ChatGPT reads approved tasks across two relay rounds", async ({ context, page }) => {
   const w = watch(page);
   const tool = { type: "function_call", name: "query_tasks", call_id: "find-tasks", arguments: '{"query":"","limit":50}' };
-  const prose = "Planning includes the November board update.";
+  const prose = "Planning includes Prepare the November board update.";
   const mock = await relay(context, ({ request }) => ({
     contentType: "text/event-stream",
     body: request.input.some((item) => item.type === "function_call_output")
       ? responses(
         { type: "response.output_text.delta", delta: "Planning includes " },
-        { type: "response.output_text.delta", delta: "the November board update." },
+        { type: "response.output_text.delta", delta: "Prepare the November board update." },
       )
       : responses({ type: "response.output_item.done", item: { ...tool, namespace: "todo" } }),
   }));
@@ -196,6 +196,7 @@ test("ChatGPT reads approved tasks across two relay rounds", async ({ context, p
   expect(mock.chats).toHaveLength(0);
   await panel(page).getByRole("button", { name: "Allow and send" }).click();
   await expect(panel(page).getByText(prose, { exact: true })).toBeVisible();
+  await expect(panel(page).locator(".ai-task-link > span:first-child")).toHaveText(["Prepare the November board update"]);
 
   expect(mock.chats).toHaveLength(2);
   const [first, second] = mock.chats;
@@ -324,6 +325,62 @@ test("provider choices, active account, and capability-specific sign-in fit a na
 });
 
 for (const colorScheme of ["light", "dark"]) {
+  test(`assistant Markdown and task links (${colorScheme})`, async ({ context, page }) => {
+    const w = watch(page);
+    await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
+    await page.setViewportSize({ width: 1440, height: 900 });
+    let titles = [];
+    await relay(context, ({ request }) => {
+      const [result] = toolResults(request);
+      if (!result) return { contentType: "text/event-stream", body: call("find", "query_tasks", { limit: 50 }) };
+      expect(result.items.length).toBeGreaterThan(7);
+      titles = result.items.slice(0, 7).map(({ title }) => title).reverse();
+      const prose = [
+        "# Weekend plan",
+        `Start with **${titles[0]}**, then *${titles[1]}*.`,
+        `- ${titles[2]}\n- ${titles[3]}`,
+        `2. ${titles[4]}\n5. ${titles[5]}`,
+        `Later, ${titles[6]}. Use \`weekend_plan\`.`,
+        "```\nweekend_plan = ready\n```",
+        "<script>example</script> [reference](https://example.com)",
+      ].join("\n\n");
+      return { contentType: "text/event-stream", body: words(prose) };
+    });
+    const settings = await settingsFor(page);
+    await segment(settings, "Your private models").click();
+    await chooseModel(settings);
+    await settings.getByRole("combobox", { name: "Work", exact: true }).selectOption("private");
+    await settings.getByRole("combobox", { name: "Inbox", exact: true }).selectOption("private");
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await send(page, "Help me plan my weekend.");
+
+    const turn = panel(page).locator(".ai-turn").last();
+    const prose = turn.locator(".ai-prose");
+    await expect(prose.getByRole("heading", { name: "Weekend plan", level: 4 })).toBeVisible();
+    await expect(prose.locator("strong")).toHaveText(titles[0]);
+    await expect(prose.locator("em")).toHaveText(titles[1]);
+    await expect(prose.locator("ul li")).toHaveText(titles.slice(2, 4));
+    await expect(prose.locator("ol li").nth(1)).toHaveAttribute("value", "5");
+    await expect(prose.locator("p code")).toHaveText("weekend_plan");
+    await expect(prose.locator("pre code")).toHaveText("weekend_plan = ready");
+    await expect(prose).toContainText("<script>example</script> [reference](https://example.com)");
+    await expect(prose.locator("script, a")).toHaveCount(0);
+
+    const links = turn.locator(".ai-task-link > span:first-child");
+    const more = turn.getByRole("button", { name: "Show 2 more" });
+    await expect(links).toHaveText(titles.slice(0, 5));
+    await expect(more).toHaveAttribute("aria-expanded", "false");
+    await page.screenshot({ path: `gallery/ai-markdown-${colorScheme}.png`, animations: "disabled" });
+    await more.click();
+    await expect(links).toHaveText(titles);
+    const fewer = turn.getByRole("button", { name: "Show fewer" });
+    await expect(fewer).toHaveAttribute("aria-expanded", "true");
+    await fewer.click();
+    await expect(links).toHaveText(titles.slice(0, 5));
+    await expect(more).toBeVisible();
+    await w.check();
+  });
+
   test(`assistant relay settings gallery (${colorScheme})`, async ({ context, page }) => {
     await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
     const mock = await relay(context);

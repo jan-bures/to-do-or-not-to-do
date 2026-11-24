@@ -1,6 +1,7 @@
 //! Desktop assistant presentation. Cards use trusted simulated effects, never model-authored UI.
 
 mod cloud;
+mod markdown;
 
 use super::*;
 use crate::theme::Agent;
@@ -8,6 +9,7 @@ use gpui::Role;
 use std::sync::Arc;
 use todo_client::assistant::{
     Edit, Effect, ListAccess, ProposalItem, ProposalKind, StepKind, StepStatus, TaskRef, ToolKind,
+    VISIBLE_TASK_LINKS,
 };
 use todo_core::{
     State,
@@ -871,15 +873,50 @@ impl ShellView {
             output = output.child(self.ai_steps(turn, index, cx));
         }
         if !turn.prose.is_empty() {
-            output = output.child(text(ty::NOTES, p.ink, turn.prose.clone()));
+            output = output.child(markdown::reply(&turn.prose, p));
         }
         if !turn.task_links.is_empty() {
+            let id = turn.id;
+            let expanded = self.ai.expanded_task_links.contains(&id);
+            let more = turn.task_links.len().saturating_sub(VISIBLE_TASK_LINKS);
             output = output.child(
-                div().flex().flex_col().gap(px(space::S1)).children(
-                    turn.task_links
-                        .iter()
-                        .map(|task| self.ai_task_link(task, format!("chat-{index}"), cx)),
-                ),
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(px(space::S1))
+                    .children(
+                        turn.task_links
+                            .iter()
+                            .take(if expanded {
+                                turn.task_links.len()
+                            } else {
+                                VISIBLE_TASK_LINKS
+                            })
+                            .map(|task| self.ai_task_link(task, format!("chat-{index}"), cx)),
+                    )
+                    .when(more > 0, |links| {
+                        links.child(
+                            self.ai_button(
+                                format!("assistant-task-links-{id}"),
+                                if expanded {
+                                    "Show fewer".into()
+                                } else {
+                                    format!("Show {more} more")
+                                },
+                                Tone::Quiet,
+                                true,
+                                move |this, _, cx| {
+                                    if !this.ai.expanded_task_links.remove(&id) {
+                                        this.ai.expanded_task_links.insert(id);
+                                    }
+                                    cx.notify();
+                                },
+                                cx,
+                            )
+                            .self_start()
+                            .aria_expanded(expanded),
+                        )
+                    }),
             );
         }
         if let Some(card) = &turn.proposal {
