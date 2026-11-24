@@ -171,6 +171,10 @@ The web app shares the desktop visual language and adapts cleanly across its thr
 
 Follows every invariant of [`docs/android-thumb-zone.md`](android-thumb-zone.md) and [`docs/android-header.md`](android-header.md): **Sky above, hands below**, `48 dp` minimum touch targets, flat opaque surfaces, zero blur, and zero controls crossing the hinge.
 
+The first Android release supports [Your own server over HTTPS](android.md#ai-assistant). It has no
+cloud fallback, separate credentials, voice control, destructive tools, or persisted chats. The
+History control navigates the current chat, and proposal counts are numbers, not lights.
+
 ### 4.1 Bottom-dock reachability (both postures)
 
 - **Lower Dock (`phone::BOTTOM_BAR` `52 dp`):** Adds a single `48 × 48 dp` **`✦ Ask AI`** (`sparkles`) button directly beside Filter (`🔍`):
@@ -260,7 +264,7 @@ All existing tokens from `crates/todo-design` remain authoritative:
 
 ### 6.2 New additive tokens (added in `crates/todo-design`)
 
-All 13 additive tokens below are added in `crates/todo-design/src/hues.rs` and `crates/todo-design/src/layout.rs` and exported to `generated/tokens.css` and `generated/tokens.json`:
+The additive tokens below are defined in `crates/todo-design/src/hues.rs` and `crates/todo-design/src/layout.rs` and exported to `generated/tokens.css` and `generated/tokens.json`:
 
 | Module | Rust constant | CSS / JSON key | Value | Purpose |
 |---|---|---|---|---|
@@ -274,6 +278,9 @@ All 13 additive tokens below are added in `crates/todo-design/src/hues.rs` and `
 | `layout::desktop` | `AI_HISTORY_MENU` | `--desktop-ai-history-menu` | `280.0` (px) | Width of the anchored conversation history popover. |
 | `layout::desktop` | `AI_SETTINGS_WIDTH` | `--desktop-ai-settings-width` | `520.0` (px) | Width of the AI Provider & Privacy Settings modal dialog on desktop/web. |
 | `layout::phone` | `AI_SHEET_DEFAULT_FRACTION` | `--phone-ai-sheet-default-fraction` | `0.84` | Default open height of the Android cover AI Assistant bottom sheet. |
+| `layout::phone` | `AI_SHEET_MIN_FRACTION` | `--phone-ai-sheet-min-fraction` | `0.55` | Smallest resting cover sheet height before a dismissal drag. |
+| `layout::phone` | `AI_SHEET_SHORT_FRACTION` | `--phone-ai-sheet-short-fraction` | `0.95` | Cover sheet height in a short window. |
+| `layout::phone` | `AI_SHEET_SHORT_WINDOW` | `--phone-ai-sheet-short-window` | `480.0` (dp) | Threshold for short-window cover layout. |
 | `layout::phone` | `AI_COMPOSER_MAX` | `--phone-ai-composer-max` | `128.0` (px/dp) | Maximum auto-grow height of the phone AI chat composer (~4 lines). |
 | `layout::component` | `PROPOSAL_BAR` | `--component-proposal-bar` | `3.0` (px/dp) | Width of the leading semantic stripe on proposal cards (`accent`, `sun-ink`, `danger`). |
 | `layout::component` | `STATUS_LIGHT` | `--component-status-light` | `6.0` (px/dp) | Live connection health light diameter. |

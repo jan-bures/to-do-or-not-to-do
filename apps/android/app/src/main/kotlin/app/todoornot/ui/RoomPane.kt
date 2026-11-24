@@ -150,6 +150,7 @@ internal fun RoomPane(
     sheetOpen: Boolean = false,
     reachExpanded: Boolean = false,
     onSwipeRooms: (Float?) -> Unit = {},
+    revealTask: String? = null,
     onListSettings: () -> Unit = onRoomMenu,
     fullBoard: Boolean = false,
     boardFold: PaneFold? = null,
@@ -252,7 +253,7 @@ internal fun RoomPane(
                                 sheetOpen || keyboard || (!wide && state.detail != null) || state.timeline == null,
                                 timelineSheets, timelineGallery, cover = !wide,
                                 onAdd = if (!addingTimeline && !keyboard) showTimelineAdd else null)
-                            else -> TaskList(body.state, actions, resetReach)
+                            else -> TaskList(body.state, actions, resetReach, revealTask)
                         }
                     }
                 }
@@ -405,12 +406,12 @@ private fun BottomRoomBar(
             Spacer(Modifier.width(fold?.let { it.end - it.start } ?: S.S6.dp))
             if (fold != null) Spacer(Modifier.weight(1f))
             if (!state.signedOut) BoardAddLabel(onBoardAdd)
-            search(); overflow()
+            AskAiButton(); search(); overflow()
         } else {
-            if (left) { overflow(); search(); views() } else rooms()
+            if (left) { overflow(); search(); if (!draggingTask) AskAiButton(); views() } else rooms()
             RoomPillsStrip(state.home, state.room.key, Modifier.weight(1f).padding(horizontal = S.S1.dp), actions::open,
                 roomyActive = state.listFeatures?.workflow == true)
-            if (left) rooms() else { views(); search(); overflow() }
+            if (left) rooms() else { views(); if (!draggingTask) AskAiButton(); search(); overflow() }
         }
     }
 }
@@ -533,7 +534,7 @@ internal fun Banner(text: String, action: String, onAction: () -> Unit) {
  * [generation] the rows were read in.
  */
 @Composable
-private fun TaskList(state: UiState, actions: Actions, onTouchTask: () -> Unit) {
+private fun TaskList(state: UiState, actions: Actions, onTouchTask: () -> Unit, revealTask: String?) {
     val room = state.room
     val showDone = state.showCompleted
     val r = LocalDesign.current.room
@@ -551,6 +552,10 @@ private fun TaskList(state: UiState, actions: Actions, onTouchTask: () -> Unit) 
     }
     val rows = withGhosts(room.tasks, ghosts, Section.ROWS)
     val list = rememberLazyListState()
+    LaunchedEffect(revealTask) {
+        val index = rows.indexOfFirst { !it.ghost && it.row.id == revealTask }
+        if (index >= 0) list.scrollToItem(index)
+    }
     val drag = LocalTaskDrag.current
     LazyColumn(Modifier.fillMaxSize().onGloballyPositioned { coords ->
         drag?.list = DragInput.ScrollPane(coords.boundsInRoot()) { list.dispatchRawDelta(it) }
@@ -561,7 +566,9 @@ private fun TaskList(state: UiState, actions: Actions, onTouchTask: () -> Unit) 
             item("empty") { Empty(room.emptyLine) }
         }
         // The rows; the Completed and Agent activity smart lists show their done tasks here too.
-        items(rows, key = { it.row.id }) { s -> MovingRow(s, Section.ROWS, state, actions, motion, onTouchTask, swap = s.row.id in swapping) }
+        items(rows, key = { it.row.id }) { s ->
+            MovingRow(s, Section.ROWS, state, actions, motion, onTouchTask, swap = s.row.id in swapping, revealed = s.row.id == revealTask)
+        }
         room.tomorrow?.let { tomorrow(it, state, actions, dusk) }
         // Finished with nothing due tomorrow: no hand-over, but planning the next day is still offered.
         if (room.tomorrow == null) room.planWeekday?.let { weekday -> planOnly(weekday, actions, dusk) }
@@ -606,6 +613,7 @@ private fun LazyItemScope.MovingRow(
     motion: MotionFrame,
     onTouchTask: () -> Unit,
     swap: Boolean = false,
+    revealed: Boolean = false,
 ) {
     val t = s.row
     val look by remember(t.id, section, motion) { derivedStateOf { motion.rowIn(t.id, section) } }
@@ -629,7 +637,7 @@ private fun LazyItemScope.MovingRow(
     SwipeableTaskRow(t.id, done, t.myDay, enabled = !selecting && !s.ghost && l?.gone != true && !state.signedOut && drag?.picked == null,
         onSwipe = { onTouchTask(); actions.swipeTask(t.id, state.generation, it) }, onSelect = toggle, modifier = outer,
     ) { rowModifier ->
-        TaskRowView(t, selected = !s.ghost && (t.id == state.selected || t.id in state.bulkIds), checked = done,
+        TaskRowView(t, selected = !s.ghost && (revealed || t.id == state.selected || t.id in state.bulkIds), checked = done,
         onCheck = { if (!s.ghost) { onTouchTask(); actions.setDone(t.id, it, state.generation) } },
         onImportant = { if (!s.ghost) { onTouchTask(); actions.setImportant(t.id, it) } },
         onOpen = { if (selecting) toggle() else if (!s.ghost) { onTouchTask(); actions.select(t.id) } },

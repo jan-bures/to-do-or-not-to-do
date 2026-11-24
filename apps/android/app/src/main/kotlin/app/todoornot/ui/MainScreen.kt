@@ -23,6 +23,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.ui.semantics.hideFromAccessibility
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.Dp
+import app.todoornot.core.ListView
 import app.todoornot.core.NavItem
 import app.todoornot.model.MenuEntry
 import app.todoornot.model.drawerMenu
@@ -34,6 +35,12 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalFocusManager
+import app.todoornot.core.AssistantProposalStatus
+import app.todoornot.model.AssistantModel
+import app.todoornot.model.AssistantUi
+import kotlinx.coroutines.launch
 import androidx.compose.runtime.saveable.Saver
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
@@ -111,7 +118,7 @@ private val RoomSaver = Saver<RoomKey?, String>(
  * [motion] is the model's motion; the screen runs its frames while it's shown (none at rest).
  */
 @Composable
-fun MainScreen(
+internal fun MainScreen(
     state: UiState,
     actions: Actions,
     dark: Boolean,
@@ -133,6 +140,10 @@ fun MainScreen(
     listSettingsOpen: Boolean = false,
     boardInitialStage: WorkflowStage = WorkflowStage.TODO,
     timelineGallery: TimelineGallery? = null,
+    assistant: AssistantUi? = null,
+    assistantModel: AssistantModel? = null,
+    initialAssistantOpen: Boolean = false,
+    initialAssistantOverlay: AssistantOverlay? = null,
 ) {
     LaunchedEffect(motion) { motion.drive() }
     CompositionLocalProvider(LocalMotion provides motion) {
@@ -140,7 +151,7 @@ fun MainScreen(
             val paneWidth = listPaneWidth(maxWidth, wide, fold)
             Screen(state, actions, dark, wide, server, draft, drawerOpen, collapsed, composerFocus,
                 hand, onHand, fold, paneWidth, maxWidth, switcherFilter, settingsOpen, roomMenuOpen, navMenuOpen, reachExpanded,
-                listSettingsOpen, boardInitialStage, timelineGallery)
+                listSettingsOpen, boardInitialStage, timelineGallery, assistant, assistantModel, initialAssistantOpen, initialAssistantOverlay)
         }
     }
 }
@@ -169,6 +180,10 @@ private fun Screen(
     listSettingsOpen: Boolean,
     boardInitialStage: WorkflowStage,
     timelineGallery: TimelineGallery?,
+    assistant: AssistantUi?,
+    assistantModel: AssistantModel?,
+    initialAssistantOpen: Boolean,
+    initialAssistantOverlay: AssistantOverlay?,
 ) {
     TodoTheme(dark, if (state.activity != null) "agent-activity" else state.room.hue) {
         val r = LocalDesign.current.room
@@ -203,6 +218,38 @@ private fun Screen(
         var navMenu by remember { mutableStateOf(navMenuOpen) }
         var bulkPicker by remember(state.generation, state.bulkIds) { mutableStateOf<BulkPicker?>(null) }
         val detail = state.detail
+        val ai = assistant.takeUnless { state.signedOut }
+        var aiOpen by rememberSaveable { mutableStateOf(initialAssistantOpen) }
+        var aiOverlay by rememberSaveable { mutableStateOf(initialAssistantOverlay) }
+        var aiOverlayAtEnd by rememberSaveable { mutableStateOf(initialAssistantOpen && initialAssistantOverlay != null) }
+        val showAi = ai != null && aiOpen
+        val showAiOverlay = ai != null && aiOverlay != null
+        val pending = ai?.panel?.turns?.lastOrNull()?.proposal?.status == AssistantProposalStatus.PENDING
+        var aiTaskLink by remember(state.generation, showAi) { mutableStateOf<String?>(null) }
+        val taskActions = remember(actions, showAi) {
+            if (!showAi) actions else object : Actions by actions {
+                override fun select(id: String?) {
+                    if (id != null) aiOpen = false
+                    actions.select(id)
+                }
+            }
+        }
+        val aiScroll = rememberAssistantScroll()
+        val scope = rememberCoroutineScope()
+        val focus = LocalFocusManager.current
+        val toggleAi = {
+            focus.clearFocus()
+            aiOverlay = null
+            aiOpen = !aiOpen
+        }
+        val openAiSettings = {
+            focus.clearFocus()
+            switcher = false
+            reveal = null
+            returningGesture = false
+            aiOverlayAtEnd = false
+            aiOverlay = AssistantOverlay.SETTINGS
+        }
         val boardInput = if (state.board == null) null else androidx.compose.runtime.key(state.generation) { rememberBoardInput(boardInitialStage) }
         val detailSheets = rememberDetailSheets(detail?.id, state.generation)
         val timelineSheets = remember(state.generation, state.view) { TimelineSheets() }
@@ -221,7 +268,7 @@ private fun Screen(
         var deleteCollection by rememberSaveable { mutableStateOf<String?>(null) }
         var newCollection by rememberSaveable { mutableStateOf(false) }
         val sheetOpen = switcherVisible || (updatesOpen && updates != null) || roomActionsOpen || bulkPicker != null ||
-            detailSheets.page != null || timelineSheets.open ||
+            detailSheets.page != null || timelineSheets.open || showAiOverlay || (showAi && !wide) ||
             renaming != null || deleting != null || deleteCollection != null || newCollection || state.unpairing != null
         if (newCollection) OverlayDialog({ newCollection = false }, paneWidth = paneWidth) { overlay ->
             RenameCard("New collection", "", { name -> overlay.choose { actions.organize(OrganizeEdit.NewCollection(name)); switcher = false } }, overlay::close)
@@ -298,34 +345,62 @@ private fun Screen(
                 val separated = fold?.takeIf { wide && it.start == paneWidth && it.end > it.start }
                 val gap = separated?.let { it.end - it.start } ?: divider
                 val feed = state.activity
-                val fullBoard = paneWidth != null && state.board != null && detail == null
-                val fullTimeline = paneWidth != null && separated == null && state.timeline != null && detail == null
+                val fullBoard = paneWidth != null && state.board != null && detail == null && !showAi
+                val fullTimeline = paneWidth != null && separated == null && state.timeline != null && detail == null && !showAi
+                BackHandler(enabled = showAi && wide && !sheetOpen) { aiOpen = false }
+                @Composable
+                fun Chat(modifier: Modifier, handle: Modifier = Modifier, close: () -> Unit) {
+                    if (ai == null) return
+                    AssistantPane(ai, assistantModel, state.room.title, wide, hand.mirrors(wide), aiScroll,
+                        overlay = { focus.clearFocus(); aiOverlayAtEnd = true; aiOverlay = it }, onClose = close,
+                        onTask = { task ->
+                            if (wide && state.view == ListView.LIST && state.room.tasks.any { it.id == task }) {
+                                aiTaskLink = task // Keep chat open and bring a visible row into view.
+                            } else {
+                                aiOpen = false
+                                actions.select(task)
+                            }
+                        }, modifier = modifier, handle = handle)
+                }
                 BackHandler(enabled = !sheetOpen && state.bulkIds.isNotEmpty()) { actions.clearBulk() }
                 @Composable
                 fun Tasks(modifier: Modifier) {
-                    RoomPane(
-                        if (wide || detail == null) paneSurface else paneSurface.copy(toast = null),
-                        actions, menu, modifier, draft, collapsed,
-                        onRoomMenu = { roomActionsSettings = false; roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
-                        composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
-                        onListSettings = { roomActionsSettings = true; roomActionsOpen = true }, fullBoard = fullBoard,
-                        boardFold = separated, boardInput = boardInput, listWidth = paneWidth,
-                        timelineSheets = timelineSheets, timelineGallery = timelineGallery,
-                        onOpenUpdates = if (!sheetOpen && (wide || detail == null)) {{ updatesOpen = true }} else null,
-                        reachExpanded = reachExpanded, onSwipeRooms = { progress ->
-                            if (progress == null && !switcher && reveal != null) returningGesture = true
-                            else { returningGesture = false; reveal = progress }
-                        },
-                    )
+                    val shown = if (wide || detail == null) paneSurface else paneSurface.copy(toast = null)
+                    CompositionLocalProvider(LocalAskAi provides ai?.let { AskAiControl(showAi, pending, toggleAi) }) {
+                        RoomPane(
+                            shown,
+                            taskActions, menu, modifier, draft, collapsed,
+                            onRoomMenu = { roomActionsSettings = false; roomActionsOpen = true }, onBulkPicker = { bulkPicker = it },
+                            composerFocus = composerFocus, wide = wide, hand = hand, sheetOpen = sheetOpen,
+                            onListSettings = { roomActionsSettings = true; roomActionsOpen = true }, fullBoard = fullBoard,
+                            boardFold = separated, boardInput = boardInput, listWidth = paneWidth,
+                            timelineSheets = timelineSheets, timelineGallery = timelineGallery, revealTask = aiTaskLink,
+                            onOpenUpdates = if (!sheetOpen && (wide || detail == null)) {{ updatesOpen = true }} else null,
+                            reachExpanded = reachExpanded, onSwipeRooms = { progress ->
+                                if (progress == null && !switcher && reveal != null) returningGesture = true
+                                else { returningGesture = false; reveal = progress }
+                            },
+                        )
+                    }
                 }
                 Box(Modifier.fillMaxSize().background(r.pane)
                     .then(if (sheetOpen) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier)) {
-                    if (feed != null) {
-                        BackHandler(enabled = !sheetOpen) { actions.open(state.room.key) }
-                        ActivityRoom(paneSurface, actions, menu, wide, hand)
-                    } else if (state.room.key == RoomKey.Trash) {
-                        BackHandler(enabled = !sheetOpen) { actions.open(RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY)) }
-                        TrashRoom(paneSurface, actions, menu, wide, hand)
+                    if (feed != null || state.room.key == RoomKey.Trash) {
+                        @Composable
+                        fun HistoryRoom() {
+                            CompositionLocalProvider(LocalAskAi provides ai?.let { AskAiControl(showAi, pending, toggleAi) }) {
+                                if (feed != null) ActivityRoom(paneSurface, taskActions, menu, wide, hand)
+                                else TrashRoom(paneSurface, taskActions, menu, wide, hand)
+                            }
+                        }
+                        BackHandler(enabled = !sheetOpen && !showAi) {
+                            actions.open(if (feed != null) state.room.key else RoomKey.Smart(app.todoornot.core.SmartList.MY_DAY))
+                        }
+                        if (showAi && paneWidth != null) Row(Modifier.fillMaxSize()) {
+                            Box(Modifier.width(paneWidth)) { HistoryRoom() }
+                            Spacer(Modifier.fillMaxHeight().width(gap).background(r.line))
+                            Chat(Modifier.weight(1f).statusBarsPadding(), close = { aiOpen = false })
+                        } else HistoryRoom()
                     } else if (paneWidth != null) {
                         Row(Modifier.fillMaxSize()) {
                             Tasks(if (fullBoard || fullTimeline) Modifier.fillMaxSize() else Modifier.width(paneWidth))
@@ -340,7 +415,8 @@ private fun Screen(
                                         drawRect(duskTop, size = Size(size.width, insets.getTop(this).toFloat()))
                                     }
                                 }
-                                if (detail != null) DetailPane(paneSurface, actions, standalone = false,
+                                if (showAi) Chat(detailInset.statusBarsPadding(), close = { aiOpen = false })
+                                else if (detail != null) DetailPane(paneSurface, actions, standalone = false,
                                     detailInset.statusBarsPadding(), hand = hand, sheets = detailSheets)
                                 else NoDetail(detailInset.navigationBarsPadding(), selection = state.bulk?.label)
                             }
@@ -353,7 +429,7 @@ private fun Screen(
                         }
                     }
                 }
-                CompositionLocalProvider(LocalSheetWidth provides paneWidth) {
+                CompositionLocalProvider(LocalSheetWidth provides paneWidth, LocalOpenAiSettings provides openAiSettings.takeIf { ai != null }) {
                     if (switcherVisible) Box(if (navMenu != null) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier) {
                         BottomRoomSwitcherSheet(
                             state, server, actions, hand, wide, onHand, { switcher = false; reveal = null; returningGesture = false },
@@ -370,10 +446,27 @@ private fun Screen(
                     if (updatesOpen && updates != null) UpdatesSheet(updates) { updatesOpen = false }
                     if (timelineSheets.open) TimelineOverlays(state, timelineSheets, actions)
                 }
-                if (detail != null && feed == null) CompositionLocalProvider(
+                if (detail != null && feed == null && !showAi) CompositionLocalProvider(
                     LocalSheetWidth provides paneWidth?.let { windowWidth - it - gap }, LocalSheetAtEnd provides true,
                 ) {
                     DetailOverlays(state, actions, detailSheets)
+                }
+                if (showAi && !wide) AssistantCover(onClose = { aiOpen = false }, blocked = showAiOverlay) { handle, close ->
+                    val hidden = if (showAiOverlay) Modifier.clearAndSetSemantics { hideFromAccessibility() } else Modifier
+                    Chat(hidden, handle, close)
+                }
+                if (ai != null && aiOverlay != null) {
+                    val right = paneWidth != null && aiOverlayAtEnd
+                    CompositionLocalProvider(LocalSheetWidth provides if (right) windowWidth - requireNotNull(paneWidth) - gap else paneWidth,
+                        LocalSheetAtEnd provides right) {
+                        when (aiOverlay) {
+                            AssistantOverlay.SETTINGS -> AssistantSettings(ai, assistantModel) { aiOverlay = null }
+                            AssistantOverlay.HISTORY -> AssistantHistory(ai.panel.turns, { aiOverlay = null }) { index ->
+                                scope.launch { if (index < aiScroll.layoutInfo.totalItemsCount) aiScroll.scrollToItem(index) }
+                            }
+                            null -> Unit
+                        }
+                    }
                 }
             }
         }

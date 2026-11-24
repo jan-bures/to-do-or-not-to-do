@@ -240,6 +240,36 @@ What the first version does:
   typing, the room bar hides and the header collapses to leave more space for rows. Light and dark follow
   the system. See [the thumb-zone specification](android-thumb-zone.md) for the postures and Fold7 gallery.
 
+## AI assistant
+
+Tap **Ask AI** next to Filter. On the cover screen the chat opens as a resizable bottom sheet; pull its
+handle down past the minimum height or use Back to close it. On the inner screen the chat occupies the
+right pane and puts History, Model & Privacy, New, Settings, and Close in its lower dock. Closing the pane
+does not close the chat. History jumps to earlier messages in the current chat. New chat clears it;
+conversations are not synced or stored on disk. Suggestions fill the message field without sending.
+
+In **AI settings**, enter the HTTPS base URL and model name for your own OpenAI-compatible server. The
+app adds `/v1` if needed. Use a certificate trusted by Android and connect to the private network before
+sending. Android does not allow cleartext AI traffic, even in debug builds; use HTTPS on the private
+network rather than opening the model server to the internet. Confirm that the destination is under your
+control and runs the model locally. There is no cloud fallback, ChatGPT sign-in, or separate API-key field.
+**Test connection** uses invented data to check streaming and tool support. A text-only model cannot read
+or change tasks. Before a test, the assistant expects streaming with tools.
+
+The endpoint, model, and list rules live in the app-private, no-backup pairing directory and are removed
+with that pairing. Android uses the same Rust HTTPS transport as the native app, without redirects,
+proxies, or the task-sync token. Lists start **Hidden**. **Private only** permits reads by your own server
+and excludes those lists from any cloud-classified request; **All models** permits both classes. A list
+inherits its collection's default unless overridden. Changing a collection resets its members' overrides.
+Changes to provider or access clear the current conversation so earlier model context is not reused.
+
+The assistant streams a reply until it finishes or you tap **Stop**. It can propose creating, editing, or
+changing a task's completion; unsupported and destructive operations are not offered. Expand a batch row
+to review its exact fields. **Approve** queues only the displayed proposal and selection, after checking its
+digest and the current synced revision; **Reject** writes nothing. If tasks changed, ask for a new proposal.
+Applied changes show up in Activity as **In-app assistant** and can be undone. Backgrounding the app stops
+in-flight inference. Unpairing or credential revocation clears the chat and disables the assistant.
+
 ## Home-screen widget
 
 Long-press an empty spot on the home screen, open **Widgets**, and add **To-do list**. Pick **My Day**,
@@ -506,8 +536,9 @@ older fixtures also use the F2 sizes (412 × 920 and 900 × 1000 dp). It include
 collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. The
 `workflow_board` gallery covers List and its settings, Board, Detail, and the quick-add status and date
 chips. The `timeline` gallery covers Week, Month with the Unscheduled tray open, a resize preview, and
-Planned. Both use the two Fold7 postures and themes. Look at the gallery after every UI change; images are in
-`app/src/test/snapshots/images/`.
+Planned. Both use the two Fold7 postures and themes. `AssistantGalleryTest` covers unconfigured,
+empty, streaming, create, edit (`proposal`), batch, and settings in both postures and themes. Look at the
+gallery after every UI change; images are in `app/src/test/snapshots/images/`.
 
 Paparazzi does not run the system keyboard. On a Fold7 or equivalent emulator, check that the room and
 detail action bars hide while typing, and that **Rooms → New → List** and **Tags** keep their focused

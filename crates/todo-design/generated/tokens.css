@@ -276,6 +276,9 @@
   --phone-sheet-default-fraction: 0.72px;
   --phone-sheet-max-fraction: 0.92px;
   --phone-ai-sheet-default-fraction: 0.84px;
+  --phone-ai-sheet-min-fraction: 0.55px;
+  --phone-ai-sheet-short-fraction: 0.95px;
+  --phone-ai-sheet-short-window: 480px;
   --phone-ai-composer-max: 128px;
   --phone-row-pad-top: 11px;
   --phone-row-pad-right: 12px;

@@ -26,7 +26,7 @@ bindgen = ["uniffi/cli"]
 
 [dependencies]
 todo-core.workspace = true
-todo-client = { workspace = true, features = ["sqlite"] }
+todo-client = { workspace = true, features = ["assistant", "sqlite"] }
 todo-design.workspace = true
 # Durable renames for the damaged-cache recovery.
 todo-fs.workspace = true

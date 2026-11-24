@@ -227,6 +227,8 @@ class MainActivity : ComponentActivity() {
             when {
                 m != null && ui != null -> {
                     val screen = requireNotNull(ui)
+                    val assistant = graph.assistant?.takeIf { it.first === m.engine }?.second
+                    val ai = assistant?.ui?.collectAsStateWithLifecycle()?.value
                     val push by graph.push.status.collectAsStateWithLifecycle()
                     HeaderClock(m)
                     val focus = composerRoom?.takeIf { it.first === m && it.second == screen.room.key && screen.activity == null }
@@ -240,6 +242,7 @@ class MainActivity : ComponentActivity() {
                             screen, m, dark, wide, server = ready?.session?.server, draft = shared, motion = m.motion,
                             composerFocus = if (focus != null) ::clearComposerRequest else null,
                             hand = hand, onHand = { hand = it; thumbPreference.save(it) }, fold = fold,
+                            assistant = ai, assistantModel = assistant,
                         )
                     }
                 }

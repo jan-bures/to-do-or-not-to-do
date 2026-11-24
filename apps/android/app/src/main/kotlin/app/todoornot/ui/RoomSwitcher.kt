@@ -539,6 +539,7 @@ internal fun SettingsPage(server: String?, syncing: Boolean, actions: Actions, h
             hand = hand, onHand = onHand,
             push = LocalPushStatus.current.takeIf { server != null },
             dateNow = actions.composerNow(), onDateFormat = actions::setDateFormat,
+            onAssistant = LocalOpenAiSettings.current,
         )
         LocalUpdates.current?.let { UpdatesSection(it) }
     }
@@ -555,6 +556,7 @@ internal fun SettingsMenuContent(
     onAdmin: (() -> Unit)?, onSync: () -> Unit, onDevices: (() -> Unit)?, onUnpair: () -> Unit,
     hand: ThumbHand? = null, onHand: (ThumbHand) -> Unit = {}, push: PushStatus? = null,
     dateNow: LocalNow, onDateFormat: (String) -> Boolean,
+    onAssistant: (() -> Unit)? = null,
 ) {
     val r = LocalDesign.current.room
     var selectedFormat by remember(dateNow.dateFormat) { mutableStateOf(dateNow.dateFormat) }
@@ -575,6 +577,7 @@ internal fun SettingsMenuContent(
     val items = listOfNotNull(
         onAdmin?.let { SettingsItem("Open admin pages", "external-link", choose = it) },
         SettingsItem(if (syncing) "Syncing…" else "Sync now", "refresh-cw", server != null && !syncing, choose = onSync),
+        onAssistant?.let { SettingsItem("AI assistant…", "sparkles", choose = it) },
         onDevices?.let { SettingsItem("Devices…", "link", choose = it) },
         SettingsItem("Date format", "calendar", choose = { choosingFormat = true }),
         SettingsItem("Unpair this phone", "log-out", danger = true, choose = onUnpair),

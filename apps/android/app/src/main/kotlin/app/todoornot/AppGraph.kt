@@ -10,12 +10,15 @@ import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
+import app.todoornot.core.AndroidAssistant
 import app.todoornot.core.ChangeListener
 import app.todoornot.core.EngineConfig
 import app.todoornot.core.FfiException
 import app.todoornot.core.NativeInit
 import app.todoornot.core.TodoEngine
 import app.todoornot.files.AttachmentFiles
+import app.todoornot.model.AssistantModel
+import app.todoornot.model.NativeAssistant
 import app.todoornot.model.CorePairing
 import app.todoornot.model.Pace
 import app.todoornot.model.PairingModel
@@ -49,6 +52,7 @@ import java.time.ZoneId
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.BufferOverflow
@@ -80,9 +84,12 @@ class AppGraph(private val app: Context) {
     private var foreground = false
 
     private val sessions = SessionStore(PrefsKeyValues(app), cipher)
+    private val pairingFiles = PairingFiles(app.noBackupFilesDir)
+    internal var assistant: Pair<TodoEngine, AssistantModel>? = null
+        private set
     val host = EngineHost(
         sessions,
-        PairingFiles(app.noBackupFilesDir),
+        pairingFiles,
         forgetKey = cipher::destroy,
         debug = { Log.d("EngineHost", it) },
     ) { s, db ->
@@ -185,6 +192,7 @@ class AppGraph(private val app: Context) {
             override fun onStart(owner: LifecycleOwner) {
                 foreground = true
                 checkAtStartup()
+                assistant?.second?.foreground(true)
                 _model.value?.resume()
                 (host.state.value as? Host.Ready)?.let { PushWork.register(app, it.session.pairingId) }
                 // Notifications may have been allowed in the settings meanwhile: show what is due.
@@ -193,6 +201,7 @@ class AppGraph(private val app: Context) {
 
             override fun onStop(owner: LifecycleOwner) {
                 foreground = false
+                assistant?.second?.foreground(false)
                 _model.value?.pause()
             }
         })
@@ -208,9 +217,12 @@ class AppGraph(private val app: Context) {
         if (h == Host.SignedOut) PushWork.cancelFallback(app)
         widgets.invalidate()
         val ready = h as? Host.Ready
-        if (_model.value?.engine === ready?.engine) return
+        if (_model.value?.engine === ready?.engine && (ready != null || assistant == null)) return
         modelScope?.cancel()
         modelScope = null
+        val previousAssistant = assistant?.second
+        assistant = null
+        if (previousAssistant != null) withContext(Dispatchers.IO + NonCancellable) { previousAssistant.close() }
         devicePairing = null
         _model.value = ready?.let { paired ->
             val e = paired.engine
@@ -242,6 +254,15 @@ class AppGraph(private val app: Context) {
                     saveDateFormat = { key -> dateFormat.save(key).also { if (it) widgets.invalidate() } },
                 )
             }.also { m ->
+                if (host.isAuthorized(paired)) withContext(NonCancellable) {
+                    val ai = withContext(Dispatchers.IO) {
+                        val file = pairingFiles.dir(paired.session.pairingId).resolve("assistant.json")
+                        val native = AndroidAssistant.open(e, file.absolutePath)
+                        AssistantModel(NativeAssistant(native), ms, Dispatchers.IO, ::displayNow)
+                    }
+                    assistant = e to ai
+                    ai.foreground(foreground && host.isAuthorized(paired))
+                }
                 withContext(Dispatchers.IO) { push.activate(paired.session) { host.isAuthorized(paired) } }
                 if (host.state.value === paired) PushWork.start(app, paired.session.pairingId)
                 EngineHost.recoveredNotice(paired.recovered)?.let(m::notice)
@@ -381,6 +402,7 @@ class AppGraph(private val app: Context) {
             Host.SignedOut -> null
         }
         val result = host.unpair { engine ->
+            assistant?.takeIf { it.first === engine }?.second?.shutdown()
             _model.value = null
             modelScope?.cancel()
             modelScope = null

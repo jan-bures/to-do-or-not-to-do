@@ -454,11 +454,17 @@ pub mod phone {
     pub const SHEET_MAX_FRACTION: f32 = 0.92;
     /// Default open height of the AI assistant bottom sheet on cover screens relative to the viewport.
     pub const AI_SHEET_DEFAULT_FRACTION: f32 = 0.84;
+    /// Smallest resting height before a cover pull becomes a dismissal.
+    pub const AI_SHEET_MIN_FRACTION: f32 = 0.55;
+    /// Cover sheet height in a short or landscape window.
+    pub const AI_SHEET_SHORT_FRACTION: f32 = 0.95;
+    /// Height below which the cover sheet uses its landscape layout.
+    pub const AI_SHEET_SHORT_WINDOW: f32 = 480.0;
     /// Maximum auto-grow height of the phone AI chat composer before internal scrolling.
     pub const AI_COMPOSER_MAX: f32 = 128.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 40] = [
+    pub const ALL: [(&str, f32); 43] = [
         ("row", ROW),
         ("col-check", COL_CHECK),
         ("col-agent", COL_AGENT),
@@ -495,6 +501,9 @@ pub mod phone {
         ("sheet-default-fraction", SHEET_DEFAULT_FRACTION),
         ("sheet-max-fraction", SHEET_MAX_FRACTION),
         ("ai-sheet-default-fraction", AI_SHEET_DEFAULT_FRACTION),
+        ("ai-sheet-min-fraction", AI_SHEET_MIN_FRACTION),
+        ("ai-sheet-short-fraction", AI_SHEET_SHORT_FRACTION),
+        ("ai-sheet-short-window", AI_SHEET_SHORT_WINDOW),
         ("ai-composer-max", AI_COMPOSER_MAX),
         ("row-pad-top", ROW_PAD.0),
         ("row-pad-right", ROW_PAD.1),

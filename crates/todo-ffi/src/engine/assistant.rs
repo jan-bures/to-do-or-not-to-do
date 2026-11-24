@@ -1,0 +1,1034 @@
+//! Android's assistant host. Model requests only reach the shared provider and controller;
+//! only the separate review gesture has access to the engine's approval outbox.
+
+use std::{
+    collections::{BTreeSet, HashMap},
+    fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, Weak},
+};
+
+use serde::{Deserialize, Serialize};
+use todo_client::{
+    TrackedUndo,
+    assistant::{
+        AccessRules, Approval, ApprovalOutcome, AssistantError, Composer, Controller, Edit, Effect,
+        ListAccess, ProposalKind, ProposalStatus, Selection, SendIntent, StepKind, StepStatus,
+        ToolKind,
+        local::{LocalProvider, Support, valid_model},
+        provider::{DataClass, Provider, ProviderError},
+    },
+    native::{OsEntropy, TokioClock},
+    notify::Notify,
+};
+use todo_core::{State, command::Placement, model::WorkflowStatus, time::Date};
+use tokio::task::JoinHandle;
+use uuid::Uuid;
+
+use super::{ChangeListener, TodoEngine, collection_id, invalid, list_id, locked};
+use crate::{
+    FfiError,
+    labels::{LocalNow, Now, one_line},
+    runtime::runtime,
+    view::priority_name,
+};
+
+type Chat = Controller<LocalProvider, TokioClock, OsEntropy>;
+
+#[cfg(test)]
+mod tests;
+
+macro_rules! opaque_debug {
+    ($($ty:ident),+ $(,)?) => {$(
+        impl std::fmt::Debug for $ty {
+            fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.debug_struct(stringify!($ty)).finish_non_exhaustive()
+            }
+        }
+    )+};
+}
+
+opaque_debug!(
+    AndroidAssistant,
+    AssistantAccessRow,
+    AssistantServer,
+    AssistantField,
+    AssistantEffect,
+    AssistantItem,
+    AssistantProposal,
+    AssistantLink,
+    AssistantTurn,
+    AssistantPanelState
+);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AssistantAccess {
+    Hidden,
+    PrivateOnly,
+    AllModels,
+}
+
+impl From<ListAccess> for AssistantAccess {
+    fn from(access: ListAccess) -> Self {
+        match access {
+            ListAccess::Hidden => Self::Hidden,
+            ListAccess::PrivateOnly => Self::PrivateOnly,
+            ListAccess::AllModels => Self::AllModels,
+        }
+    }
+}
+impl From<AssistantAccess> for ListAccess {
+    fn from(access: AssistantAccess) -> Self {
+        match access {
+            AssistantAccess::Hidden => Self::Hidden,
+            AssistantAccess::PrivateOnly => Self::PrivateOnly,
+            AssistantAccess::AllModels => Self::AllModels,
+        }
+    }
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantAccessRow {
+    pub id: String,
+    pub name: String,
+    pub collection: bool,
+    pub nested: bool,
+    pub inherited: bool,
+    /// None means the collection's current lists are mixed.
+    pub access: Option<AssistantAccess>,
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, uniffi::Record)]
+pub struct AssistantServer {
+    pub address: String,
+    pub model: String,
+    /// Explicit owner confirmation for this exact HTTPS URL, not a DNS heuristic.
+    pub private_server: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, uniffi::Enum)]
+pub enum AssistantConnection {
+    #[default]
+    Untested,
+    Testing,
+    Connected,
+    Unreachable,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AssistantProposalStatus {
+    Pending,
+    Stale,
+    Rejected,
+    Superseded,
+    Saving,
+    Queued,
+    Applied,
+    Failed,
+    UndoRequested,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, uniffi::Enum)]
+pub enum AssistantEffectKind {
+    Create,
+    Edit,
+    Complete,
+    Delete,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantField {
+    pub label: String,
+    pub before: Option<String>,
+    pub after: String,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantEffect {
+    pub kind: AssistantEffectKind,
+    pub title: String,
+    pub list: String,
+    pub list_hue: String,
+    /// Existing task, never the provisional ID of a creation.
+    pub target: Option<String>,
+    pub fields: Vec<AssistantField>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantItem {
+    pub index: u32,
+    pub selected: bool,
+    pub effects: Vec<AssistantEffect>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantProposal {
+    pub id: String,
+    /// This digest and ID belong to the displayed selection, not the latest unseen one.
+    pub digest: Vec<u8>,
+    pub status: AssistantProposalStatus,
+    pub problem: Option<String>,
+    pub items: Vec<AssistantItem>,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantLink {
+    pub id: String,
+    pub title: String,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantTurn {
+    pub id: String,
+    pub prompt: String,
+    pub prose: String,
+    pub steps: Vec<String>,
+    pub step_summary: Option<String>,
+    pub links: Vec<AssistantLink>,
+    pub proposal: Option<AssistantProposal>,
+    pub problem: Option<String>,
+    pub stale_snapshot: bool,
+}
+
+#[derive(Clone, uniffi::Record)]
+pub struct AssistantPanelState {
+    pub generation: u64,
+    pub server: Option<AssistantServer>,
+    pub connection: AssistantConnection,
+    pub destination: Option<String>,
+    pub support: Option<String>,
+    pub access: Vec<AssistantAccessRow>,
+    pub hidden: u32,
+    pub streaming: bool,
+    pub turns: Vec<AssistantTurn>,
+    pub problem: Option<String>,
+}
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+struct Settings {
+    server: Option<AssistantServer>,
+    support: Option<Support>,
+    access: AccessRules,
+}
+
+struct Receipt {
+    approval: Approval,
+    undo_requested: bool,
+}
+
+#[derive(Default)]
+struct Session {
+    settings: Settings,
+    provider: Option<LocalProvider>,
+    connection: AssistantConnection,
+    problem: Option<String>,
+    check: Option<(Uuid, JoinHandle<()>)>,
+    snapshot: Option<(Uuid, u64, bool)>,
+    last_send: Option<u64>,
+    receipts: HashMap<Uuid, Receipt>,
+    foreground: bool,
+    closed: bool,
+}
+
+#[derive(uniffi::Object)]
+pub struct AndroidAssistant {
+    engine: Arc<TodoEngine>,
+    path: PathBuf,
+    chat: Chat,
+    session: Mutex<Session>,
+    watch: Mutex<Option<JoinHandle<()>>>,
+    changes: Notify,
+}
+
+#[uniffi::export]
+impl AndroidAssistant {
+    /// The app supplies a file inside this pairing's app-private, no-backup directory.
+    #[uniffi::constructor]
+    pub fn open(engine: Arc<TodoEngine>, settings_path: String) -> Arc<Self> {
+        let path = PathBuf::from(settings_path);
+        let mut session = Session::default();
+        match read_settings(&path) {
+            Ok(settings) => match build(settings.server.as_ref(), settings.support) {
+                Ok(provider) => {
+                    session.settings = settings;
+                    session.provider = provider;
+                }
+                Err(_) => {
+                    session.problem = Some("Check the saved AI server in AI settings.".into())
+                }
+            },
+            Err(_) => {
+                session.problem =
+                    Some("Couldn't read the saved AI settings. List access is off.".into())
+            }
+        }
+        let this = Arc::new(Self {
+            engine,
+            path,
+            chat: Chat::new(TokioClock, OsEntropy),
+            session: Mutex::new(session),
+            watch: Mutex::default(),
+            changes: Notify::default(),
+        });
+        this.install(&locked(&this.session));
+        this
+    }
+
+    /// Observe both streaming changes and the confirmed replica. Never invoke Kotlin under a lock.
+    pub fn listen(self: Arc<Self>, listener: Arc<dyn ChangeListener>) -> Result<(), FfiError> {
+        let weak = Arc::downgrade(&self);
+        let client = self.engine.client.clone();
+        let mut changes = client.changes();
+        let mut seen = self.chat.view_version();
+        let mut version = self.changes.generation();
+        let task = runtime()?.spawn(async move {
+            while let Some(assistant) = weak.upgrade() {
+                let chat_changed = assistant.chat.changed(seen);
+                let settings_changed = assistant.changes.changed(version);
+                drop(assistant);
+                tokio::select! {
+                    () = changes.next() => {
+                        let Some(assistant) = weak.upgrade() else { break };
+                        assistant.refresh_locked(&mut locked(&assistant.session));
+                    }
+                    new = chat_changed => seen = new,
+                    new = settings_changed => version = new,
+                }
+                listener.on_change();
+            }
+        });
+        if let Some(previous) = locked(&self.watch).replace(task) {
+            previous.abort();
+        }
+        Ok(())
+    }
+
+    pub fn resume(&self) {
+        let mut session = locked(&self.session);
+        self.refresh_locked(&mut session);
+        session.foreground = !session.closed;
+    }
+
+    pub fn pause(&self) {
+        let mut session = locked(&self.session);
+        session.foreground = false;
+        stop_check(&mut session);
+        self.chat.cancel();
+    }
+
+    pub fn shutdown(&self) {
+        self.close_locked(&mut locked(&self.session));
+        if let Some(watch) = locked(&self.watch).take() {
+            watch.abort();
+        }
+    }
+
+    pub fn panel(&self, now: LocalNow) -> AssistantPanelState {
+        let mut session = locked(&self.session);
+        self.refresh_locked(&mut session);
+        let now = Now::new(now);
+        let view = self.chat.view();
+        let state = self.chat.list_scope().0;
+        session.receipts.retain(|id, _| {
+            view.turns
+                .iter()
+                .any(|turn| turn.proposal.as_ref().is_some_and(|p| p.preview.id == *id))
+        });
+        let (access, hidden) = if session.closed {
+            (vec![], 0)
+        } else {
+            self.engine
+                .client
+                .with_confirmed(|state| access_rows(state, &session.settings.access))
+        };
+        let streaming = matches!(view.composer, Composer::Streaming { .. });
+        AssistantPanelState {
+            generation: view.generation,
+            server: session.settings.server.clone(),
+            destination: session.provider.as_ref().map(|_| "Private network".into()),
+            connection: session.connection,
+            support: session.settings.support.map(|s| s.label().into()),
+            access,
+            hidden,
+            streaming,
+            turns: view
+                .turns
+                .into_iter()
+                .map(|turn| {
+                    let active =
+                        matches!(view.composer, Composer::Streaming { turn: id } if id == turn.id);
+                    let proposal = turn.proposal.map(|card| {
+                        let receipt = session.receipts.get(&card.preview.id);
+                        let (status, problem) = self.receipt(card.status, receipt);
+                        AssistantProposal {
+                            id: card.preview.id.to_string(),
+                            digest: card.preview.digest.to_vec(),
+                            status,
+                            problem,
+                            items: card
+                                .available
+                                .iter()
+                                .map(|original| {
+                                    let selected = card
+                                        .preview
+                                        .items
+                                        .iter()
+                                        .find(|item| item.index == original.index);
+                                    AssistantItem {
+                                        index: u32::try_from(original.index).unwrap_or_default(),
+                                        selected: selected.is_some(),
+                                        effects: selected
+                                            .unwrap_or(original)
+                                            .effects
+                                            .iter()
+                                            .map(|e| effect(e, &now, state.as_deref()))
+                                            .collect(),
+                                    }
+                                })
+                                .collect(),
+                        }
+                    });
+                    let step_summary = (!active
+                        && turn
+                            .steps
+                            .iter()
+                            .any(|s| matches!(s.kind, StepKind::Tool(_))))
+                    .then(|| {
+                        format!(
+                            "{} lists checked · {} tasks read · {} hidden",
+                            turn.summary.lists_checked,
+                            turn.summary.tasks_read,
+                            turn.summary.private_lists
+                        )
+                    });
+                    AssistantTurn {
+                        id: turn.id.to_string(),
+                        prompt: turn.prompt,
+                        prose: turn.prose,
+                        steps: turn
+                            .steps
+                            .into_iter()
+                            .map(|step| step_label(step.kind, step.status))
+                            .collect(),
+                        step_summary,
+                        links: turn
+                            .task_links
+                            .into_iter()
+                            .map(|t| AssistantLink {
+                                id: t.id.to_string(),
+                                title: t.title,
+                            })
+                            .collect(),
+                        proposal,
+                        problem: turn.error.map(|e| e.to_string()),
+                        stale_snapshot: turn.stale_snapshot,
+                    }
+                })
+                .collect(),
+            problem: session.problem.clone(),
+        }
+    }
+
+    pub fn save_server(&self, server: Option<AssistantServer>) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let server = server.map(|s| AssistantServer {
+            address: s.address.trim().into(),
+            model: s.model.trim().into(),
+            private_server: s.private_server,
+        });
+        if server == session.settings.server {
+            return Ok(());
+        }
+        let provider = build(server.as_ref(), None)?;
+        let settings = Settings {
+            server,
+            support: None,
+            access: session.settings.access.clone(),
+        };
+        save_settings(&self.path, &settings)?;
+        stop_check(&mut session);
+        session.settings = settings;
+        session.provider = provider;
+        session.connection = AssistantConnection::Untested;
+        session.problem = None;
+        self.install(&session);
+        Ok(())
+    }
+
+    pub fn set_access(
+        &self,
+        id: String,
+        collection: bool,
+        access: AssistantAccess,
+    ) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let mut settings = session.settings.clone();
+        self.engine.client.with_confirmed(|state| {
+            if collection {
+                let id = collection_id(&id)?;
+                if !state.is_live(id.into()) {
+                    return Err(invalid("That collection is no longer available."));
+                }
+                settings.access.set_collection(state, id, access.into());
+            } else {
+                let id = list_id(&id)?;
+                if !state.is_live(id.into()) {
+                    return Err(invalid("That list is no longer available."));
+                }
+                settings.access.lists.insert(id, access.into());
+            }
+            Ok(())
+        })?;
+        if settings.access != session.settings.access {
+            // Cancel before disk I/O; a permission change must not race an old request's next round.
+            self.chat.set_scope(settings.access.clone());
+            if let Err(error) = save_settings(&self.path, &settings) {
+                self.chat.set_scope(session.settings.access.clone());
+                return Err(error);
+            }
+            session.settings = settings;
+        }
+        Ok(())
+    }
+
+    pub fn test_server(self: Arc<Self>) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        if session.check.is_some() {
+            return Ok(());
+        }
+        if matches!(self.chat.view().composer, Composer::Streaming { .. }) {
+            return Err(invalid("Stop the reply before testing the connection."));
+        }
+        let (provider, server) = session
+            .provider
+            .clone()
+            .zip(session.settings.server.clone())
+            .ok_or_else(|| invalid("Save an AI server and model first."))?;
+        let weak = Arc::downgrade(&self);
+        session.connection = AssistantConnection::Testing;
+        session.problem = None;
+        let id = Uuid::new_v4();
+        session.check = Some((
+            id,
+            runtime()?.spawn(async move {
+                let result = provider.probe(&server.model).await;
+                Self::finish_test(weak, id, server, result);
+            }),
+        ));
+        Ok(())
+    }
+
+    pub fn send(
+        self: Arc<Self>,
+        generation: u64,
+        sequence: u64,
+        prompt: String,
+        now: LocalNow,
+    ) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        if session.check.is_some() {
+            return Err(invalid("Wait for the connection test to finish."));
+        }
+        let rt = runtime()?;
+        let reply = self
+            .chat
+            .start(SendIntent {
+                generation,
+                sequence,
+                prompt,
+                context: Now::new(now).eval(),
+            })
+            .map_err(|e| invalid(e.to_string()))?;
+        session.last_send = Some(sequence);
+        let weak = Arc::downgrade(&self);
+        rt.spawn(async move {
+            let connection = match reply.await {
+                Ok(()) => AssistantConnection::Connected,
+                Err(AssistantError::Provider(
+                    ProviderError::Unavailable | ProviderError::Timeout | ProviderError::Tls,
+                )) => AssistantConnection::Unreachable,
+                Err(_) => return,
+            };
+            if let Some(this) = weak.upgrade() {
+                let mut session = locked(&this.session);
+                if !session.closed
+                    && session.check.is_none()
+                    && session.foreground
+                    && session.last_send == Some(sequence)
+                    && this.chat.view().generation == generation
+                {
+                    session.connection = connection;
+                    this.changes.notify();
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub fn stop(&self) {
+        self.chat.cancel();
+    }
+
+    pub fn new_chat(&self) {
+        let mut session = locked(&self.session);
+        self.chat.new_chat();
+        session.receipts.clear();
+    }
+
+    pub fn select_items(
+        &self,
+        id: String,
+        digest: Vec<u8>,
+        indices: Vec<u32>,
+    ) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let (id, digest) = review_key(&id, digest)?;
+        self.chat
+            .select_items(
+                id,
+                digest,
+                &indices.into_iter().map(|i| i as usize).collect(),
+            )
+            .map_err(|e| invalid(e.to_string()))
+    }
+
+    pub fn reject(&self, id: String, digest: Vec<u8>) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let (id, digest) = review_key(&id, digest)?;
+        self.chat
+            .discard(id, digest)
+            .map_err(|e| invalid(e.to_string()))
+    }
+
+    pub fn approve(&self, id: String, digest: Vec<u8>) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let (id, digest) = review_key(&id, digest)?;
+        let approval = self
+            .chat
+            .approve(&self.engine.client, id, digest)
+            .map_err(|e| invalid(e.to_string()))?;
+        session.receipts.insert(
+            id,
+            Receipt {
+                approval,
+                undo_requested: false,
+            },
+        );
+        Ok(())
+    }
+
+    pub fn undo(&self, id: String) -> Result<(), FfiError> {
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        let id = id.parse().map_err(|_| invalid("No such approval."))?;
+        let receipt = session
+            .receipts
+            .get_mut(&id)
+            .ok_or_else(|| invalid("No such approval."))?;
+        if receipt.undo_requested
+            || !matches!(
+                self.engine.client.approval_outcome(&receipt.approval),
+                ApprovalOutcome::Confirmed { .. }
+            )
+        {
+            return Err(invalid("That change isn't available to undo."));
+        }
+        match self
+            .engine
+            .client
+            .compensate_tracked(receipt.approval.undo_target())?
+        {
+            TrackedUndo::Queued(_) | TrackedUndo::Cancelled => {
+                receipt.undo_requested = true;
+                Ok(())
+            }
+            TrackedUndo::Unavailable => Err(invalid("That change isn't available to undo.")),
+        }
+    }
+}
+
+impl AndroidAssistant {
+    fn close_locked(&self, session: &mut Session) {
+        if session.closed {
+            return;
+        }
+        stop_check(session);
+        *session = Session {
+            closed: true,
+            ..Session::default()
+        };
+        self.chat.sign_out();
+    }
+
+    fn refresh_locked(&self, session: &mut Session) {
+        if session.closed {
+            return;
+        }
+        if self.engine.client.revocation().is_revoked() {
+            self.close_locked(session);
+            return;
+        }
+        let next = self.engine.client.assistant_snapshot();
+        // update_snapshot publishes even when nothing changed. This method is also called by panel().
+        // The watcher marks its seen version after processing a sync change, not after a view read.
+        let key = next
+            .as_ref()
+            .map(|s| (s.revision.epoch, s.revision.cursor, s.stale));
+        if session.snapshot != key {
+            self.chat.update_snapshot(next);
+            session.snapshot = key;
+        }
+    }
+
+    fn require_active(&self, session: &mut Session) -> Result<(), FfiError> {
+        self.refresh_locked(session);
+        if session.closed || !session.foreground {
+            return Err(invalid("The assistant is not active."));
+        }
+        Ok(())
+    }
+
+    fn install(&self, session: &Session) {
+        self.chat.configure(
+            session
+                .provider
+                .as_ref()
+                .zip(session.settings.server.as_ref())
+                .map(|(provider, server)| {
+                    selection(Arc::new(provider.clone()), server, &session.settings.access)
+                }),
+        );
+    }
+
+    fn finish_test(
+        weak: Weak<Self>,
+        id: Uuid,
+        server: AssistantServer,
+        result: Result<Support, ProviderError>,
+    ) {
+        let Some(this) = weak.upgrade() else { return };
+        let mut session = locked(&this.session);
+        if this.require_active(&mut session).is_err()
+            || !session
+                .check
+                .as_ref()
+                .is_some_and(|(current, _)| *current == id)
+        {
+            return;
+        }
+        session.check.take();
+        match result {
+            Ok(support) => {
+                let previous = session.settings.support.unwrap_or(Support::StreamingTools);
+                session.settings.support = Some(support);
+                if save_settings(&this.path, &session.settings).is_err() {
+                    session.problem = Some("Couldn't save the connection test result.".into());
+                }
+                session.connection = AssistantConnection::Connected;
+                if support != previous {
+                    session.provider = session
+                        .provider
+                        .take()
+                        .map(|p| p.with_support(server.model, support));
+                    this.install(&session);
+                }
+            }
+            Err(error) => {
+                session.connection = AssistantConnection::Unreachable;
+                session.problem = Some(error.to_string());
+            }
+        }
+        this.changes.notify();
+    }
+
+    fn receipt(
+        &self,
+        status: ProposalStatus,
+        receipt: Option<&Receipt>,
+    ) -> (AssistantProposalStatus, Option<String>) {
+        use AssistantProposalStatus as Status;
+        let mut problem = None;
+        let label = match status {
+            ProposalStatus::Pending => Status::Pending,
+            ProposalStatus::Stale => Status::Stale,
+            ProposalStatus::Declined => Status::Rejected,
+            ProposalStatus::Superseded => Status::Superseded,
+            ProposalStatus::Submitted => match receipt {
+                Some(r) if r.undo_requested => Status::UndoRequested,
+                Some(r) => match self.engine.client.approval_outcome(&r.approval) {
+                    ApprovalOutcome::Saving => Status::Saving,
+                    ApprovalOutcome::Pending => Status::Queued,
+                    ApprovalOutcome::Confirmed { .. } => Status::Applied,
+                    ApprovalOutcome::Rejected(rejection) => {
+                        problem =
+                            Some(todo_client::failure::approval_message(&rejection.code).into());
+                        Status::Failed
+                    }
+                    ApprovalOutcome::Unavailable => Status::Failed,
+                },
+                None => Status::Failed,
+            },
+        };
+        (label, problem)
+    }
+}
+
+impl Drop for AndroidAssistant {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
+}
+
+fn stop_check(session: &mut Session) {
+    if let Some((_, check)) = session.check.take() {
+        check.abort();
+        session.connection = AssistantConnection::Untested;
+    }
+}
+
+// Data classification is taken from the provider, never from a Kotlin enum or a per-list override.
+fn selection<P: Provider>(
+    provider: Arc<P>,
+    server: &AssistantServer,
+    access: &AccessRules,
+) -> Selection<P> {
+    Selection {
+        provider,
+        model: server.model.clone(),
+        access: access.clone(),
+        allow_billed: false,
+        billed_list_scope: None,
+    }
+}
+
+fn build(
+    server: Option<&AssistantServer>,
+    support: Option<Support>,
+) -> Result<Option<LocalProvider>, FfiError> {
+    let Some(server) = server else {
+        return Ok(None);
+    };
+    if !url::Url::parse(&server.address).is_ok_and(|url| url.scheme() == "https") {
+        return Err(invalid(
+            "Android requires an HTTPS address for your AI server.",
+        ));
+    }
+    if !server.private_server {
+        return Err(invalid(
+            "Confirm that this HTTPS address is your own private server.",
+        ));
+    }
+    if !valid_model(&server.model) {
+        return Err(invalid("Enter a valid model name."));
+    }
+    let provider = LocalProvider::configured(&server.address, "", server.private_server)
+        .map_err(|e| invalid(e.to_string()))?;
+    Ok(Some(provider.with_support(
+        server.model.clone(),
+        support.unwrap_or(Support::StreamingTools),
+    )))
+}
+
+const SETTINGS_LIMIT: u64 = 1024 * 1024;
+
+fn read_settings(path: &Path) -> io::Result<Settings> {
+    match todo_fs::read_private_file(path, SETTINGS_LIMIT) {
+        Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Settings::default()),
+        Err(error) => Err(error),
+    }
+}
+
+fn save_settings(path: &Path, settings: &Settings) -> Result<(), FfiError> {
+    let temp = path.with_extension("json.new");
+    let save = || -> io::Result<()> {
+        match fs::remove_file(&temp) {
+            Ok(()) => (),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error),
+        }
+        let bytes = serde_json::to_vec(settings)?;
+        if bytes.len() as u64 > SETTINGS_LIMIT {
+            return Err(io::Error::other("settings too large"));
+        }
+        let mut file = todo_fs::create_private_file(&temp)?;
+        file.write_all(&bytes)?;
+        file.sync_all()?;
+        drop(file);
+        todo_fs::replace_durably(&temp, path)
+    };
+    save().map_err(|_| invalid("Couldn't save the AI settings on this phone."))
+}
+
+fn review_key(id: &str, digest: Vec<u8>) -> Result<(Uuid, [u8; 32]), FfiError> {
+    let error = || invalid("This proposal is no longer pending.");
+    Ok((
+        id.parse().map_err(|_| error())?,
+        digest.try_into().map_err(|_| error())?,
+    ))
+}
+
+fn access_rows(state: &State, rules: &AccessRules) -> (Vec<AssistantAccessRow>, u32) {
+    let mut collections: Vec<_> = state
+        .collections
+        .values()
+        .filter(|c| state.is_live(c.id.into()))
+        .collect();
+    collections.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
+    let mut lists: Vec<_> = state
+        .lists
+        .values()
+        .filter(|l| state.is_live(l.id.into()))
+        .collect();
+    lists.sort_by(|a, b| a.position.cmp(&b.position).then(a.id.cmp(&b.id)));
+    let mut rows = Vec::new();
+    let mut hidden = 0;
+    let mut append = |list: &todo_core::model::List, nested: bool, rows: &mut Vec<_>| {
+        let access = rules.list(state, list.id);
+        if !access.allows(DataClass::Local) {
+            hidden += 1;
+        }
+        rows.push(AssistantAccessRow {
+            id: list.id.to_string(),
+            name: one_line(&list.name),
+            collection: false,
+            nested,
+            inherited: nested && !rules.lists.contains_key(&list.id),
+            access: Some(access.into()),
+        });
+    };
+    let collection_ids: BTreeSet<_> = collections.iter().map(|c| c.id).collect();
+    for collection in collections {
+        rows.push(AssistantAccessRow {
+            id: collection.id.to_string(),
+            name: one_line(&collection.name),
+            collection: true,
+            nested: false,
+            inherited: false,
+            access: rules.collection(state, collection.id).map(Into::into),
+        });
+        for list in lists.iter().filter(|l| l.collection == Some(collection.id)) {
+            append(list, true, &mut rows);
+        }
+    }
+    for list in lists
+        .into_iter()
+        .filter(|l| l.collection.is_none_or(|c| !collection_ids.contains(&c)))
+    {
+        append(list, false, &mut rows);
+    }
+    (rows, hidden)
+}
+
+fn effect(effect: &Effect, now: &Now, state: Option<&State>) -> AssistantEffect {
+    let date = |d: Option<Date>| d.map_or_else(|| "No date".into(), |d| now.dates().weekday(d));
+    let field = |label: &str, before, after| AssistantField {
+        label: label.into(),
+        before,
+        after,
+    };
+    let done = |completed| {
+        if completed {
+            "Completed".into()
+        } else {
+            "Open".into()
+        }
+    };
+    let (task, fields) = match effect {
+        Effect::Created {
+            task,
+            priority,
+            status,
+            placement,
+        } => (
+            task,
+            vec![
+                field("Due", None, date(task.due)),
+                field("Priority", None, priority_name(*priority).into()),
+                field(
+                    "Status",
+                    None,
+                    match status {
+                        WorkflowStatus::Backlog => "Backlog",
+                        WorkflowStatus::Todo => "To do",
+                        WorkflowStatus::InProgress => "In progress",
+                    }
+                    .into(),
+                ),
+                field(
+                    "Position",
+                    None,
+                    match placement {
+                        Placement::First => "Top of the list",
+                        Placement::Last => "End of the list",
+                        _ => "Relative to another task",
+                    }
+                    .into(),
+                ),
+            ],
+        ),
+        Effect::Edited { task, changes } => (
+            task,
+            changes
+                .iter()
+                .map(|edit| match edit {
+                    Edit::Title(c) => field("Title", Some(c.old.clone()), c.new.clone()),
+                    Edit::Due(c) => field("Due", Some(date(c.old)), date(c.new)),
+                    Edit::StartDate(c) => field("Starts", Some(date(c.old)), date(c.new)),
+                    Edit::Priority(c) => field(
+                        "Priority",
+                        Some(priority_name(c.old).into()),
+                        priority_name(c.new).into(),
+                    ),
+                    Edit::Completed(c) => field("Status", Some(done(c.old)), done(c.new)),
+                })
+                .collect(),
+        ),
+        Effect::Deleted { task } => (task, vec![]),
+    };
+    AssistantEffect {
+        kind: match effect.kind() {
+            ProposalKind::Create => AssistantEffectKind::Create,
+            ProposalKind::Edit => AssistantEffectKind::Edit,
+            ProposalKind::Complete => AssistantEffectKind::Complete,
+            ProposalKind::Destructive => AssistantEffectKind::Delete,
+        },
+        title: task.title.clone(),
+        list: task.list.name.clone(),
+        list_hue: crate::lists::swatch(
+            state
+                .and_then(|s| s.lists.get(&task.list.id))
+                .and_then(|l| l.color.as_deref()),
+            task.list.id.as_uuid().as_bytes(),
+        )
+        .into(),
+        target: (!matches!(effect, Effect::Created { .. })).then(|| task.id.to_string()),
+        fields,
+    }
+}
+
+fn step_label(kind: StepKind, status: StepStatus) -> String {
+    let label = match kind {
+        StepKind::Generate => "Waiting for the model",
+        StepKind::Tool(ToolKind::Lists) => "Checked permitted lists",
+        StepKind::Tool(ToolKind::Search) => "Searched visible tasks",
+        StepKind::Tool(ToolKind::Task) => "Read task details",
+        StepKind::Tool(ToolKind::Create) => "Prepared a new task",
+        StepKind::Tool(ToolKind::Update) => "Prepared task edits",
+        StepKind::Tool(ToolKind::Complete) => "Prepared a completion change",
+    };
+    match status {
+        StepStatus::Running => format!("{label}…"),
+        StepStatus::Done { elapsed, .. } => format!("{label} · {} ms", elapsed.as_millis()),
+        StepStatus::Failed => label.into(),
+    }
+}

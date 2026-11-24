@@ -304,6 +304,7 @@ internal fun BottomSheet(
     tall: Boolean = false,
     color: Color = LocalDesign.current.room.raised,
     gestureReveal: Float? = null,
+    defaultFraction: Float = Phone.SHEET_DEFAULT_FRACTION,
     content: @Composable ColumnScope.(OverlayState) -> Unit,
 ) {
     val overlay = rememberOverlay(onDismiss, atRest = LocalSheetAtRest.current)
@@ -325,7 +326,7 @@ internal fun BottomSheet(
         BoxWithConstraints(Modifier.fillMaxSize().statusBarsPadding().imePadding(), contentAlignment = anchor) {
             val viewport = maxHeight
             // Fit the pinned actions and search results in the reduced space above the IME.
-            val base = if (keyboard) viewport else viewport * Phone.SHEET_DEFAULT_FRACTION
+            val base = if (keyboard) viewport else viewport * defaultFraction
             val max = if (keyboard) viewport else viewport * Phone.SHEET_MAX_FRACTION
             var expanded by remember { androidx.compose.runtime.mutableStateOf(false) }
             var drag by remember(viewport) { mutableFloatStateOf(0f) }

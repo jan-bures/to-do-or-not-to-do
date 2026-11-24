@@ -35,6 +35,7 @@ use todo_core::{Actor, Command, State};
 use tokio::task::JoinHandle;
 
 pub mod activity;
+pub mod assistant;
 pub mod attachments;
 pub mod bulk;
 pub mod merge;

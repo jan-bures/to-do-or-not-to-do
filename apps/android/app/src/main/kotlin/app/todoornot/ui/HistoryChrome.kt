@@ -57,9 +57,9 @@ internal fun HistoryFrame(state: UiState, actions: Actions, room: RoomView, wide
                     .hairline(r.line, top = true).padding(horizontal = s.S1.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    if (!left) IconButton("menu", "Rooms", onClick = rooms)
+                    if (left) AskAiButton() else IconButton("menu", "Rooms", onClick = rooms)
                     footer(left)
-                    if (left) IconButton("menu", "Rooms", onClick = rooms)
+                    if (left) IconButton("menu", "Rooms", onClick = rooms) else AskAiButton()
                 }
             }
         }
