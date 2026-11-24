@@ -20,8 +20,12 @@ use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
 
+/// Leading inset for top-level sidebar rows, leaving clear breathing room past the 3 px selection rail.
+const NAV_LEAD: f32 = space::S3;
 /// How far a sub-row (a collection's list, an agent under Activity) is indented.
-const SUB_INDENT: f32 = space::S6 + space::S1;
+const SUB_INDENT: f32 = space::S8;
+/// Fixed width for the right-aligned count column on collection rows so every chevron aligns vertically.
+const COLLECTION_COUNT_WIDTH: f32 = space::S6 + space::S1;
 
 /// What an inline rename edits.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -410,7 +414,7 @@ impl ShellView {
             .flex()
             .items_center()
             .gap(px(desktop::NAV_GAP))
-            .pl(px(space::S2))
+            .pl(px(NAV_LEAD))
             .pr(px(desktop::NAV_GAP))
             .rounded(px(radius::MD))
             .style(ty::NAV)
@@ -566,7 +570,7 @@ impl ShellView {
                     .flex()
                     .items_center()
                     .gap(px(desktop::NAV_GAP))
-                    .pl(px(space::S2))
+                    .pl(px(NAV_LEAD))
                     .pr(px(desktop::NAV_GAP))
                     .rounded(px(radius::MD))
                     .style(ty::NAV)
@@ -613,8 +617,9 @@ impl ShellView {
             .h(px(desktop::NAV_ROW))
             .flex()
             .items_center()
-            .gap(px(space::S2))
-            .px(px(desktop::NAV_GAP))
+            .gap(px(desktop::NAV_GAP))
+            .pl(px(NAV_LEAD))
+            .pr(px(desktop::NAV_GAP))
             .rounded(px(radius::MD))
             .style(ty::NAV_COLLECTION)
             .child(kit::icon(
@@ -634,19 +639,24 @@ impl ShellView {
             ),
         );
 
+        let state = self.store.view();
         let mut collections = Vec::new();
         for (i, c) in sb.collections.iter().enumerate() {
             let cid = c.id;
-            // A gap sets the collections off from the smart lists, and an open collection from the
-            // next one. Collapsed collections stack like ordinary rows.
+            // A gap sets the collections off from the smart lists, and an open collection with
+            // visible lists off from the next one. Empty or collapsed collections stack evenly.
             let gap = i.checked_sub(1).map_or(space::S3, |i| {
                 let prev = &sb.collections[i];
-                space::S2
-                    * self
-                        .motion
-                        .sidebar
-                        .group(prev.id, !prev.collapsed, self.frame)
-                        .0
+                if prev.lists.is_empty() && !self.closing_groups.contains_key(&prev.id) {
+                    0.
+                } else {
+                    space::S2
+                        * self
+                            .motion
+                            .sidebar
+                            .group(prev.id, !prev.collapsed, self.frame)
+                            .0
+                }
             });
             let (shown, angle) = self.motion.sidebar.group(cid, !c.collapsed, self.frame);
             let on = c.selected;
@@ -668,40 +678,60 @@ impl ShellView {
                     )),
                 )
             };
-            let toggle = div()
-                .id("toggle-collection")
+            let has_lists = state
+                .lists
+                .values()
+                .any(|l| l.collection == Some(cid) && state.is_live(l.id.into()));
+            let toggle = has_lists.then(|| {
+                div()
+                    .id("toggle-collection")
+                    .flex_none()
+                    .size(px(space::S5))
+                    .rounded(px(radius::SM))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .hover(|s| s.bg(p.hover))
+                    .cursor_pointer()
+                    .child(chevron)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
+                    .on_click(cx.listener(move |this, _, _, cx| {
+                        cx.stop_propagation();
+                        this.toggle_collection(cid, cx);
+                    }))
+            });
+            let trailing = div()
                 .flex_none()
-                .h_full()
                 .flex()
                 .items_center()
-                .px(px(space::S2))
-                .cursor_pointer()
-                .child(chevron)
-                .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
-                .on_click(cx.listener(move |this, _, _, cx| {
-                    cx.stop_propagation();
-                    this.toggle_collection(cid, cx);
-                }));
+                .gap(px(space::S1))
+                .children(toggle)
+                .child(
+                    div()
+                        .min_w(px(COLLECTION_COUNT_WIDTH))
+                        .flex()
+                        .justify_end()
+                        .child(count(c.count)),
+                );
             let head = div()
                 .relative()
                 .h(px(desktop::NAV_SUB_ROW))
                 .mt(px(gap))
                 .flex()
                 .items_center()
-                .gap(px(space::S2))
-                .pl(px(space::S2))
+                .gap(px(desktop::NAV_GAP))
+                .pl(px(NAV_LEAD))
                 .pr(px(desktop::NAV_GAP))
                 .rounded(px(radius::MD))
                 .style(ty::NAV_COLLECTION)
                 .text_color(p.ink)
                 .child(kit::glyph(c.glyph, theme::list_colors(t, c.hue).glyph))
                 .child(name)
-                .child(toggle)
-                .child(count(c.count))
+                .child(trailing)
                 .child(self.nav_bounds_probe(RoomKey::Collection(cid)))
                 .when(
                     self.sidebar_target(Target::Before(Row::Collection(cid))),
-                    |d| d.child(self.sidebar_line(false, space::S2)),
+                    |d| d.child(self.sidebar_line(false, NAV_LEAD)),
                 );
             let cname = c.name.clone();
             let head = self
@@ -787,14 +817,14 @@ impl ShellView {
                     )
                     .when(
                         self.sidebar_target(Target::After(Row::Collection(cid))),
-                        |d| d.child(self.sidebar_line(true, space::S2)),
+                        |d| d.child(self.sidebar_line(true, NAV_LEAD)),
                     ),
             );
         }
         let top: Vec<_> = sb
             .lists
             .iter()
-            .map(|l| self.list_row(l, space::S2, true, cx))
+            .map(|l| self.list_row(l, NAV_LEAD, true, cx))
             .collect();
         let focused = self.new_focus.is_focused(window);
         let new = div()

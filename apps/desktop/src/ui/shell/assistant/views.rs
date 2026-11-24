@@ -380,12 +380,8 @@ impl ShellView {
                 |this, window, cx| this.close_ai(window, cx),
                 cx,
             ));
-        let mut feed = self
-            .ai
-            .feed
-            .viewport("assistant-feed")
-            .size_full()
-            .pr(px(kit::SCROLLBAR_GUTTER));
+        // Both the empty state and turns use `space::S4` (16 px >= SCROLLBAR_GUTTER) padding.
+        let mut feed = self.ai.feed.viewport("assistant-feed").size_full();
         if is_empty {
             feed = feed.child(
                 div()
@@ -837,7 +833,11 @@ impl ShellView {
                                             .viewport("assistant-compose-field")
                                             .w_full()
                                             .max_h(px(desktop::AI_COMPOSER_MAX - space::S5))
-                                            .pr(px(kit::SCROLLBAR_GUTTER))
+                                            .when(
+                                                self.ai.composer_scroll.handle.max_offset().y
+                                                    > px(0.),
+                                                |d| d.pr(px(kit::SCROLLBAR_GUTTER)),
+                                            )
                                             .style(ty::BODY)
                                             .child(self.ai.composer.clone()),
                                     )

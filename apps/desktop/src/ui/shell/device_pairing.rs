@@ -452,23 +452,129 @@ impl Panel {
         cx: &mut Context<Self>,
     ) -> gpui::Stateful<Div> {
         let handle = &self.buttons[control as usize];
-        let button = match control {
-            Control::Create | Control::Approve | Control::Review => kit::button(&self.p, label),
-            _ => kit::button_quiet(&self.p, label),
+        let focused = handle.is_focused(window);
+        let primary = matches!(
+            control,
+            Control::Create | Control::Approve | Control::Review
+        );
+        let hover = self.p.hover;
+        let button = if primary {
+            kit::button(&self.p, label)
+                .border(px(elevation::HAIRLINE))
+                .border_color(if focused {
+                    self.p.ink
+                } else {
+                    self.p.accent_fill
+                })
+        } else {
+            kit::button_quiet(&self.p, label)
+                .bg(self.p.raised)
+                .text_color(self.p.ink)
+                .border_color(if focused {
+                    self.p.accent_strong
+                } else {
+                    self.p.line_strong
+                })
         };
-        div()
+        button
             .id(id)
             .track_focus(handle)
             .role(gpui::Role::Button)
             .aria_label(label)
-            .rounded(px(radius::BUTTON))
+            .cursor_pointer()
+            .when(!primary, |el| el.hover(move |s| s.bg(hover)))
+            .on_click(cx.listener(move |this, _, window, cx| {
+                window.focus(&this.buttons[control as usize], cx);
+                this.activate(control, window, cx);
+                cx.notify();
+            }))
+            .on_key_down(
+                cx.listener(move |this, e: &gpui::KeyDownEvent, window, cx| {
+                    if !e.keystroke.modifiers.modified()
+                        && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                    {
+                        cx.stop_propagation();
+                        if !e.is_held {
+                            this.activate(control, window, cx);
+                        }
+                    }
+                }),
+            )
+    }
+
+    fn settings_choice(
+        &self,
+        control: Control,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Stateful<Div> {
+        let (id, icon, title, subtitle) = match control {
+            Control::Invite => (
+                "pair-device",
+                Icon::Plus,
+                Mode::Invite.title(),
+                "Show a QR code and one-time link to sign in on another device.",
+            ),
+            _ => (
+                "approve-pairing",
+                Icon::Check,
+                Mode::Approve.title(),
+                "Enter a code shown on another device to approve its sign-in.",
+            ),
+        };
+        let p = self.p;
+        let handle = &self.buttons[control as usize];
+        let focused = handle.is_focused(window);
+        div()
+            .id(id)
+            .track_focus(handle)
+            .role(gpui::Role::Button)
+            .aria_label(title)
+            .w_full()
+            .p(px(space::S3))
+            .rounded(px(radius::LG))
+            .bg(p.raised)
             .border(px(elevation::HAIRLINE))
-            .border_color(if handle.is_focused(window) {
-                self.p.accent
-            } else {
-                self.p.pane
-            })
-            .child(button)
+            .border_color(if focused { p.accent_strong } else { p.line })
+            .hover(move |s| s.bg(p.hover))
+            .cursor_pointer()
+            .flex()
+            .items_center()
+            .gap(px(space::S3))
+            .child(
+                div()
+                    .size(px(component::ICON_BUTTON))
+                    .flex_none()
+                    .rounded(px(radius::MD))
+                    .bg(p.wash)
+                    .border(px(elevation::HAIRLINE))
+                    .border_color(p.line)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(kit::icon(icon, component::ICON_SMALL, p.accent_strong)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(2.))
+                    .child(
+                        div()
+                            .style(ty::BODY)
+                            .font_weight(FontWeight::MEDIUM)
+                            .text_color(p.ink)
+                            .child(title),
+                    )
+                    .child(div().style(ty::META).text_color(p.ink_2).child(subtitle)),
+            )
+            .child(kit::icon(
+                Icon::ChevronRight,
+                component::ICON_SMALL,
+                p.ink_3,
+            ))
             .on_click(cx.listener(move |this, _, window, cx| {
                 window.focus(&this.buttons[control as usize], cx);
                 this.activate(control, window, cx);
@@ -498,7 +604,7 @@ impl Render for Panel {
             window.focus(&order[0], cx);
         }
         let p = self.p;
-        let dialog = kit::overlay(&p)
+        let dialog = div()
             .id("device-pairing-card")
             .track_focus(&self.focus)
             .role(gpui::Role::Dialog)
@@ -522,87 +628,197 @@ impl Render for Panel {
             .w(px(desktop::DETAIL + space::S10))
             .max_w_full()
             .max_h_full()
-            .relative()
-            .p_0()
-            .overflow_hidden()
-            .occlude();
-        let mut body = div()
-            .p(px(space::S6))
+            .rounded(px(radius::XL))
+            .bg(p.pane)
+            .shadow(kit::overlay_shadow(&p))
+            .border(px(elevation::HAIRLINE))
+            .border_color(p.line_strong)
             .flex()
             .flex_col()
+            .overflow_hidden()
+            .occlude();
+        let header = div()
+            .flex_none()
+            .px(px(space::S5))
+            .py(px(space::S3))
+            .border_b(px(elevation::HAIRLINE))
+            .border_color(p.line)
+            .flex()
+            .items_center()
             .gap(px(space::S3))
             .child(
                 div()
+                    .size(px(component::ICON_BUTTON))
+                    .flex_none()
+                    .rounded(px(radius::MD))
+                    .bg(p.wash)
+                    .border(px(elevation::HAIRLINE))
+                    .border_color(p.line)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .child(kit::icon(
+                        Icon::Link,
+                        component::ICON_SMALL,
+                        p.accent_strong,
+                    )),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
                     .style(ty::DETAIL_TITLE)
                     .text_color(p.ink)
                     .child(self.mode.title()),
             );
+        let mut body = div()
+            .px(px(space::S5))
+            .py(px(space::S4))
+            .flex()
+            .flex_col()
+            .gap(px(space::S3));
         if self.mode == Mode::Settings {
-            body = body.child(
-                div()
-                    .flex()
-                    .gap(px(space::S2))
-                    .child(self.control(
-                        Control::Invite,
-                        "pair-device",
-                        Mode::Invite.title(),
-                        window,
-                        cx,
-                    ))
-                    .child(self.control(
-                        Control::Approval,
-                        "approve-pairing",
-                        Mode::Approve.title(),
-                        window,
-                        cx,
-                    )),
-            );
+            body = body
+                .child(
+                    div()
+                        .style(ty::META)
+                        .text_color(p.ink_2)
+                        .child("Connect another computer or phone to this account, or approve a pending sign-in request."),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S2))
+                        .child(self.settings_choice(Control::Invite, window, cx))
+                        .child(self.settings_choice(Control::Approval, window, cx)),
+                );
         } else if self.mode == Mode::Invite {
             if let Some((invite, qr, expires)) = &self.invite {
                 let left = expires
                     .duration_since(SystemTime::now())
                     .unwrap_or_default();
                 if left.is_zero() {
-                    body = body.child(pair::CHECKING_STATUS);
+                    body = body.child(
+                        div()
+                            .style(ty::BODY)
+                            .text_color(p.ink_2)
+                            .child(pair::CHECKING_STATUS),
+                    );
                 } else {
                     let remaining = left.as_secs() + u64::from(left.subsec_nanos() > 0);
                     body = body
-                        .child("Scan on your new device, type the code in its app, or open the link in its browser.")
-                        .child(pairing_qr::tile(qr.clone()))
-                        .child(div().style(ty::PAIRING_CODE).child(invite.code.clone()))
-                        .child(div().style(ty::META).overflow_hidden().text_ellipsis().whitespace_nowrap().child(invite.link.clone()))
-                        .child(div().style(ty::SUMMARY_FIGURES).child(format!("Expires in {}:{:02}", remaining / 60, remaining % 60)))
-                        .child(div().flex().gap(px(space::S2))
-                            .child(self.control(Control::Copy, "copy-invite", "Copy link", window, cx))
-                            .child(self.control(Control::Cancel, "cancel-invite", "Cancel invite", window, cx)));
+                        .child(
+                            div()
+                                .style(ty::BODY)
+                                .text_color(p.ink_2)
+                                .child("Scan on your new device, type the code in its app, or open the link in its browser."),
+                        )
+                        .child(
+                            div()
+                                .p(px(space::S4))
+                                .rounded(px(radius::LG))
+                                .bg(p.canvas)
+                                .border(px(elevation::HAIRLINE))
+                                .border_color(p.line)
+                                .flex()
+                                .flex_col()
+                                .items_center()
+                                .gap(px(space::S3))
+                                .child(pairing_qr::tile(qr.clone()))
+                                .child(
+                                    div()
+                                        .style(ty::PAIRING_CODE)
+                                        .text_color(p.ink)
+                                        .child(invite.code.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .w_full()
+                                        .text_center()
+                                        .style(ty::META)
+                                        .text_color(p.ink_3)
+                                        .overflow_hidden()
+                                        .text_ellipsis()
+                                        .whitespace_nowrap()
+                                        .child(invite.link.clone()),
+                                )
+                                .child(
+                                    div()
+                                        .style(ty::SUMMARY_FIGURES)
+                                        .text_color(p.ink_2)
+                                        .child(format!(
+                                            "Expires in {}:{:02}",
+                                            remaining / 60,
+                                            remaining % 60
+                                        )),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .child(self.control(
+                                    Control::Copy,
+                                    "copy-invite",
+                                    "Copy link",
+                                    window,
+                                    cx,
+                                ))
+                                .child(self.control(
+                                    Control::Cancel,
+                                    "cancel-invite",
+                                    "Cancel invite",
+                                    window,
+                                    cx,
+                                )),
+                        );
                 }
             } else {
-                body = body.child(self.control(
-                    Control::Create,
-                    "create-invite",
-                    "Create invite",
-                    window,
-                    cx,
-                ));
+                body = body
+                    .child(div().style(ty::BODY).text_color(p.ink_2).child(
+                        "Create a short-lived QR code and link to sign in on another device.",
+                    ))
+                    .child(div().flex().child(self.control(
+                        Control::Create,
+                        "create-invite",
+                        "Create invite",
+                        window,
+                        cx,
+                    )));
             }
         } else if let Some((code, d)) = &self.pending {
             body = body
-                .child(format!(
+                .child(div().style(ty::BODY).text_color(p.ink).child(format!(
                     "Approve “{}”? Only continue if the code matches your own device.",
                     d.device_name
-                ))
+                )))
                 .child(
                     div()
-                        .style(ty::PAIRING_CODE)
-                        .child(pair::grouped_approval_code(code)),
+                        .p(px(space::S3))
+                        .rounded(px(radius::MD))
+                        .bg(p.canvas)
+                        .border(px(elevation::HAIRLINE))
+                        .border_color(p.line)
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S1))
+                        .child(
+                            div()
+                                .style(ty::PAIRING_CODE)
+                                .text_color(p.ink)
+                                .child(pair::grouped_approval_code(code)),
+                        )
+                        .child(div().style(ty::META).text_color(p.ink_2).child(format!(
+                            "Source address: {}",
+                            d.source.as_deref().unwrap_or("Unknown")
+                        ))),
                 )
-                .child(format!(
-                    "Source address: {}",
-                    d.source.as_deref().unwrap_or("Unknown")
-                ))
                 .child(
                     div()
                         .flex()
+                        .items_center()
                         .gap(px(space::S2))
                         .child(self.control(
                             Control::Approve,
@@ -624,30 +840,65 @@ impl Render for Panel {
                 .child(kit::label(&p, "Code shown on the device"))
                 .child(
                     div()
-                        .rounded(px(radius::BUTTON))
+                        .rounded(px(radius::MD))
+                        .bg(p.raised)
                         .border(px(elevation::HAIRLINE))
                         .border_color(p.control)
-                        .p(px(space::S2))
+                        .px(px(space::S3))
+                        .py(px(space::S2))
                         .child(self.input.clone()),
                 )
-                .child(self.control(Control::Review, "review-device", "Review", window, cx));
+                .child(div().flex().child(self.control(
+                    Control::Review,
+                    "review-device",
+                    "Review",
+                    window,
+                    cx,
+                )));
         }
         let body = body
-            .children(self.message.clone())
-            .when(self.busy, |s| s.child("Contacting server…"))
+            .children(
+                self.message
+                    .clone()
+                    .map(|msg| div().style(ty::META).text_color(p.danger_ink).child(msg)),
+            )
+            .when(self.busy, |s| {
+                s.child(
+                    div()
+                        .style(ty::META)
+                        .text_color(p.ink_3)
+                        .child("Contacting server…"),
+                )
+            });
+        let footer = kit::dialog_footer(&p, radius::XL)
+            .flex_none()
+            .px(px(space::S5))
+            .py(px(space::S3))
+            .flex()
+            .justify_end()
+            .items_center()
             .child(self.control(Control::Close, "close-device-pairing", "Close", window, cx));
         dialog
+            .child(header)
             .child(
-                self.scroll
-                    .viewport("device-pairing-body")
+                div()
+                    .relative()
                     .min_h_0()
-                    .child(body),
+                    .flex()
+                    .flex_col()
+                    .child(
+                        self.scroll
+                            .viewport("device-pairing-body")
+                            .min_h_0()
+                            .child(body),
+                    )
+                    .child(
+                        self.scroll
+                            .bar
+                            .overlay(&self.scroll.handle, &p, self.net.is_some()),
+                    ),
             )
-            .child(
-                self.scroll
-                    .bar
-                    .overlay(&self.scroll.handle, &p, self.net.is_some()),
-            )
+            .child(footer)
     }
 }
 

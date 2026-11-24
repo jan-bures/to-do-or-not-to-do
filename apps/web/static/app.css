@@ -141,9 +141,16 @@ a {
   font: var(--text-button);
 }
 
-.button.primary {
+.button.primary:not(:disabled) {
   background: var(--color-accent-fill);
   color: var(--color-on-accent);
+}
+
+.button:disabled {
+  background: var(--color-canvas);
+  border-color: var(--color-line);
+  color: var(--color-ink-3);
+  cursor: default;
 }
 
 /* ---- the frame -------------------------------------------------------------------------------- */
@@ -405,7 +412,7 @@ a {
   align-items: center;
   gap: var(--desktop-nav-gap);
   height: var(--desktop-nav-row);
-  padding: 0 var(--desktop-nav-gap) 0 var(--space-2);
+  padding: 0 var(--desktop-nav-gap) 0 var(--space-3);
   border: var(--hairline) solid transparent;
   border-radius: var(--radius-button);
   font: var(--text-nav);
@@ -432,14 +439,14 @@ a {
   content: "";
   position: absolute;
   z-index: 2;
-  inset-inline: var(--space-2);
+  inset-inline: var(--space-3) var(--space-2);
   height: var(--selection-bar);
   border-radius: var(--radius-button);
   background: var(--color-accent-strong);
   pointer-events: none;
 }
 .nav-entry:has(> .sub):is(.sidebar-before, .sidebar-after)::after {
-  inset-inline-start: calc(var(--space-6) + var(--space-1));
+  inset-inline-start: var(--space-8);
 }
 .sidebar-before::after { inset-block-start: 0; }
 .sidebar-after::after { inset-block-end: 0; }
@@ -485,7 +492,7 @@ a {
 }
 
 .nav-item:is(.sub, .nav-agent) {
-  padding-inline-start: calc(var(--space-6) + var(--space-1));
+  padding-inline-start: var(--space-8);
 }
 
 .nav-item.nav-agent {
@@ -496,7 +503,7 @@ a {
 .nav-collection {
   --collection-menu-width: var(--component-icon-button);
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto minmax(var(--collection-count-min, 0px), max-content);
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(var(--collection-count-min, calc(var(--space-6) + var(--space-1))), max-content);
 }
 
 .nav-collection:has(> .room-menu-trigger:not(:disabled)) {
@@ -514,7 +521,7 @@ a {
   color: var(--color-ink);
 }
 
-.nav-collection .nav-name { margin-inline-start: var(--space-2); }
+.nav-collection .nav-name { margin-inline-start: var(--desktop-nav-gap); }
 .nav-collection .count {
   grid-column: 4;
   margin-inline-end: var(--desktop-nav-gap);
@@ -527,9 +534,14 @@ a {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding-inline: var(--space-2);
-  border-radius: var(--radius-button);
+  padding-inline: var(--space-1);
+  margin-block: var(--space-1);
+  border-radius: var(--radius-sm);
   color: var(--color-ink-3);
+}
+
+.collection-toggle:hover {
+  background: var(--color-hover);
 }
 
 .collection-toggle .icon {
@@ -1000,13 +1012,18 @@ a {
 
 .room-dialog .button { border: var(--hairline) solid var(--color-line); }
 
-.room-dialog .button.danger {
+.room-dialog .button.danger:not(:disabled) {
   background: var(--color-danger-bg);
   color: var(--color-danger-ink);
   border-color: var(--color-danger);
 }
 
-.room-dialog .button:disabled { color: var(--color-ink-3); cursor: default; }
+.room-dialog .button:disabled {
+  background: var(--color-canvas);
+  border-color: var(--color-line);
+  color: var(--color-ink-3);
+  cursor: default;
+}
 
 /* The room and detail pickers use the same overlay shell and next-page motion. */
 .detail-picker, .swatch-picker { inline-size: var(--desktop-confirm); }
@@ -1924,7 +1941,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   transform: translate3d(
     clamp(var(--space-2), var(--sidebar-drag-x), calc(100vw - 100% - var(--space-2))),
     clamp(var(--space-2), var(--sidebar-drag-y), calc(100vh - 100% - var(--space-2))), 0);
-  padding-inline: var(--space-2) var(--desktop-nav-gap);
+  padding-inline: var(--space-3) var(--desktop-nav-gap);
   background: color-mix(in oklab, var(--color-pane) calc(100% - 50% * var(--drop-wash-alpha)), transparent);
   font: var(--text-nav-sub);
 }

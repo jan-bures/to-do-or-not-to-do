@@ -1738,6 +1738,7 @@ impl ShellView {
             desktop::MENU
         };
         // A long menu (the list picker, many refused changes) scrolls past `MENU_ROWS` rows.
+        // Rows already inset their content by `space::S1 + space::S2` (12 px >= SCROLLBAR_GUTTER).
         let items = self
             .menu_scroll
             .viewport("menu-items")
@@ -1745,7 +1746,6 @@ impl ShellView {
             .flex()
             .flex_col()
             .max_h(px(desktop::NAV_ROW * MENU_ROWS))
-            .pr(px(kit::SCROLLBAR_GUTTER))
             .children(rows);
         let contents = match kind {
             MenuKind::Date(calendar) => self.calendar_body(calendar, live, cx).into_any_element(),

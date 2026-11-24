@@ -330,7 +330,8 @@ impl ShellView {
                 .flex()
                 .items_center()
                 .gap(px(desktop::NAV_GAP))
-                .px(px(space::S2))
+                .pl(px(space::S3))
+                .pr(px(desktop::NAV_GAP))
                 .bg(crate::theme::with_alpha(
                     p.pane,
                     1. - elevation::DROP_WASH_ALPHA / 2.,

@@ -62,7 +62,8 @@ test("collection headers have their own glyphs, desktop spacing and a visible ze
   expect(chevron.width).toBe(component["icon-small"]);
   expect(workGlyph.x).toBe(smartGlyph.x);
   expect(looseGlyph.x).toBe(smartGlyph.x);
-  expect(childGlyph.x - workBox.x).toBe(tokens.space[6] + tokens.space[1] + tokens.elevation.hairline);
+  expect(workGlyph.x - workBox.x).toBe(tokens.space[3] + tokens.elevation.hairline);
+  expect(childGlyph.x - workBox.x).toBe(tokens.space[8] + tokens.elevation.hairline);
   const workName = await work.locator(".nav-name").boundingBox();
   const workCount = await work.locator(".count").boundingBox();
   expect(workName.x + workName.width).toBeLessThan(chevron.x);
