@@ -15,6 +15,7 @@
 // its 16 px source drawing), plus gzipped copies of the larger ones (`<name>.gz`).
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { copyFileSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -96,6 +97,21 @@ if (index.split("<!--todo-session-->").length !== 2) {
   console.error("index.html must contain the <!--todo-session--> marker exactly once");
   process.exit(1);
 }
+
+// A deterministic identity for the whole build, including CSS and static assets. Keep the same
+// value in the document that launches the app and in a small file a running tab can poll.
+const bundle = createHash("sha256");
+function hashAssets(dir, prefix = "") {
+  for (const name of readdirSync(dir).sort()) {
+    const file = join(dir, name);
+    if (statSync(file).isDirectory()) hashAssets(file, `${prefix}${name}/`);
+    else bundle.update(`${prefix}${name}\0`).update(createHash("sha256").update(readFileSync(file)).digest());
+  }
+}
+hashAssets(out);
+const version = bundle.digest("hex");
+writeFileSync(join(out, "version.txt"), `${version}\n`);
+writeFileSync(join(out, "index.html"), index.replace("</head>", `<meta name="todo-web-version" content="${version}">\n  </head>`));
 
 // Gzipped copies of the larger files: todo-server sends them to clients that accept gzip.
 const compress = (d) => {

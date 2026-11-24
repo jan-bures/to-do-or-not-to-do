@@ -489,9 +489,17 @@ impl RootView {
         }
     }
 
+    pub fn update_ready(&self) -> bool {
+        self.updates.snapshot().ready_version().is_some()
+    }
+
+    pub fn check_updates(&self) {
+        self.updates.check_now();
+    }
+
     /// Use the Quit cleanup only once Velopack is waiting for this process to exit.
     pub fn restart_to_update(&mut self, cx: &mut Context<Self>) -> bool {
-        if self.signing_out || !self.updates.restart() {
+        if self.signing_out || !self.updates.apply(crate::updates::Apply::Restart) {
             return false;
         }
         self.before_quit(cx);
@@ -507,8 +515,13 @@ impl RootView {
         }
     }
 
+    pub fn quit(&mut self, cx: &mut Context<Self>) {
+        self.updates.apply(crate::updates::Apply::Quit);
+        self.before_quit(cx);
+    }
+
     /// The app is quitting: save the list windows for next time and remove the reminder toasts.
-    pub fn before_quit(&mut self, cx: &mut Context<Self>) {
+    fn before_quit(&mut self, cx: &mut Context<Self>) {
         if let Some(mut popouts) = self.popouts.take() {
             popouts.close_all(cx);
         }

@@ -4,6 +4,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::platform::icon::{DpiWatch, notification_area_dpi, small_icon_size_for_dpi};
+use crate::updates::{Snapshot, State};
 use tray_icon::menu::{CheckMenuItem, Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem};
 use tray_icon::{Icon, MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent};
 
@@ -13,7 +14,7 @@ pub enum TrayAction {
     ToggleWindow,
     QuickAdd,
     ToggleAutostart,
-    RestartToUpdate,
+    Update,
     Quit,
 }
 
@@ -22,7 +23,7 @@ struct Ids {
     show: MenuId,
     quick_add: MenuId,
     autostart: MenuId,
-    restart: MenuId,
+    update: MenuId,
     quit: MenuId,
 }
 
@@ -34,8 +35,8 @@ impl Ids {
             Some(TrayAction::QuickAdd)
         } else if id == &self.autostart {
             Some(TrayAction::ToggleAutostart)
-        } else if id == &self.restart {
-            Some(TrayAction::RestartToUpdate)
+        } else if id == &self.update {
+            Some(TrayAction::Update)
         } else if id == &self.quit {
             Some(TrayAction::Quit)
         } else {
@@ -51,31 +52,28 @@ pub struct Tray {
     /// Reports scale changes to the closure that reloads the icon.
     _watch: Option<DpiWatch>,
     autostart: CheckMenuItem,
-    menu: Menu,
-    restart: MenuItem,
-    restart_visible: Cell<bool>,
+    update: MenuItem,
 }
 
 impl Tray {
-    pub fn set_staged_update(&self, version: Option<&str>) {
-        match version {
-            Some(version) => {
-                self.restart
-                    .set_text(format!("Restart to update ({version})"));
-                if !self.restart_visible.get() {
-                    // Before Quit, in the same group.
-                    match self.menu.insert(&self.restart, 5) {
-                        Ok(()) => self.restart_visible.set(true),
-                        Err(e) => tracing::warn!("could not add tray update action: {e}"),
-                    }
-                }
-            }
-            None if self.restart_visible.get() => match self.menu.remove(&self.restart) {
-                Ok(()) => self.restart_visible.set(false),
-                Err(e) => tracing::warn!("could not remove tray update action: {e}"),
-            },
-            None => {}
-        }
+    pub fn set_update(&self, snapshot: &Snapshot) {
+        let label = match &snapshot.state {
+            State::NotInstalled | State::Disabled => "Automatic updates unavailable".into(),
+            State::Idle => "Check for updates".into(),
+            State::UpToDate { .. } => "Up to date · Check again".into(),
+            State::Checking => "Checking for updates…".into(),
+            State::Downloading { progress } => progress.map_or_else(
+                || "Downloading update…".into(),
+                |percent| format!("Downloading update · {percent}%"),
+            ),
+            State::Ready { .. } if snapshot.restart_failed => "Update failed · Retry".into(),
+            State::Ready { version } => format!("Restart to update ({version})"),
+            State::Failed { .. } if snapshot.can_check => "Update failed · Retry".into(),
+            State::Failed { .. } => "Update failed".into(),
+        };
+        self.update.set_text(label);
+        self.update
+            .set_enabled(snapshot.ready_version().is_some() || snapshot.can_check);
     }
 
     /// Reflects the Start with Windows setting in the menu.
@@ -103,7 +101,7 @@ pub fn create(
     let quick_add = MenuItem::new(quick_add_label(hotkey_registered), true, None);
     let autostart = CheckMenuItem::new("Start with Windows", true, autostart_enabled, None);
     let quit = MenuItem::new("Quit", true, None);
-    let restart = MenuItem::new("Restart to update", true, None);
+    let update = MenuItem::new("Check for updates", false, None);
     let menu = Menu::new();
     menu.append_items(&[
         &show,
@@ -111,13 +109,14 @@ pub fn create(
         &PredefinedMenuItem::separator(),
         &autostart,
         &PredefinedMenuItem::separator(),
+        &update,
         &quit,
     ])?;
     let ids = Ids {
         show: show.id().clone(),
         quick_add: quick_add.id().clone(),
         autostart: autostart.id().clone(),
-        restart: restart.id().clone(),
+        update: update.id().clone(),
         quit: quit.id().clone(),
     };
 
@@ -170,9 +169,7 @@ pub fn create(
         _icon: tray,
         _watch: watch,
         autostart,
-        menu,
-        restart,
-        restart_visible: Cell::new(false),
+        update,
     })
 }
 

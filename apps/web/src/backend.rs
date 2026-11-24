@@ -352,6 +352,30 @@ pub fn flush_now() {
     }
 }
 
+/// Make the outbox durable before reloading. The next page can retry network delivery, even offline.
+pub async fn flush_for_reload() -> bool {
+    use futures_util::future::select;
+    use std::pin::pin;
+    if !unsaved() {
+        return true;
+    }
+    let Some((storage, _)) = store() else {
+        return true;
+    };
+    // An active writer may already be flushing; don't cancel it if the wait times out.
+    flush_now();
+    let save = async {
+        if let Some(saved) = todo_client::Storage::saved(&storage) {
+            let mut seen = saved.generation();
+            while storage.unsaved() && storage.flush_error().is_none() {
+                seen = saved.changed(seen).await;
+            }
+        }
+    };
+    select(pin!(save), pin!(sleep(Duration::from_secs(3)))).await;
+    !unsaved()
+}
+
 /// True if closing the page now could lose a change (not stored yet, or storing failed).
 #[must_use]
 pub fn unsaved() -> bool {

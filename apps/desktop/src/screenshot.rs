@@ -263,7 +263,9 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                     shell.preview_menu(&opts.fixture, window, cx);
                     if let Some(state) = update_fixture(&opts.fixture, fixture.now.at) {
                         shell.set_updates(updates::Controller::fixture(state), cx);
-                        if opts.fixture != "updates-indicator" {
+                        if opts.fixture != "updates-indicator"
+                            && !opts.fixture.starts_with("updates-footer-")
+                        {
                             shell.open_updates(window, cx);
                         }
                     }
@@ -308,11 +310,13 @@ fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateS
         |minutes: i64| Timestamp::from_second(now.as_second() - 60 * minutes).unwrap_or(now);
     Some(match name {
         "updates-disabled" => UpdateState::Disabled,
-        "updates-up-to-date" => UpdateState::UpToDate {
+        "updates-up-to-date" | "updates-footer-current" => UpdateState::UpToDate {
             checked_at: earlier(5),
         },
-        "updates-checking" => UpdateState::Checking,
-        "updates-downloading" => UpdateState::Downloading { progress: Some(42) },
+        "updates-checking" | "updates-footer-checking" => UpdateState::Checking,
+        "updates-downloading" | "updates-footer-downloading" => {
+            UpdateState::Downloading { progress: Some(42) }
+        }
         "updates-ready" | "updates-indicator" => UpdateState::Ready {
             version: "0.1.0-build.147".into(),
         },
@@ -320,7 +324,7 @@ fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateS
             kind: updates::Failure::Verify,
             at: earlier(2),
         },
-        "updates-failed" => UpdateState::Failed {
+        "updates-failed" | "updates-footer-failed" => UpdateState::Failed {
             kind: updates::Failure::Check,
             at: earlier(2),
         },

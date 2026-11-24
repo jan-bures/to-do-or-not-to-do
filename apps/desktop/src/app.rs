@@ -121,10 +121,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         }
     };
     let standalone = primary.is_none();
-    if !standalone && bench.is_none() && crate::updates::apply_pending(restarted) {
-        return Ok(());
-    }
-    let updates = crate::updates::Controller::new(!standalone && bench.is_none());
+    let updates = crate::updates::Controller::new(!standalone && bench.is_none(), restarted);
     let _update_worker = updates.start();
     let mut metrics = Metrics::default();
     if bench.is_some() {
@@ -241,7 +238,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         } else {
             OnClose::Quit
         };
-        wire_windows(main, quick, hwnds, close, cx);
+        wire_windows(main, quick, hwnds, close, updates.clone(), cx);
 
         // Tray, hotkey and second launches all feed one channel, drained on the UI thread.
         if let Some(primary) = primary {
@@ -253,7 +250,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
 
         if let Some(tray) = &tray {
             let mut status = updates.subscribe();
-            tray.set_staged_update(status.borrow_and_update().ready_version());
+            tray.set_update(&status.borrow_and_update());
             let update_tx = tx.clone();
             cx.spawn(async move |_: &mut AsyncApp| {
                 while status.changed().await.is_ok() {
@@ -272,7 +269,7 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
             while let Some(event) = rx.next().await {
                 if event == ShellEvent::UpdateChanged {
                     if let Some(tray) = &tray {
-                        tray.set_staged_update(updates.snapshot().ready_version());
+                        tray.set_update(&updates.snapshot());
                     }
                     continue;
                 }
@@ -326,9 +323,24 @@ fn wire_windows(
     quick: WindowHandle<QuickAddView>,
     hwnds: Hwnds,
     close: OnClose,
+    updates: crate::updates::Controller,
     cx: &mut App,
 ) {
     let _ = main.update(cx, |_, window, cx| {
+        let mut inactive_since = (!window.is_window_active()).then(Instant::now);
+        cx.observe_window_activation(window, move |_, window, _| {
+            if window.is_window_active() {
+                if inactive_since
+                    .take()
+                    .is_some_and(|at| at.elapsed() >= crate::updates::FOCUS_IDLE)
+                {
+                    updates.check_on_focus();
+                }
+            } else {
+                inactive_since.get_or_insert_with(Instant::now);
+            }
+        })
+        .detach();
         let root = cx.entity();
         window.on_window_should_close(cx, move |_, cx| match close {
             OnClose::HideToTray => {
@@ -337,7 +349,7 @@ fn wire_windows(
             }
             // The same as the tray's Quit: the reminder toasts go first.
             OnClose::Quit => {
-                root.update(cx, |root, cx| root.before_quit(cx));
+                root.update(cx, |root, cx| root.quit(cx));
                 cx.quit();
                 true
             }
@@ -406,15 +418,21 @@ fn handle_event(
                 tray.set_autostart_checked(autostart.is_enabled(exe));
             }
         }
-        ShellEvent::Tray(action @ (TrayAction::Quit | TrayAction::RestartToUpdate)) => {
+        ShellEvent::Tray(action @ (TrayAction::Quit | TrayAction::Update)) => {
+            let mut restart_failed = false;
             let quit = main
                 .update(cx, |root, window, cx| {
-                    if action == TrayAction::RestartToUpdate {
+                    if action == TrayAction::Update {
+                        if !root.update_ready() {
+                            root.check_updates();
+                            return false;
+                        }
                         if !root.restart_to_update(cx) {
+                            restart_failed = true;
                             return false;
                         }
                     } else {
-                        root.before_quit(cx);
+                        root.quit(cx);
                     }
                     window.remove_window();
                     true
@@ -424,7 +442,7 @@ fn handle_event(
                 cx.quit();
                 return true;
             }
-            if action == TrayAction::RestartToUpdate {
+            if restart_failed {
                 win::show_and_focus(hwnds.main);
                 let _ = main.update(cx, |root, window, cx| root.show_update_error(window, cx));
             }

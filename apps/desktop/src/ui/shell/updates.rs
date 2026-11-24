@@ -1,6 +1,6 @@
 //! The Updates page of the sidebar Settings menu and its quiet, non-modal entry point.
 
-use gpui::{AsyncApp, ClickEvent, Context, Div, Role, Window, div, prelude::*, px};
+use gpui::{AsyncApp, Context, Div, Role, Window, div, prelude::*, px, relative};
 use todo_core::time::Timestamp;
 
 use super::ShellView;
@@ -48,7 +48,7 @@ impl ShellView {
             entries.push(item(
                 "check-update",
                 Icon::RefreshCw,
-                "Check now",
+                "Check for updates",
                 MenuAction::CheckUpdates,
             ));
         }
@@ -101,10 +101,10 @@ impl ShellView {
             State::Downloading { progress } => (
                 Icon::Download,
                 p.ink_2,
-                "Preparing the update…",
+                "Downloading update…",
                 progress.map_or_else(
                     || "Downloading in the background.".into(),
-                    |percent| format!("Preparing package · {percent}%"),
+                    |percent| format!("{percent}% downloaded"),
                 ),
             ),
             State::Ready { version } => (
@@ -185,7 +185,7 @@ impl ShellView {
         let p = self.palette;
         matches!(state, State::Checking | State::Downloading { .. }).then(|| {
             div().px(px(space::S3)).pb(px(space::S2)).child(
-                kit::button_quiet(&p, "Check now")
+                kit::button_quiet(&p, "Check for updates")
                     .h(px(component::BUTTON_SMALL))
                     .px(px(space::S3))
                     .bg(p.canvas)
@@ -197,88 +197,93 @@ impl ShellView {
     }
 
     pub(super) fn update_indicator(&self, window: &Window, cx: &mut Context<Self>) -> Option<Div> {
-        let version = self.update_snapshot().indicator_version()?.to_owned();
+        let snapshot = self.update_snapshot();
         let p = self.palette;
-        let label = format!("Update {version} ready. Open Updates");
-        let open =
+        let footer = div().flex_none().mx(px(space::S2)).mb(px(space::S2));
+        let row = || {
             div()
-                .id("update-indicator")
-                .role(Role::Button)
-                .aria_label(label.clone())
-                .aria_expanded(self.menu.as_ref().is_some_and(|m| {
-                    m.kind == MenuKind::Updates && m.overlay.look(self.frame).open
-                }))
-                .tooltip(kit::tooltip(p, label))
                 .h(px(desktop::NAV_SUB_ROW))
                 .px(px(space::S2))
-                .rounded(px(radius::BUTTON))
                 .flex()
                 .items_center()
                 .gap(px(space::S2))
+                .style(ty::NAV_SUB)
+        };
+        let ready = snapshot.ready_version();
+        if snapshot.footer_action() {
+            let retry = snapshot.restart_failed || ready.is_none();
+            let (label, icon, ink) = if retry {
+                ("Update failed · Retry", Icon::RefreshCw, p.danger_ink)
+            } else {
+                ("Restart to update", Icon::ArrowUp, p.accent_strong)
+            };
+            let tip = ready.map_or_else(|| label.into(), |build| format!("{label} ({build})"));
+            let button = row()
+                .id("update-indicator")
+                .role(Role::Button)
+                .aria_label(tip.clone())
+                .tooltip(kit::tooltip(p, tip))
+                .w_full()
+                .rounded(px(radius::BUTTON))
+                .bg(if retry { p.canvas } else { p.wash })
+                .hover(move |d| d.bg(if retry { p.wash } else { p.tint }))
+                .text_color(ink)
                 .cursor_pointer()
                 .track_focus(&self.update_focus)
-                .hover(|d| d.bg(p.hover))
-                .child(kit::icon(
-                    Icon::ArrowUp,
-                    component::ICON_SMALL,
-                    p.accent_strong,
-                ))
-                .child(
-                    div()
-                        .style(ty::NAV_SUB)
-                        .text_color(p.ink)
-                        .child("Update ready"),
-                )
-                .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
-                    this.toggle_menu(MenuKind::Updates, Stop::UpdateIndicator, e, window, cx);
+                .child(kit::icon(icon, component::ICON_SMALL, ink))
+                .child(label)
+                .on_click(cx.listener(|this, _, window, cx| {
+                    if this.update_snapshot().ready_version().is_some() {
+                        cx.emit(super::ShellEvent::RestartToUpdate);
+                    } else if let Some(updates) = this.updates.clone() {
+                        if this.update_focus.is_focused(window) {
+                            this.focus_stop(Stop::Account, window, cx);
+                        }
+                        updates.check_now();
+                    }
                 }))
                 .on_key_down(cx.listener(|this, e, window, cx| this.control_key(e, window, cx)));
-        let dismiss = div()
-            .id("dismiss-update-indicator")
-            .role(Role::Button)
-            .aria_label("Dismiss update indicator")
-            .tooltip(kit::tooltip(p, "Dismiss update indicator"))
-            .size(px(component::ICON_BUTTON))
-            .flex()
-            .items_center()
-            .justify_center()
-            .rounded(px(radius::BUTTON))
-            .cursor_pointer()
-            .track_focus(&self.dismiss_update_focus)
-            .hover(|d| d.bg(p.hover))
-            .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
-            .on_click(cx.listener(move |this, _, window, cx| {
-                if let Some(updates) = &this.updates {
-                    updates.dismiss(&version);
-                    if this.dismiss_update_focus.is_focused(window) {
-                        this.focus_stop(Stop::Account, window, cx);
-                    }
-                    cx.notify();
-                }
-            }))
-            .on_key_down(cx.listener(|this, e, window, cx| this.control_key(e, window, cx)));
+            return Some(footer.child(ring(
+                &p,
+                self.update_focus.is_focused(window),
+                radius::BUTTON,
+                button,
+            )));
+        }
+        let (label, progress) = match snapshot.state {
+            State::Checking => ("Checking for updates…", None),
+            State::Downloading { progress } => ("Downloading update…", progress),
+            State::Failed { .. } => ("Update failed", None),
+            _ => return None,
+        };
         Some(
-            div()
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_between()
-                .mx(px(space::S2))
-                .mb(px(space::S2))
-                .rounded(px(radius::MD))
-                .bg(p.wash)
-                .child(ring(
-                    &p,
-                    self.update_focus.is_focused(window),
-                    radius::BUTTON,
-                    open,
-                ))
-                .child(ring(
-                    &p,
-                    self.dismiss_update_focus.is_focused(window),
-                    radius::BUTTON,
-                    dismiss,
-                )),
+            footer.child(
+                div()
+                    .id("update-status-footer")
+                    .role(Role::Status)
+                    .child(
+                        row()
+                            .text_color(p.ink_3)
+                            .justify_between()
+                            .child(label)
+                            .children(
+                                progress.map(|n| div().style(ty::COUNT).child(format!("{n}%"))),
+                            ),
+                    )
+                    .children(progress.map(|n| {
+                        div()
+                            .h(px(space::S1))
+                            .rounded(px(radius::BUTTON))
+                            .bg(p.line)
+                            .overflow_hidden()
+                            .child(
+                                div()
+                                    .h_full()
+                                    .w(relative(f32::from(n) / 100.))
+                                    .bg(p.accent_strong),
+                            )
+                    })),
+            ),
         )
     }
 }
@@ -295,9 +300,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     #[gpui::test]
-    fn the_indicator_opens_updates_and_dismissing_keeps_restart_available(
-        cx: &mut gpui::TestAppContext,
-    ) {
+    fn the_footer_requests_restart_directly(cx: &mut gpui::TestAppContext) {
         let controller = Controller::fixture(State::Ready {
             version: "0.1.0-build.147".into(),
         });
@@ -327,36 +330,11 @@ mod tests {
             .detach();
             window.focus(&shell.read(cx).update_focus.clone(), cx);
         });
-        let enter = |cx: &mut gpui::VisualTestContext| {
-            cx.simulate_keystrokes("enter");
-            cx.simulate_event(gpui::KeyUpEvent {
-                keystroke: gpui::Keystroke::parse("enter").expect("key"),
-            });
-        };
-        enter(cx);
-        cx.update(|_, cx| {
-            let menu = shell.read(cx).menu.as_ref().expect("Updates is open");
-            assert_eq!(menu.kind, MenuKind::Updates);
-            assert_eq!(menu.highlight.as_deref(), Some("restart-update"));
+        cx.simulate_keystrokes("enter");
+        cx.simulate_event(gpui::KeyUpEvent {
+            keystroke: gpui::Keystroke::parse("enter").expect("key"),
         });
-        enter(cx);
         assert_eq!(restart_requests.get(), 1);
-        cx.simulate_keystrokes("escape");
-        cx.update(|window, cx| {
-            assert!(shell.read(cx).update_focus.is_focused(window));
-            window.focus(&shell.read(cx).dismiss_update_focus.clone(), cx);
-        });
-        enter(cx);
-        cx.update(|window, cx| {
-            let shell = shell.read(cx);
-            assert!(shell.account_focus.is_focused(window));
-            assert!(!shell.has_stop(Stop::UpdateIndicator));
-            assert!(!shell.has_stop(Stop::DismissUpdate));
-        });
-        assert_eq!(
-            controller.snapshot().ready_version(),
-            Some("0.1.0-build.147")
-        );
-        assert_eq!(controller.snapshot().indicator_version(), None);
+        cx.update(|_, cx| assert!(shell.read(cx).menu.is_none()));
     }
 }

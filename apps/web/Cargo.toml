@@ -46,7 +46,7 @@ web-sys = { version = "0.3.77", features = [
     "File", "FileList", "DomRect", "Blob", "BlobPropertyBag", "Url", "Event", "EventTarget", "NodeList",
     "VisibilityState", "Storage", "StorageEvent", "CssStyleDeclaration", "console", "Performance", "ResizeObserver", "ResizeObserverEntry",
     "DomRectReadOnly", "Headers", "Request", "RequestInit", "RequestCredentials", "RequestMode",
-    "RequestRedirect", "ReferrerPolicy", "Response", "Animation", "AbortController", "AbortSignal",
+    "RequestCache", "RequestRedirect", "ReferrerPolicy", "Response", "Animation", "AbortController", "AbortSignal",
     "ReadableStream", "ReadableStreamDefaultReader",
     "ScrollIntoViewOptions", "ScrollLogicalPosition", "ScrollToOptions", "ScrollBehavior", "FocusOptions",
 ] }

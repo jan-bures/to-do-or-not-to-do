@@ -72,7 +72,7 @@ export function serve(dir, port) {
     if (rest && file.startsWith(base + sep) && existsSync(file) && statSync(file).isFile() && !rest.endsWith(".html")) {
       res.writeHead(200, {
         "content-type": TYPES[extname(file)] ?? "application/octet-stream",
-        "cache-control": "no-cache",
+        "cache-control": rest === "version.txt" ? "no-store, no-transform" : "no-cache",
         "x-content-type-options": "nosniff",
         ...(rest === "reminder-worker.js" && { "service-worker-allowed": "/app" }),
       });

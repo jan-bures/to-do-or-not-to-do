@@ -629,6 +629,31 @@ a {
   }
 }
 
+.app-update {
+  flex: none;
+  margin: 0 var(--space-2) var(--space-2);
+}
+
+.button.app-update-action {
+  justify-content: flex-start;
+  inline-size: 100%;
+  min-block-size: var(--desktop-nav-sub-row);
+  gap: var(--space-2);
+  padding-inline: var(--space-2);
+  background: var(--color-wash);
+  color: var(--color-accent-strong);
+  font: var(--text-nav-sub);
+}
+
+.button.app-update-action:hover {
+  background: var(--color-tint);
+}
+
+.app-update-action .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+}
+
 .side-foot {
   display: flex;
   flex: none;

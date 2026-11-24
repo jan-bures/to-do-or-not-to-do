@@ -84,6 +84,10 @@ impl Ui {
         }
     }
 
+    pub(super) fn has_draft(self) -> bool {
+        self.draft.with_untracked(|text| !text.is_empty()) || self.preparing.get_untracked()
+    }
+
     pub(super) fn sync(self, signed_out: bool) {
         let scope = self.scope.get_value();
         if signed_out || scope.as_ref().is_some_and(|scope| !scope.active()) {

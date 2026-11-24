@@ -179,7 +179,6 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "updates-checking"
         | "updates-downloading"
         | "updates-ready"
-        | "updates-indicator"
         | "updates-failed"
         | "updates-unverified"
         | "priority-menu"
@@ -242,7 +241,12 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             f.sync.connection = todo_client::Connection::Syncing;
             Some(f)
         }
-        "sidebar-footer-min" => {
+        "sidebar-footer-min"
+        | "updates-indicator"
+        | "updates-footer-current"
+        | "updates-footer-checking"
+        | "updates-footer-downloading"
+        | "updates-footer-failed" => {
             let mut f = long_sidebar();
             f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MIN);
             f.sync.connection = todo_client::Connection::Offline;

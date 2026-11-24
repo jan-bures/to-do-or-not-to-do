@@ -390,6 +390,17 @@ pub async fn path(
         return StatusCode::NOT_FOUND.into_response();
     };
     if let Some(f) = web.files.get(path.as_str()) {
+        if path == "version.txt" {
+            // A long-lived app tab must always see the deployed bundle, not a cached version.
+            return (
+                [
+                    (CONTENT_TYPE, HeaderValue::from_static(f.content_type)),
+                    (CACHE_CONTROL, HeaderValue::from_static(NO_STORE)),
+                ],
+                f.body.clone(),
+            )
+                .into_response();
+        }
         let mut response = file_response(f, &headers);
         if path == WORKER {
             let headers = response.headers_mut();

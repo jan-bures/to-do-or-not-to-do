@@ -24,6 +24,7 @@ fn build() -> TempDir {
     let dir = tempfile::tempdir().unwrap();
     assert!(INDEX.contains(SESSION_MARKER));
     std::fs::write(dir.path().join("index.html"), INDEX).unwrap();
+    std::fs::write(dir.path().join("version.txt"), "a".repeat(64)).unwrap();
     std::fs::write(dir.path().join("todo_web_bg.wasm"), b"\0asm\x01\0\0\0").unwrap();
     // The build's gzipped copy (the server sends it as is; the bytes needn't be real gzip here).
     std::fs::write(dir.path().join("todo_web_bg.wasm.gz"), b"gzipped").unwrap();
@@ -798,7 +799,13 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
 
     // Signed out: every app route goes to sign-in, files included.
     let anon = env.browser();
-    for path in ["/app", "/app/", "/app/list/x", "/app/todo_web_bg.wasm"] {
+    for path in [
+        "/app",
+        "/app/",
+        "/app/list/x",
+        "/app/todo_web_bg.wasm",
+        "/app/version.txt",
+    ] {
         let p = anon.get(path).await;
         assert_eq!(p.status, StatusCode::SEE_OTHER, "{path}");
         assert!(
@@ -856,6 +863,12 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
     let p = b.get("/").await;
     assert_eq!(p.status, StatusCode::SEE_OTHER);
     assert_eq!(p.location(), "/app");
+
+    let p = b.get("/app/version.txt").await;
+    assert_eq!(p.status, StatusCode::OK);
+    assert_eq!(p.header(CONTENT_TYPE), "text/plain; charset=utf-8");
+    assert_eq!(p.header(CACHE_CONTROL), "no-store, no-transform");
+    assert_eq!(p.body, "a".repeat(64));
 
     // Files, with their types and an ETag.
     let p = b.get("/app/todo_web_bg.wasm").await;

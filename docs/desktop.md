@@ -182,9 +182,11 @@ using your server's HTTPS address (for example `https://todo.example.com`). An e
 the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
 to point Windows at the installed copy. Uninstall removes the app's Start with Windows entry.
 
-An installed app checks for updates about one minute after launch, then every six hours on a Windows
-background-priority thread, even when it is not paired. After consecutive failures it retries after
-five minutes, thirty minutes, then six hours. Downloads do not interrupt normal use.
+An installed app checks for updates on launch, then every six hours plus up to thirty minutes of
+jitter, on a Windows background-priority thread even when it is not paired. Returning to the main
+window after thirty minutes away also checks, unless the last attempt was less than thirty minutes
+ago or an automatic retry is already scheduled. After consecutive network failures it retries after
+five minutes, thirty minutes, then six hours plus jitter. Downloads do not interrupt normal use.
 
 The build reads the root `Cargo.toml` repository URL by default. Forks can set the build-time
 `TODO_DESKTOP_UPDATE_FEED` to their public HTTPS repository base, or to an empty value to disable updates.
@@ -208,8 +210,8 @@ A missing or invalid signature or a release identity mismatch always stops the u
 A download that ends early uses the normal network retry schedule. For an oversized package or a
 checksum mismatch at the expected size, the app remembers the exact signed offer across restarts.
 Automatic checks can retry that offer after six hours, then after 18 hours if it fails again, and at
-most once every 24 hours for further mismatches. **Check now** can retry during a cooldown, but it never
-bypasses verification.
+most once every 24 hours for further mismatches. **Check for updates** or **Retry** can retry during a
+cooldown, but neither bypasses verification.
 
 Anyone controlling the release assets can withhold updates or serve an older signed release that is
 still newer than the installed version. They cannot authorize changed bytes or downgrade an installed
@@ -217,18 +219,19 @@ version. We accept this freshness limit so signatures don't expire during legiti
 releases.
 
 After pairing, **Settings → Updates…** shows the installed package version (or the Cargo version on a development build),
-the update status, and how long ago it last checked successfully or failed. **Check now** checks immediately
-when no check, download or staged update is pending. It does not move the next automatic check or change its backoff.
-Development builds do not check for updates. Errors are shown without the feed address or credentials.
+the update status, and how long ago it last checked successfully or failed. **Check for updates** checks
+immediately when no check, download or staged update is pending. It does not move the next automatic
+check or change its backoff. Development builds do not check for updates. Errors are shown without the
+feed address or credentials.
 
-When a package is ready, a quiet **Update ready** control above the sidebar footer opens Updates. Dismissing
-it hides the indicator for that version without removing the update from Settings or the tray. Select
-**Restart to update** in Settings or **Restart to update (<version>)** in the tray to exit normally and have
-Velopack apply the package and relaunch. Alternatively, choose **Quit** from the tray (closing the window
-usually just hides it), then open the app again: the next primary launch still applies the package before
-opening the window. Both paths keep local data and pairing. If Velopack relaunches the app with a newer
-package still pending, the app logs a warning and skips that version. A later release can still be staged.
-Once staged, an update belongs to the installation, not to a particular pairing.
+The sidebar footer and tray show download progress and offer **Retry** after a failure. A verified,
+staged package is ready at startup without another download. Select **Restart to update** in the
+sidebar, Settings, or the tray to exit normally and have Velopack apply the package and reopen the app.
+The sidebar shows the target build on hover. **Quit** from the tray applies a ready package without
+reopening the app (closing the window usually just hides it). Both paths keep local data and pairing.
+If a restart leaves the same newer package pending, the app reports the failure and skips that version.
+A later release can still be staged. Once staged, an update belongs to the installation, not to a
+particular pairing.
 
 ## Vendored `gpui_windows`
 
@@ -951,8 +954,10 @@ at default and minimum widths; `sidebar-new-menu` opens the menu.
 composer, the settings page, the full board, and the board with the collapsed Done rail beside Detail.
 `room-menu`, `account-menu` and `priority-menu` show the menus open, at rest: a list room's menu, the account
 menu and the detail pane's priority picker. `updates-up-to-date`, `updates-checking`, `updates-downloading`,
-`updates-ready`, `updates-failed`, `updates-unverified` and `updates-disabled` show the Updates page without checking a real feed; `updates-indicator`
-shows the ready control in the sidebar with Settings closed. `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
+`updates-ready`, `updates-failed`, `updates-unverified` and `updates-disabled` show the Updates page without checking a real feed.
+`updates-indicator` and `updates-footer-current`, `updates-footer-checking`, `updates-footer-downloading`,
+and `updates-footer-failed` show the minimum-width sidebar with Settings closed and pending sync changes below the update row.
+`quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
 calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected
 one, as a right-click leaves it; `move-to-picker` is the selected task's list picker as M opens it, grouped by

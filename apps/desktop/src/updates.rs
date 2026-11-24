@@ -1,5 +1,5 @@
-//! Signed Velopack updates are staged by a low-priority worker and reapplied only after a
-//! second verification on restart or before GPUI on the next primary launch.
+//! Signed Velopack updates are staged by a low-priority worker and verified again before
+//! being applied on restart or quit.
 
 mod history;
 mod rejections;
@@ -9,7 +9,7 @@ mod state;
 use rejections::Rejections;
 use release::{APP_ID, CHANNEL, MAX_FEED, MAX_PROOF, Receipt, Rejection, Release};
 use state::{Check, Schedule};
-pub use state::{Failure, Snapshot, State};
+pub use state::{FOCUS_IDLE, Failure, Snapshot, State};
 
 use semver::Version;
 use sha2::{Digest, Sha256};
@@ -272,51 +272,37 @@ pub struct Controller(Arc<Shared>);
 struct Shared {
     status: watch::Sender<Snapshot>,
     worker: Mutex<Option<Connection>>,
-    dismissal_marker: Option<PathBuf>,
 }
 
 #[derive(Debug)]
 struct Connection {
     stopped: Arc<AtomicBool>,
-    wake: Sender<()>,
+    wake: Sender<Check>,
 }
 
 impl Controller {
-    pub fn new(enabled: bool) -> Self {
+    pub fn new(enabled: bool, restarted: bool) -> Self {
         if enabled && let Some(install) = Installation::locate() {
             let version = install.manager.get_current_version();
             let state = if ReleaseUrls::new(REPOSITORY).is_none() {
                 State::Disabled
             } else {
-                startup_state(&install.dir, &version, Receipt::verify)
+                startup_state(&install.dir, &version, restarted, Receipt::verify)
             };
-            return Self::with_state(
-                Some(version.to_string()),
-                state,
-                Some(install.dir.join(".todo-dismissed-update")),
-            );
+            return Self::with_state(Some(version.to_string()), state);
         }
-        Self::with_state(None, State::NotInstalled, None)
+        Self::with_state(None, State::NotInstalled)
     }
 
-    fn with_state(
-        version: Option<String>,
-        state: State,
-        dismissal_marker: Option<PathBuf>,
-    ) -> Self {
-        let dismissed = dismissal_marker
-            .as_deref()
-            .and_then(|path| read_version_marker(path).ok().flatten())
-            .map(|version| version.to_string());
+    fn with_state(version: Option<String>, state: State) -> Self {
         Self(Arc::new(Shared {
-            status: watch::Sender::new(Snapshot::new(version, state).with_dismissal(dismissed)),
+            status: watch::Sender::new(Snapshot::new(version, state)),
             worker: Mutex::default(),
-            dismissal_marker,
         }))
     }
 
     pub fn fixture(state: State) -> Self {
-        let controller = Self::with_state(Some("0.1.0-build.146".into()), state.clone(), None);
+        let controller = Self::with_state(Some("0.1.0-build.146".into()), state.clone());
         controller.0.status.send_modify(|s| s.set(state, true));
         controller
     }
@@ -336,49 +322,60 @@ impl Controller {
         };
         // Reserve Checking before waking the worker: a double click, or a timeout racing
         // this click, cannot enqueue another check.
-        if self.0.status.send_if_modified(Snapshot::begin) && worker.wake.send(()).is_err() {
+        if self.0.status.send_if_modified(Snapshot::begin)
+            && worker.wake.send(Check::Manual).is_err()
+        {
             self.0
                 .status
                 .send_modify(|s| s.set(failed(Failure::Check), false));
         }
     }
 
-    pub fn dismiss(&self, version: &str) {
-        if self.0.status.send_if_modified(|s| s.dismiss(version))
-            && let Some(marker) = self.0.dismissal_marker.as_deref()
-            && write_version_marker(marker, version).is_err()
+    pub fn check_on_focus(&self) {
+        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some(worker) = worker.as_ref()
+            && self.0.status.borrow().can_check
         {
-            tracing::debug!("could not remember dismissal of desktop update indicator");
+            let _ = worker.wake.send(Check::Focus);
         }
     }
 
     /// Launch Velopack, letting the caller do normal Quit cleanup before the process exits.
-    pub fn restart(&self) -> bool {
-        let Some(version) = self.snapshot().ready_version().map(str::to_owned) else {
-            return false;
-        };
-        let mut failure = Failure::Apply;
-        if let Some(install) = Installation::locate() {
+    pub fn apply(&self, mode: Apply) -> bool {
+        self.apply_with(mode, |version, mode| {
+            let install = Installation::locate().ok_or(Failure::Apply)?;
             match install.pending() {
                 Ok(Some(asset)) if asset.Version == version => {
-                    if launch_apply(&install.manager, asset).is_ok() {
-                        return true;
-                    }
-                    // Velopack didn't launch. Keep the verified package and offer a retry.
-                    self.0.status.send_modify(|s| s.restart_failed = true);
-                    return false;
+                    Ok(launch_apply(&install.manager, asset, mode).is_ok())
                 }
                 Err(rejected) => {
                     discard_pending(&install.dir, rejected.as_ref());
-                    failure = Failure::Verify;
+                    Err(Failure::Verify)
                 }
-                Ok(_) => {}
+                Ok(_) => Err(Failure::Apply),
+            }
+        })
+    }
+
+    fn apply_with(
+        &self,
+        mode: Apply,
+        launch: impl FnOnce(&str, Apply) -> Result<bool, Failure>,
+    ) -> bool {
+        let Some(version) = self.snapshot().ready_version().map(str::to_owned) else {
+            return false;
+        };
+        match launch(&version, mode) {
+            Ok(true) => return true,
+            // Velopack didn't launch. Keep the verified package and offer a retry.
+            Ok(false) => self.0.status.send_modify(|s| s.restart_failed = true),
+            Err(failure) => {
+                let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+                self.0
+                    .status
+                    .send_modify(|s| s.set(failed(failure), worker.is_some()));
             }
         }
-        let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
-        self.0
-            .status
-            .send_modify(|s| s.set(failed(failure), worker.is_some()));
         tracing::warn!("could not start the staged desktop update");
         false
     }
@@ -398,7 +395,10 @@ impl Controller {
         let (wake, rx) = mpsc::channel();
         let control = self.clone();
         let run = stopped.clone();
-        let mut schedule = Schedule::new(Instant::now());
+        use std::hash::{BuildHasher, RandomState};
+        let jitter =
+            Duration::from_secs(RandomState::new().hash_one(0) % state::MAX_JITTER.as_secs());
+        let mut schedule = Schedule::new(Instant::now(), jitter);
         if std::thread::Builder::new()
             .name("todo-update".into())
             .spawn(move || {
@@ -414,14 +414,17 @@ impl Controller {
                     let check = match rx
                         .recv_timeout(schedule.due.saturating_duration_since(Instant::now()))
                     {
-                        Ok(()) => Check::Manual,
+                        Ok(check) => check,
                         Err(mpsc::RecvTimeoutError::Timeout) => Check::Automatic,
                         Err(mpsc::RecvTimeoutError::Disconnected) => break,
                     };
                     if run.load(Ordering::Relaxed) {
                         break;
                     }
-                    if check == Check::Automatic {
+                    if check == Check::Focus && !schedule.focus_due(Instant::now()) {
+                        continue;
+                    }
+                    if check != Check::Manual {
                         let began = control.for_worker(&run, Snapshot::begin);
                         if !began {
                             // A manual request beat this timeout, or the package is already staged.
@@ -559,10 +562,6 @@ impl Installation {
         Some(Self { manager, dir })
     }
 
-    fn failed_path(&self) -> PathBuf {
-        self.dir.join(FAILED)
-    }
-
     // Never let Velopack locate/open a more recent package just because of its filename. Only an
     // authenticated receipt can name a package, and its bytes must still match at apply time.
     fn pending(&self) -> Result<Option<VelopackAsset>, Option<Rejection>> {
@@ -577,9 +576,18 @@ impl Installation {
 fn startup_state(
     dir: &Path,
     installed: &Version,
+    restarted: bool,
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
 ) -> State {
     match verified_pending(dir, installed, verify) {
+        Ok(Some(asset)) if restarted => {
+            // Velopack relaunched us, but the same update is still pending. Don't loop.
+            tracing::warn!(version = %asset.Version, "desktop update did not apply; skipping this version");
+            if let Err(e) = write_version_marker(&dir.join(FAILED), &asset.Version) {
+                tracing::warn!(error = %e, "could not record the failed desktop update");
+            }
+            return failed(Failure::Apply);
+        }
         Ok(Some(asset)) => {
             return State::Ready {
                 version: asset.Version,
@@ -717,12 +725,19 @@ fn stage_update(
         return Ok(None);
     }
     let mut rejections = Rejections::load(dir);
-    if check == Check::Automatic && rejections.blocks(&signed.rejection, now()) {
+    if check != Check::Manual && rejections.blocks(&signed.rejection, now()) {
         return Err(Failure::Verify);
     }
     let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
     if !is_candidate(&signed.full, failed.as_ref()) {
         return Err(Failure::Apply);
+    }
+    // A previous build may have left a full package without a usable receipt. Reuse it only
+    // after authenticating the current receipt and hashing the full file against that receipt.
+    if release::matches_file(&signed.full, &dir.join(&signed.full.FileName)).unwrap_or(false) {
+        atomic_json(&dir.join(RECEIPT), &receipt).map_err(|_| Failure::Download)?;
+        rejections.clear(dir, &signed.rejection);
+        return Ok(Some(signed.full.Version));
     }
     downloading(None);
     match stage_verified(feed, dir, &signed, &receipt, &downloading) {
@@ -767,53 +782,20 @@ fn stage_verified(
     Ok(())
 }
 
-fn should_apply(asset: &VelopackAsset, restarted: bool, marker: &Path) -> bool {
-    let failed = match read_version_marker(marker) {
-        Ok(failed) => failed,
-        Err(e) => {
-            tracing::warn!(error = %e, "could not read the desktop update failure marker");
-            return false;
-        }
-    };
-    if !is_candidate(asset, failed.as_ref()) {
-        return false;
-    }
-    if restarted {
-        tracing::warn!(version = %asset.Version, "desktop update did not apply; skipping this version");
-        if let Err(e) = write_version_marker(marker, &asset.Version) {
-            tracing::warn!(error = %e, "could not record the failed desktop update");
-        }
-        return false;
-    }
-    true
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Apply {
+    Restart,
+    Quit,
 }
 
-/// Called only by the normal primary launch. Returns true when Update.exe is waiting for us to
-/// exit so it can apply the verified package and relaunch with the same CLI arguments.
-pub fn apply_pending(restarted: bool) -> bool {
-    if ReleaseUrls::new(REPOSITORY).is_none() {
-        return false;
-    }
-    let Some(install) = Installation::locate() else {
-        return false;
-    };
-    let Ok(Some(asset)) = install.pending() else {
-        return false;
-    };
-    if !should_apply(&asset, restarted, &install.failed_path()) {
-        return false;
-    }
-    match launch_apply(&install.manager, asset) {
-        Ok(()) => true,
-        Err(e) => {
-            tracing::warn!(error = %e, "could not start the staged desktop update");
-            false
-        }
-    }
-}
-
-fn launch_apply(manager: &UpdateManager, asset: VelopackAsset) -> Result<(), Error> {
-    manager.wait_exit_then_apply_updates(asset, true, true, std::env::args_os().skip(1))
+fn launch_apply(manager: &UpdateManager, asset: VelopackAsset, mode: Apply) -> Result<(), Error> {
+    // The user requested a foreground restart, even if the original launch was at sign-in.
+    manager.wait_exit_then_apply_updates(
+        asset,
+        true,
+        mode == Apply::Restart,
+        std::iter::empty::<String>(),
+    )
 }
 
 #[cfg(test)]
@@ -822,7 +804,7 @@ mod tests {
 
     #[test]
     fn check_now_publishes_before_waking_and_never_queues_a_second_check() {
-        let controller = Controller::fixture(State::Idle);
+        let controller = Controller::fixture(failed(Failure::Download));
         let (wake, requests) = mpsc::channel();
         let stopped = Arc::new(AtomicBool::new(false));
         *controller.0.worker.lock().expect("updater lock") = Some(Connection {
@@ -833,7 +815,7 @@ mod tests {
         controller.check_now();
         assert!(observer.has_changed().expect("watch is open"));
         assert_eq!(observer.borrow_and_update().state, State::Checking);
-        assert_eq!(requests.try_recv(), Ok(()));
+        assert_eq!(requests.try_recv(), Ok(Check::Manual));
         assert!(
             !controller.for_worker(&stopped, Snapshot::begin),
             "a due auto-check cannot race the click"
@@ -863,50 +845,24 @@ mod tests {
     }
 
     #[test]
-    fn dismissal_survives_reopening_but_does_not_hide_a_new_version() {
-        let dir = tempfile::tempdir().expect("packages directory");
-        let marker = dir.path().join(".todo-dismissed-update");
-        let ready = |version: &str| {
-            Controller::with_state(
-                Some("0.1.0-build.9".into()),
-                State::Ready {
-                    version: version.into(),
-                },
-                Some(marker.clone()),
-            )
-        };
-        let controller = ready("0.1.0-build.10");
-        controller.dismiss("0.1.0-build.10");
-        let reopened = ready("0.1.0-build.10").snapshot();
-        assert_eq!(reopened.ready_version(), Some("0.1.0-build.10"));
-        assert_eq!(reopened.indicator_version(), None);
-        assert_eq!(
-            ready("0.1.0-build.11").snapshot().indicator_version(),
-            Some("0.1.0-build.11")
-        );
-    }
-
-    #[test]
-    fn a_failed_restart_skips_the_same_version_on_later_launches() {
-        let dir = tempfile::tempdir().expect("packages directory");
-        let marker = dir.path().join(".todo-failed-update");
-        let mut asset = VelopackAsset {
-            Version: "0.1.0-build.9".into(),
-            ..Default::default()
-        };
-        assert!(should_apply(&asset, false, &marker));
-        assert!(!marker.exists());
-        assert!(!should_apply(&asset, true, &marker));
-        assert!(!should_apply(&asset, false, &marker));
-        let failed = read_version_marker(&marker).expect("read persisted marker");
-        assert!(!is_candidate(&asset, failed.as_ref()));
-        asset.Version = "0.1.0-build.8".into();
-        assert!(!is_candidate(&asset, failed.as_ref()));
-        asset.Version = "0.1.0-build.10".into();
-        assert!(is_candidate(&asset, failed.as_ref()));
-        assert!(should_apply(&asset, false, &marker));
-        assert!(!should_apply(&asset, true, &marker));
-        assert!(!should_apply(&asset, false, &marker));
+    fn quit_applies_only_a_ready_package_without_restarting() {
+        let controller = Controller::fixture(State::Downloading { progress: Some(99) });
+        assert!(!controller.apply_with(Apply::Quit, |_, _| panic!("not staged")));
+        let controller = Controller::fixture(State::Ready {
+            version: "0.1.0-build.147".into(),
+        });
+        assert!(controller.apply_with(Apply::Quit, |version, mode| {
+            assert_eq!(version, "0.1.0-build.147");
+            assert_eq!(mode, Apply::Quit);
+            Ok(true)
+        }));
+        assert!(!controller.apply_with(Apply::Restart, |_, _| Ok(false)));
+        assert!(controller.snapshot().restart_failed);
+        assert!(controller.snapshot().footer_action());
+        assert!(controller.apply_with(Apply::Restart, |_, mode| {
+            assert_eq!(mode, Apply::Restart);
+            Ok(true)
+        }));
     }
 
     #[test]
@@ -1080,8 +1036,7 @@ mod tests {
 
     #[test]
     fn empty_feed_disables_worker_even_for_an_install() {
-        let controller =
-            Controller::with_state(Some("0.1.0-build.9".into()), State::Disabled, None);
+        let controller = Controller::with_state(Some("0.1.0-build.9".into()), State::Disabled);
         assert!(controller.start_from("").is_none());
         assert_eq!(controller.snapshot().state, State::Disabled);
         assert!(!controller.snapshot().can_check);
@@ -1224,7 +1179,10 @@ mod tests {
             proof: "{}".into(),
         };
         atomic_json(&dir.path().join(RECEIPT), &untrusted).expect("unsigned receipt fixture");
-        assert_eq!(startup_state(dir.path(), &installed, verify), State::Idle);
+        assert_eq!(
+            startup_state(dir.path(), &installed, false, verify),
+            State::Idle
+        );
         assert_eq!(std::fs::read_dir(dir.path()).expect("packages").count(), 0);
         let package = dir.path().join(name);
         assert_eq!(
@@ -1248,6 +1206,22 @@ mod tests {
                 Check::Automatic
             ),
             Ok(Some(offered.to_string()))
+        );
+        assert_eq!(
+            startup_state(dir.path(), &installed, false, verify),
+            State::Ready {
+                version: offered.to_string(),
+            }
+        );
+        std::fs::remove_file(dir.path().join(RECEIPT)).expect("forget receipt for legacy test");
+        assert_eq!(
+            startup_state(dir.path(), &installed, false, verify),
+            State::Idle
+        );
+        assert_eq!(
+            check(vec![offer(), valid_proof()], &installed, Check::Automatic),
+            Ok(Some(offered.to_string())),
+            "authenticate and reuse existing bytes without a package request",
         );
         std::fs::remove_file(&package).expect("reset staged package fixture");
         std::fs::remove_file(dir.path().join(RECEIPT)).expect("reset receipt fixture");
@@ -1274,7 +1248,7 @@ mod tests {
 
         assert!(Rejections::load(dir.path()).blocks(&signed.rejection, now.get()));
         assert!(matches!(
-            startup_state(dir.path(), &installed, verify),
+            startup_state(dir.path(), &installed, false, verify),
             State::Failed {
                 kind: Failure::Verify,
                 ..
@@ -1305,6 +1279,8 @@ mod tests {
                 .is_none()
         );
 
+        std::fs::remove_file(&package)
+            .expect("reset legacy package fixture before cooldown retries");
         for (before, retry) in [(5, 6), (23, 24), (47, 48)] {
             set_hours(before);
             assert_eq!(
@@ -1348,13 +1324,27 @@ mod tests {
             Some(signed.rejection)
         );
         assert!(matches!(
-            startup_state(dir.path(), &installed, verify),
+            startup_state(dir.path(), &installed, false, verify),
             State::Failed {
                 kind: Failure::Verify,
                 ..
             }
         ));
         assert!(!package.exists());
+        std::fs::write(&package, PACKAGE).expect("restore the signed bytes");
+        atomic_json(&dir.path().join(RECEIPT), &receipt).expect("restore receipt");
+        assert!(matches!(
+            startup_state(dir.path(), &installed, true, verify),
+            State::Failed {
+                kind: Failure::Apply,
+                ..
+            }
+        ));
+        assert!(
+            verified_pending(dir.path(), &installed, verify)
+                .expect("valid receipt")
+                .is_none()
+        );
     }
 
     #[test]

@@ -4,8 +4,9 @@
 use std::time::{Duration, Instant};
 use todo_core::time::Timestamp;
 
-const INITIAL_CHECK_DELAY: Duration = Duration::from_mins(1);
 const CHECK_INTERVAL: Duration = Duration::from_hours(6);
+pub(super) const MAX_JITTER: Duration = Duration::from_mins(30);
+pub const FOCUS_IDLE: Duration = Duration::from_mins(30);
 const RETRY_INTERVALS: [Duration; 3] = [
     Duration::from_mins(5),
     Duration::from_mins(30),
@@ -38,7 +39,6 @@ pub struct Snapshot {
     pub state: State,
     pub can_check: bool,
     pub restart_failed: bool,
-    dismissed_version: Option<String>,
 }
 
 impl Default for Snapshot {
@@ -54,13 +54,7 @@ impl Snapshot {
             state,
             can_check: false,
             restart_failed: false,
-            dismissed_version: None,
         }
-    }
-
-    pub(super) fn with_dismissal(mut self, version: Option<String>) -> Self {
-        self.dismissed_version = version;
-        self
     }
 
     pub fn ready_version(&self) -> Option<&str> {
@@ -70,17 +64,9 @@ impl Snapshot {
         }
     }
 
-    pub fn indicator_version(&self) -> Option<&str> {
-        self.ready_version()
-            .filter(|version| Some(*version) != self.dismissed_version.as_deref())
-    }
-
-    pub(super) fn dismiss(&mut self, version: &str) -> bool {
-        if self.indicator_version() != Some(version) {
-            return false;
-        }
-        self.dismissed_version = Some(version.to_owned());
-        true
+    pub fn footer_action(&self) -> bool {
+        self.ready_version().is_some()
+            || (matches!(self.state, State::Failed { .. }) && self.can_check)
     }
 
     pub(super) fn begin(&mut self) -> bool {
@@ -107,6 +93,7 @@ impl Snapshot {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum Check {
     Automatic,
+    Focus,
     Manual,
 }
 
@@ -115,25 +102,44 @@ pub(super) enum Check {
 pub(super) struct Schedule {
     pub due: Instant,
     failures: usize,
+    jitter: Duration,
+    last_finished: Option<Instant>,
 }
 
 impl Schedule {
-    pub fn new(now: Instant) -> Self {
+    pub fn new(now: Instant, jitter: Duration) -> Self {
         Self {
-            due: now + INITIAL_CHECK_DELAY,
+            due: now,
             failures: 0,
+            jitter,
+            last_finished: None,
         }
     }
 
+    pub fn focus_due(&self, now: Instant) -> bool {
+        // Don't cut short automatic backoff, nor repeat an attempt just made in the background.
+        now >= self.due
+            || (self.failures == 0
+                && self
+                    .last_finished
+                    .is_none_or(|last| now.duration_since(last) >= FOCUS_IDLE))
+    }
+
     pub fn finished(&mut self, check: Check, success: bool, now: Instant) {
+        self.last_finished = Some(now);
         if check == Check::Manual {
             return;
         }
         let delay = if success {
             self.failures = 0;
-            CHECK_INTERVAL
+            CHECK_INTERVAL + self.jitter
         } else {
             let delay = RETRY_INTERVALS[self.failures];
+            let delay = if delay == CHECK_INTERVAL {
+                delay + self.jitter
+            } else {
+                delay
+            };
             self.failures = (self.failures + 1).min(RETRY_INTERVALS.len() - 1);
             delay
         };
@@ -148,8 +154,9 @@ mod tests {
     #[test]
     fn manual_checks_debounce_without_consuming_or_postponing_automatic_backoff() {
         let start = Instant::now();
-        let mut schedule = Schedule::new(start);
-        assert_eq!(schedule.due, start + INITIAL_CHECK_DELAY);
+        let jitter = Duration::from_mins(12);
+        let mut schedule = Schedule::new(start, jitter);
+        assert_eq!(schedule.due, start);
         let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Disabled);
         assert!(!view.begin());
         view.set(State::Idle, true);
@@ -157,7 +164,7 @@ mod tests {
         assert_eq!(view.state, State::Checking);
         assert!(!view.begin());
         let at = Timestamp::UNIX_EPOCH;
-        schedule.finished(Check::Manual, false, start + Duration::from_secs(2));
+        schedule.finished(Check::Manual, false, start);
         view.set(
             State::Failed {
                 kind: Failure::Check,
@@ -165,7 +172,7 @@ mod tests {
             },
             true,
         );
-        assert_eq!(schedule.due, start + INITIAL_CHECK_DELAY);
+        assert_eq!(schedule.due, start);
 
         let first = schedule.due;
         assert!(view.begin());
@@ -190,20 +197,34 @@ mod tests {
         assert_eq!(schedule.due, retry + Duration::from_mins(30));
         let next = schedule.due;
         schedule.finished(Check::Automatic, false, next);
-        assert_eq!(schedule.due, next + CHECK_INTERVAL);
+        assert_eq!(schedule.due, next + CHECK_INTERVAL + jitter);
         let next = schedule.due;
         schedule.finished(Check::Automatic, false, next);
-        assert_eq!(schedule.due, next + CHECK_INTERVAL);
+        assert_eq!(schedule.due, next + CHECK_INTERVAL + jitter);
         let next = schedule.due;
         schedule.finished(Check::Automatic, true, next);
-        assert_eq!(schedule.due, next + CHECK_INTERVAL);
+        assert_eq!(schedule.due, next + CHECK_INTERVAL + jitter);
         let next = schedule.due;
         schedule.finished(Check::Automatic, false, next);
         assert_eq!(schedule.due, next + Duration::from_mins(5));
     }
 
     #[test]
-    fn pending_update_survives_detaching_and_only_its_indicator_is_dismissed() {
+    fn focus_checks_respect_recent_attempts_and_backoff() {
+        let start = Instant::now();
+        let mut schedule = Schedule::new(start, Duration::ZERO);
+        assert!(schedule.focus_due(start));
+        schedule.finished(Check::Automatic, true, start);
+        assert!(!schedule.focus_due(start + FOCUS_IDLE - Duration::from_secs(1)));
+        let focus = start + FOCUS_IDLE;
+        assert!(schedule.focus_due(focus));
+        schedule.finished(Check::Focus, false, focus);
+        assert!(!schedule.focus_due(focus + Duration::from_mins(1)));
+        assert!(schedule.focus_due(focus + Duration::from_mins(5)));
+    }
+
+    #[test]
+    fn pending_update_remains_actionable_when_detached() {
         let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Idle);
         view.set(State::Idle, true);
         assert!(view.begin());
@@ -216,12 +237,8 @@ mod tests {
         };
         view.set(ready("0.1.0-build.10"), true);
         assert!(!view.begin());
-        assert!(!view.dismiss("0.1.0-build.9"));
-        assert!(view.dismiss("0.1.0-build.10"));
         view.set(ready("0.1.0-build.10"), false);
         assert_eq!(view.ready_version(), Some("0.1.0-build.10"));
-        assert_eq!(view.indicator_version(), None);
-        view.set(ready("0.1.0-build.11"), true);
-        assert_eq!(view.indicator_version(), view.ready_version());
+        assert!(view.footer_action());
     }
 }

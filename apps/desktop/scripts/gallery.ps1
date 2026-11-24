@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('Fixtures')) {
+    $Fixtures += @('updates-footer-current', 'updates-footer-checking', 'updates-footer-downloading', 'updates-footer-failed')
     $Fixtures += @('date-format', 'sidebar-footer-syncing', 'ai-empty', 'ai-unconfigured', 'ai-typing', 'ai-proposal', 'ai-pending', 'ai-batch', 'ai-settings', 'ai-settings-testing', 'ai-settings-unreachable', 'ai-error', 'ai-blocked', 'ai-chatgpt-signed-out', 'ai-chatgpt-device-code', 'ai-chatgpt-signed-in', 'ai-chatgpt-account', 'ai-chatgpt-consent', 'ai-private-relay')
 }
 $app = Resolve-Path (Join-Path $PSScriptRoot '..')

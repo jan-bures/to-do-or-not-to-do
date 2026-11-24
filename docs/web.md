@@ -61,6 +61,12 @@ the page's CSP allows no inline script. `boot.js` is a module file that sets the
 module. The script also writes gzipped copies of the larger files (`*.gz`), which the server sends to
 browsers that accept gzip.
 
+The build also writes a content fingerprint into `index.html` and `/app/version.txt`. An open tab
+checks the deployed fingerprint on startup, every ten minutes, and on focus. If it changes, the
+sidebar offers **Reload to update**. Reload first saves queued changes to IndexedDB for delivery
+by the next page, even if offline. If there is an open editor or unsent draft, the user can cancel
+without losing it.
+
 ## Layout of the code
 
 | File | What |

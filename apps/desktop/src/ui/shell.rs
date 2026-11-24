@@ -331,7 +331,6 @@ pub struct ShellView {
     account_focus: FocusHandle,
     updates: Option<crate::updates::Controller>,
     update_focus: FocusHandle,
-    dismiss_update_focus: FocusHandle,
     pairing_panel: Option<Entity<device_pairing::Panel>>,
     ai: assistant::Ai,
     invite_panel: Option<Entity<device_pairing::Panel>>,
@@ -551,7 +550,6 @@ impl ShellView {
             account_focus: cx.focus_handle(),
             updates: None,
             update_focus: cx.focus_handle(),
-            dismiss_update_focus: cx.focus_handle(),
             pairing_panel: None,
             ai,
             invite_panel: None,
@@ -4243,7 +4241,6 @@ impl ShellView {
             || on(&self.activity_refresh_focus)
             || on(&self.activity_more_focus)
             || on(&self.attachment_ui.add)
-            || on(&self.dismiss_update_focus)
             || self.bulk_focus.iter().any(on)
             || self.attachment_ui.rows.values().any(on)
         {
@@ -4540,7 +4537,6 @@ impl ShellView {
             Stop::DetailSplitter => self.splitters.focus(Pane::Detail),
             Stop::AssistantSplitter => self.splitters.focus(Pane::Ai),
             Stop::UpdateIndicator => &self.update_focus,
-            Stop::DismissUpdate => &self.dismiss_update_focus,
             Stop::New => &self.new_focus,
             Stop::SyncFailures => &self.sync_focus,
             Stop::Account => &self.account_focus,
@@ -4615,9 +4611,7 @@ impl ShellView {
             Stop::DetailSplitter => self.show_detail_splitter(),
             Stop::AssistantSplitter => self.ai_docked(),
             Stop::SyncFailures => self.store.sync().failed > 0,
-            Stop::UpdateIndicator | Stop::DismissUpdate => {
-                self.update_snapshot().indicator_version().is_some()
-            }
+            Stop::UpdateIndicator => self.update_snapshot().footer_action(),
             Stop::SidebarSplitter | Stop::List | Stop::New | Stop::Account => true,
         }
     }

@@ -111,7 +111,6 @@ pub enum Stop {
     Attachment(FileControl),
     /// The update indicator and its dismiss button, when a new version is staged.
     UpdateIndicator,
-    DismissUpdate,
     /// The sidebar footer's New button.
     New,
     /// The sidebar footer's "N couldn't sync", while something couldn't sync.
@@ -134,7 +133,7 @@ pub const QUICK_ADD_STOPS: [Stop; 7] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 51] = [
+pub const TAB_ORDER: [Stop; 50] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -182,7 +181,6 @@ pub const TAB_ORDER: [Stop; 51] = [
     Stop::Attachment(FileControl::Add),
     Stop::AssistantSplitter,
     Stop::UpdateIndicator,
-    Stop::DismissUpdate,
     Stop::New,
     Stop::SyncFailures,
     Stop::Account,
@@ -232,7 +230,6 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::Attachment(_)
         // The footer is pinned below the sidebar's scrolled rooms.
         | Stop::UpdateIndicator
-        | Stop::DismissUpdate
         | Stop::New
         | Stop::SyncFailures
         | Stop::Account => None,
@@ -704,7 +701,6 @@ mod tests {
                 Attachment(FileControl::Add),
                 AssistantSplitter,
                 UpdateIndicator,
-                DismissUpdate,
                 New,
                 SyncFailures,
                 Account,
@@ -719,7 +715,6 @@ mod tests {
                 Account,
                 SyncFailures,
                 New,
-                DismissUpdate,
                 UpdateIndicator,
                 AssistantSplitter,
                 Attachment(FileControl::Add),
@@ -792,7 +787,6 @@ mod tests {
                     | View(_)
                     | Timeline(_)
                     | UpdateIndicator
-                    | DismissUpdate
             ) || QUICK_ADD_STOPS.contains(&s)
         };
         // Without the toast, a room menu, a docked detail or anything refused: the dividers' and the
@@ -1010,7 +1004,6 @@ mod tests {
                         | Attachment(_)
                         | Bulk(_)
                         | UpdateIndicator
-                        | DismissUpdate
                         | SyncFailures
                 )
         };
@@ -1105,8 +1098,7 @@ mod tests {
             tab(Stop::UpdateIndicator, false),
             Some(Stop::AssistantSplitter)
         );
-        assert_eq!(tab(Stop::UpdateIndicator, true), Some(Stop::DismissUpdate));
-        assert_eq!(tab(Stop::DismissUpdate, true), Some(Stop::New));
+        assert_eq!(tab(Stop::UpdateIndicator, true), Some(Stop::New));
     }
 
     #[test]

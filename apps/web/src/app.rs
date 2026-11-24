@@ -26,6 +26,7 @@ mod task_actions;
 mod task_drag;
 mod timeline;
 mod trash;
+mod updates;
 mod workflow;
 
 use crate::backend::{self, Sync, UndoTarget};
@@ -1637,6 +1638,7 @@ fn SidebarPane() -> impl IntoView {
             <Show when=move || c.drawer.get()>
                 <div class="sidebar-toast"><ToastView in_drawer=true/></div>
             </Show>
+            <updates::UpdateFooter/>
             <div class="side-foot">
                 <NewRoomMenu/>
                 <room_actions::SyncLine/>
