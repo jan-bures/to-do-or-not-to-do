@@ -105,7 +105,7 @@ async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
         cfg.web.dir = Some(dist.path().to_owned());
     })
     .await;
-    let b = env.owner().await;
+    let mut b = env.owner().await;
     let csrf = b.csrf.as_deref();
     let (s, _, key) = api(&b, Method::GET, config, csrf, None, None).await;
     assert_eq!(s, StatusCode::OK);
@@ -139,7 +139,7 @@ async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
             &status,
             csrf,
             Some(SITE),
-            Some(endpoint.clone())
+            Some(sub.clone())
         )
         .await
         .2,
@@ -159,21 +159,26 @@ async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
         StatusCode::NO_CONTENT
     );
     assert_eq!(
-        api(&b, Method::POST, &status, csrf, Some(SITE), Some(endpoint))
-            .await
-            .2,
+        api(
+            &b,
+            Method::POST,
+            &status,
+            csrf,
+            Some(SITE),
+            Some(sub.clone())
+        )
+        .await
+        .2,
         json!({"active":false})
     );
+    assert_eq!(
+        api(&b, Method::PUT, config, csrf, Some(SITE), Some(sub.clone()))
+            .await
+            .0,
+        StatusCode::NO_CONTENT
+    );
 
-    let list = env.t.create_list("Errands").await;
-    let task = id();
-    assert_eq!(env.command(TOKEN_A, json!({"cmd":"create_task", "id":task, "list":list, "title":"Private title", "notes":"Private notes"})).await.status, StatusCode::OK);
-    let task_path = format!("{config}/tasks/{task}");
     env.offset.store(50 * 60 * 1000, Ordering::SeqCst);
-    let (s, headers, body) = api(&b, Method::GET, &task_path, csrf, None, None).await;
-    assert_eq!(s, StatusCode::OK, "{body}");
-    assert_eq!(headers[CACHE_CONTROL], "no-store, no-transform");
-    assert_eq!(body, json!({ "title": "Private title" }));
     let (s, headers, _) = api(&b, Method::GET, "/app/reminder-worker.js", None, None, None).await;
     assert_eq!(s, StatusCode::OK);
     assert_eq!(headers["service-worker-allowed"], "/app");
@@ -185,8 +190,65 @@ async fn web_push_requires_the_session_and_does_not_touch_it_from_the_worker() {
     );
     env.offset.store(61 * 60 * 1000, Ordering::SeqCst);
     assert_eq!(
-        api(&b, Method::GET, &task_path, csrf, None, None).await.0,
-        StatusCode::UNAUTHORIZED
+        b.get("/app/reminder-worker.js").await.status,
+        StatusCode::SEE_OTHER
+    );
+    assert_eq!(
+        b.post_form("/auth/logout", &[]).await.status,
+        StatusCode::SEE_OTHER,
+        "an expired session can explicitly stop its own background reminders"
+    );
+    assert_eq!(b.login().await.status, StatusCode::OK);
+    assert_eq!(
+        api(
+            &b,
+            Method::POST,
+            &status,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(sub.clone())
+        )
+        .await
+        .2,
+        json!({"active":false})
+    );
+    assert_eq!(
+        api(
+            &b,
+            Method::PUT,
+            config,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(sub.clone())
+        )
+        .await
+        .0,
+        StatusCode::NO_CONTENT
+    );
+    env.offset.store(122 * 60 * 1000, Ordering::SeqCst);
+    assert_eq!(b.get("/app").await.status, StatusCode::SEE_OTHER);
+    assert_eq!(b.login().await.status, StatusCode::OK);
+    let devices = b.get("/admin/devices").await;
+    assert!(devices.body.contains("Background reminders"));
+    assert!(!devices.body.contains(sub["endpoint"].as_str().unwrap()));
+    let revoke = devices
+        .body
+        .split('"')
+        .find(|s| s.starts_with("/admin/devices/browsers/"))
+        .unwrap();
+    assert_eq!(b.post_form(revoke, &[]).await.status, StatusCode::SEE_OTHER);
+    assert_eq!(
+        api(
+            &b,
+            Method::POST,
+            &status,
+            b.csrf.as_deref(),
+            Some(SITE),
+            Some(sub)
+        )
+        .await
+        .2,
+        json!({"active":false})
     );
 }
 

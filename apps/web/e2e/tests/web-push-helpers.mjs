@@ -30,10 +30,10 @@ export async function mockPush(page, permission, initial = false) {
       },
     };
     // Real service-worker installation and delivery are exercised separately.
-    Object.defineProperty(navigator, "serviceWorker", { value: {
+    Object.defineProperty(navigator, "serviceWorker", { value: Object.assign(new EventTarget(), {
       register: async () => registration,
       getRegistration: async () => registration,
-    } });
+    }) });
   }, { initial, publicKey, endpoint });
   const calls = [];
   let active = initial;

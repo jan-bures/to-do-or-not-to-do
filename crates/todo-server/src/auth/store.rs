@@ -302,6 +302,7 @@ pub(crate) fn reset_owner(
 
     let tx = conn.transaction()?;
     let sessions_removed = tx.execute("DELETE FROM sessions", [])?;
+    // Removing all passkeys also cascades to retained Web Push browser identities.
     let passkeys_removed = tx.execute("DELETE FROM passkeys", [])?;
     let devices_revoked = tx.execute(
         "UPDATE devices SET revoked_at = ?1 WHERE revoked_at IS NULL",
@@ -802,11 +803,36 @@ impl AuthStore {
         Ok(())
     }
 
-    /// Ends a session.
-    pub fn delete_session(&self, id_hash: &str) -> Result<()> {
+    /// Expires only the login; a browser may still be opted into background reminders.
+    pub(crate) fn expire_session(&self, id_hash: &str) -> Result<()> {
         self.conn()
             .execute("DELETE FROM sessions WHERE id_hash = ?1", [id_hash])?;
         Ok(())
+    }
+
+    /// Explicit sign-out removes the login and its durable browser subscriptions together.
+    pub fn delete_session(&self, id_hash: &str) -> Result<()> {
+        let mut conn = self.conn();
+        let tx = conn.transaction()?;
+        web_push::delete_browser_session(&tx, id_hash)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// A stale app can only revoke its own push registrations, never authenticate with this token.
+    pub(crate) fn sign_out_expired_browser(
+        &self,
+        csrf_hash: &str,
+        session: Option<&str>,
+        idle: i64,
+        absolute: i64,
+    ) -> Result<bool> {
+        Ok(self.conn().execute(
+            "DELETE FROM web_push_browsers AS b WHERE logout_csrf = ?1 AND (?2 IS NULL OR b.session = ?2)
+             AND NOT EXISTS (SELECT 1 FROM sessions s WHERE s.id_hash = b.session
+                AND s.last_seen_at > ?3 AND s.created_at > ?4)",
+            params![csrf_hash, session, idle, absolute],
+        )? > 0)
     }
 
     /// Deletes sessions idle since `idle_before` or created before `created_before`.

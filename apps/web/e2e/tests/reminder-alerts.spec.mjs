@@ -33,7 +33,7 @@ test("permission is requested only on activation, and the title-only alert opens
   await expect(reminderToast(page)).toHaveCount(0);
   expect(await page.evaluate(() => {
     const notice = window.reminderMock.notifications[0];
-    if (notice.options !== undefined) return false;
+    if (Object.keys(notice.options).join() !== "tag" || !notice.options.tag.startsWith("todo-reminder:")) return false;
     notice.onclick(new Event("click", { cancelable: true }));
     return notice.closed && window.reminderMock.focused === 1;
   })).toBe(true);

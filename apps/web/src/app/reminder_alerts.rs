@@ -22,7 +22,9 @@ extern "C" {
     #[wasm_bindgen(js_name = requestReminderPermission)]
     fn request_permission() -> Promise;
     #[wasm_bindgen(js_name = showReminderNotification)]
-    fn notify(title: &str, task: &str, open: &Function) -> bool;
+    fn notify(title: &str, task: &str, key: &str, open: &Function) -> bool;
+    #[wasm_bindgen(js_name = onReminderOpen)]
+    fn on_reminder_open(open: &Function);
     #[wasm_bindgen(js_name = claimReminder)]
     fn claim(key: &str, at: f64, cutoff: f64, eligible: &Function, legacy: &str) -> Promise;
     #[wasm_bindgen(js_name = webPushState)]
@@ -177,13 +179,15 @@ pub(super) fn start(c: Ctx) {
     let _focus = window_event_listener(leptos::ev::focus, move |_| resume());
     let busy = StoredValue::new(BTreeSet::new());
     let delivered = StoredValue::new(BTreeSet::new());
-    // A single handler per page. The title is the only value passed to the Notification API.
+    // Share one router handler between in-tab notifications and service worker clicks.
     let open = Closure::<dyn Fn(String)>::new(move |id: String| {
         if let Ok(id) = id.parse::<TaskId>() {
             open_task(c, id);
         }
     });
-    let open = StoredValue::new_local(open.into_js_value().unchecked_into::<Function>());
+    let open = open.into_js_value().unchecked_into::<Function>();
+    on_reminder_open(&open);
+    let open = StoredValue::new_local(open);
 
     Effect::new(move |_| {
         c.now.track(); // catches wall-clock changes, including when a timer was throttled
@@ -220,8 +224,9 @@ pub(super) fn start(c: Ctx) {
                             && can_deliver(background)
                             && background.fallback_at(alarm.at) <= platform::now().at
                     });
+                    let occurrence = format!("{}@{}", alarm.task, alarm.at.as_millisecond());
                     let claim = JsFuture::from(claim(
-                        &format!("{}@{}", alarm.task, alarm.at.as_millisecond()),
+                        &occurrence,
                         alarm.at.as_millisecond() as f64,
                         cutoff.as_millisecond() as f64,
                         check.as_ref().unchecked_ref(),
@@ -251,7 +256,7 @@ pub(super) fn start(c: Ctx) {
                             {
                                 if c.reminder_alerts.background.get_untracked() == Background::On
                                     || !open.with_value(|open| {
-                                        notify(&title, &alarm.task.to_string(), open)
+                                        notify(&title, &alarm.task.to_string(), &occurrence, open)
                                     })
                                 {
                                     c.reminder_alerts.queue.update(|q| q.push(alarm));
@@ -278,12 +283,10 @@ fn open_task(c: Ctx, task: TaskId) {
             .then(|| s.tasks.get(&task).map(|t| t.list))
             .flatten()
     });
-    if let Some(list) = list {
-        c.navigate(RoomId::List(list), Some(task));
-        request_animation_frame(|| {
-            platform::focus("task-detail");
-        });
-    }
+    c.navigate(list.map_or(RoomId::Smart("all"), RoomId::List), Some(task));
+    request_animation_frame(|| {
+        platform::focus("task-detail");
+    });
 }
 
 fn finish(c: Ctx, alarm: reminder::Alarm, snooze: bool) {
@@ -342,13 +345,13 @@ pub(super) fn Setting() -> impl IntoView {
                     }
                 }>
                 {icon(Icon::Bell)}
-                {move || match alerts.background.get() {
+                <span>{move || match alerts.background.get() {
                     Background::Off => "Turn on background reminders",
                     Background::On => "Turn off background reminders",
                     Background::Blocked => "Background reminders",
                     Background::Unavailable if can_ask() => "Enable reminder notifications",
                     Background::Unavailable => "Reminder notifications",
-                }}
+                }}</span>
             </button>
             <p id="reminder-notification-description" role="status">
                 {move || alerts.background.get().description(alerts.permission.get())}
@@ -358,7 +361,7 @@ pub(super) fn Setting() -> impl IntoView {
                     aria-disabled=move || busy().to_string()
                     on:click=move |ev| {
                         if ev.is_trusted() { alerts.background_action(BackgroundAction::Test); }
-                    }>{icon(Icon::ArrowUp)}"Send test notification"</button>
+                    }>{icon(Icon::BellRing)}"Send test notification"</button>
             </Show>
             <Show when=move || !alerts.feedback.get().is_empty()>
                 <p role="status">{move || alerts.feedback.get()}</p>

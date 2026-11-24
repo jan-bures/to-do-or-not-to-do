@@ -55,6 +55,8 @@ svg_set! {
         ArrowUpRight => "arrow-up-right",
         /// Reminder.
         Bell => "bell",
+        /// Send a test notification.
+        BellRing => "bell-ring",
         /// Planned; due date.
         Calendar => "calendar",
         /// Start date or date range.

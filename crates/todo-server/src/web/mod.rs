@@ -366,6 +366,13 @@ fn table() -> Vec<Route> {
             post(pages::device_revoke),
         ),
         r(
+            Method::POST,
+            "/admin/devices/browsers/{id}/revoke",
+            Session,
+            false,
+            post(pages::browser_revoke),
+        ),
+        r(
             Method::GET,
             "/admin/agents",
             Session,

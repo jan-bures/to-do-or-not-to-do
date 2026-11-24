@@ -139,12 +139,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         .route("/pair/redeem", post(invite::redeem))
         // No bearer token: signed with HMAC instead, and 404 unless configured (see `crate::ingest`).
         .route("/ingest/email", post(crate::ingest::post_email));
-    let background = Router::new()
-        .route("/web-push/tasks/{id}", get(web_push::title))
-        .route_layer(from_fn_with_state(
-            state.clone(),
-            auth::require_session_without_touch,
-        ));
     Router::new()
         .route("/openapi.json", get(openapi::document))
         .route("/pair/invites", post(invite::create))
@@ -197,7 +191,6 @@ pub fn router(state: AppState) -> Router<AppState> {
         // Bearer tokens, or the owner's browser session for the web app (CSRF header required).
         .layer(from_fn_with_state(state, auth::require_auth_or_session))
         .merge(public)
-        .merge(background)
         // Outside auth, so rejected requests are labelled too; routes only, so the fallback is not.
         .route_layer(from_fn(tag_route))
 }

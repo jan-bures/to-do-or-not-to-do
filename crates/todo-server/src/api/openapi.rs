@@ -65,7 +65,6 @@ impl Modify for ApiAuth {
         web_push::unregister,
         web_push::status,
         web_push::test,
-        web_push::title,
         invite::create,
         invite::status,
         invite::cancel,

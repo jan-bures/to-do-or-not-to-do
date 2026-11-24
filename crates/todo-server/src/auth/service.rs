@@ -1454,14 +1454,6 @@ impl AuthService {
         .unwrap_or(i64::MAX)
     }
 
-    /// A session must be newer than both cutoffs to receive Web Push.
-    pub(crate) fn session_cutoffs(&self, now: i64) -> (i64, i64) {
-        (
-            now.saturating_sub(self.idle_ms()),
-            now.saturating_sub(self.absolute_ms()),
-        )
-    }
-
     /// Seconds until a new session's absolute timeout (the cookie's `Max-Age`).
     #[must_use]
     pub fn session_max_age_secs(&self) -> i64 {
@@ -1488,7 +1480,7 @@ impl AuthService {
         };
         let now = self.now();
         if now - row.last_seen_at >= self.idle_ms() || now - row.created_at >= self.absolute_ms() {
-            self.store.delete_session(&id_hash)?;
+            self.store.expire_session(&id_hash)?;
             return Ok(None);
         }
         Ok(Some(row))
@@ -1531,6 +1523,46 @@ impl AuthService {
         let now = self.now();
         self.store
             .purge_sessions(now - self.idle_ms(), now - self.absolute_ms())
+    }
+
+    /// An expired app page may still turn off background reminders by explicitly signing out.
+    pub(crate) fn end_expired_browser(
+        &self,
+        csrf: &str,
+        cookie: Option<&str>,
+        ip: Option<IpAddr>,
+    ) -> Result<bool, StoreError> {
+        let now = self.now();
+        let removed = self.store.sign_out_expired_browser(
+            &secret::digest_hex(csrf),
+            cookie.map(secret::digest_hex).as_deref(),
+            now.saturating_sub(self.idle_ms()),
+            now.saturating_sub(self.absolute_ms()),
+        )?;
+        if removed {
+            self.audit(audit::SIGN_OUT, ip, json!({}));
+        }
+        Ok(removed)
+    }
+
+    /// Revokes the browser from Devices and signs out its linked session, if still live.
+    pub(crate) fn revoke_web_push_browser(
+        &self,
+        id: i64,
+        ip: Option<IpAddr>,
+    ) -> Result<bool, StoreError> {
+        let guard = self.begin_mutation();
+        let revoked = self.store.revoke_web_push_browser(id)?;
+        drop(guard);
+        if revoked {
+            self.revoked();
+            self.audit(
+                audit::SIGN_OUT,
+                ip,
+                json!({"background_reminders_revoked": true}),
+            );
+        }
+        Ok(revoked)
     }
 
     /// True if the session verified a passkey within [`STEP_UP_MS`].

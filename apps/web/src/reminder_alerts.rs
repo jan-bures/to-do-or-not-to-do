@@ -50,7 +50,9 @@ impl Background {
 
     pub fn description(self, permission: Permission) -> &'static str {
         match self {
-            Self::On => "On. Reminders can arrive when the app is closed.",
+            Self::On => {
+                "On. Reminders can arrive after you close the app or your session expires. Open the app every 30 days to keep them on."
+            }
             Self::Off => "Off. Reminders still appear while the app is open.",
             Self::Blocked => {
                 "Blocked by the browser. Allow notifications in your browser’s site settings."

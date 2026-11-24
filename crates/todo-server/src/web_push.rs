@@ -1,33 +1,42 @@
-//! Web Push transport and scheduler. Write the delivery claim before making the request: an
-//! ambiguous network failure or server restart must not send the same occurrence again.
+//! Web Push transport and scheduler. Claim before sending; release the claim only for an
+//! explicitly retryable failure. A timeout can be ambiguous, so browsers coalesce by occurrence.
 
 use crate::auth::service::AuthService;
 use crate::engine::Engine;
 use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD as B64};
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, stream::FuturesUnordered};
 use hkdf::Hkdf;
 use p256::ecdh::diffie_hellman;
 use p256::ecdsa::{Signature, SigningKey, signature::Signer};
 use p256::elliptic_curve::sec1::ToEncodedPoint;
 use p256::{PublicKey, SecretKey};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, StatusCode, Url, header::RETRY_AFTER};
 use serde::{Deserialize, Serialize};
 use sha2::Sha256;
+use std::collections::BTreeSet;
 use std::io::{self, Write as _};
 use std::path::Path;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, PoisonError};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 use todo_client::intent::reminder::{Alarm, alarms};
 use todo_core::{ids::TaskId, time::Timestamp};
 use tokio::sync::{Notify, watch};
 use zeroize::Zeroizing;
 
-const TTL: u64 = 15 * 60;
+const TTL_MS: i64 = 15 * 60 * 1000;
+const INACTIVITY_MS: i64 = 30 * 24 * 60 * 60 * 1000;
 const RESCAN: Duration = Duration::from_secs(60);
 const PARALLEL_SENDS: usize = 8;
+const AUTH_WARN_INTERVAL: Duration = Duration::from_secs(60);
 pub(crate) const MAX_SUBSCRIPTIONS: i64 = 4;
+
+type Occurrence = (i64, TaskId);
+
+pub(crate) fn inactivity_cutoff(now: i64) -> i64 {
+    now.saturating_sub(INACTIVITY_MS)
+}
 
 fn secret_key() -> io::Result<SecretKey> {
     let mut bytes = Zeroizing::new([0; 32]);
@@ -131,6 +140,7 @@ pub(crate) struct Sender {
     public_key: String,
     subject: Option<String>,
     client: Client,
+    last_auth_warning: Mutex<Option<Instant>>,
     #[cfg(test)]
     test_destination: Option<Url>,
 }
@@ -156,18 +166,55 @@ pub(crate) enum Delivery {
     Accepted,
     Gone,
     Failed,
+    Retry(Option<RetryAfter>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RetryAfter {
+    Delay(i64),
+    Date(i64),
+}
+
+impl RetryAfter {
+    fn parse(value: &str) -> Option<Self> {
+        if let Ok(seconds) = value.parse::<u64>() {
+            return Some(Self::Delay(
+                i64::try_from(seconds.saturating_mul(1000)).unwrap_or(i64::MAX),
+            ));
+        }
+        let date = httpdate::parse_http_date(value).ok()?;
+        let ms = date.duration_since(UNIX_EPOCH).ok()?.as_millis();
+        Some(Self::Date(i64::try_from(ms).unwrap_or(i64::MAX)))
+    }
+}
+
+fn next_retry(at: i64, now: i64, attempt: u32, retry_after: Option<RetryAfter>) -> Option<i64> {
+    let backoff = 15_000 * (1_i64 << attempt.saturating_sub(1).min(3));
+    let requested = match retry_after {
+        Some(RetryAfter::Delay(ms)) => now.saturating_add(ms),
+        Some(RetryAfter::Date(ms)) => ms,
+        None => now,
+    };
+    let next = now.saturating_add(backoff).max(requested);
+    (next < at.saturating_add(TTL_MS)).then_some(next)
 }
 
 #[derive(Serialize)]
-struct Reminder {
+struct Reminder<'a> {
     task: TaskId,
     at: i64,
+    title: &'a str,
 }
 
-fn reminder_body(alarm: Alarm) -> Result<Vec<u8>, serde_json::Error> {
+fn reminder_body(alarm: Alarm, title: &str) -> Result<Vec<u8>, serde_json::Error> {
+    let end = title
+        .char_indices()
+        .nth(200)
+        .map_or(title.len(), |(end, _)| end);
     serde_json::to_vec(&Reminder {
         task: alarm.task,
         at: alarm.at.as_millisecond(),
+        title: &title[..end],
     })
 }
 
@@ -198,6 +245,7 @@ impl Sender {
             public_key,
             subject,
             client,
+            last_auth_warning: Mutex::new(None),
             #[cfg(test)]
             test_destination: None,
         })
@@ -291,16 +339,46 @@ impl Sender {
             {
                 Delivery::Gone
             }
-            Ok(response) => {
-                tracing::debug!(status = %response.status(), "Web Push service declined a message");
-                Delivery::Failed
-            }
+            Ok(response) => self.rejected(
+                response.status(),
+                response
+                    .headers()
+                    .get(RETRY_AFTER)
+                    .and_then(|value| value.to_str().ok()),
+            ),
+            Err(error) if error.is_connect() || error.is_timeout() => Delivery::Retry(None),
             // A reqwest error can include the endpoint, and the provider may echo it in its body.
             Err(_) => {
                 tracing::debug!("Web Push transport failed");
                 Delivery::Failed
             }
         }
+    }
+
+    fn rejected(&self, status: StatusCode, retry_after: Option<&str>) -> Delivery {
+        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+            return Delivery::Retry(retry_after.and_then(RetryAfter::parse));
+        }
+        if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+            let mut last = self
+                .last_auth_warning
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            if last.is_none_or(|last| now.duration_since(last) >= AUTH_WARN_INTERVAL) {
+                *last = Some(now);
+                tracing::warn!(
+                    status = status.as_u16(),
+                    "Web Push service rejected authentication"
+                );
+            }
+        } else {
+            tracing::debug!(
+                status = status.as_u16(),
+                "Web Push service declined a message"
+            );
+        }
+        Delivery::Failed
     }
 
     pub(crate) async fn run(
@@ -317,36 +395,11 @@ impl Sender {
     }
 
     async fn schedule(&self, engine: &Engine, auth: &Arc<AuthService>, wake: &Notify) {
+        let mut finished = BTreeSet::new();
         loop {
-            let now = engine.now();
-            let cutoff_ms = now.as_millisecond().saturating_sub(TTL as i64 * 1000);
-            let cutoff = Timestamp::from_millisecond(cutoff_ms).unwrap_or(Timestamp::MIN);
-            let (idle, absolute) = auth.session_cutoffs(now.as_millisecond());
-            let db = auth.clone();
-            if !matches!(
-                tokio::task::spawn_blocking(move || db
-                    .store()
-                    .prune_web_push(idle, absolute, cutoff_ms))
-                .await,
-                Ok(Ok(()))
-            ) {
-                tracing::warn!("could not prune Web Push subscriptions and claims");
-            }
-            let mut next = None;
-            let mut last = std::collections::BTreeSet::new();
-            for alarm in alarms(&engine.state(), cutoff) {
-                if alarm.at > now {
-                    next = Some(alarm.at);
-                    break;
-                }
-                if last.insert((alarm.task, alarm.at.as_millisecond())) {
-                    self.remind(engine, auth, alarm).await;
-                }
-            }
+            let next = self.rescan(engine, auth, &mut finished).await;
             let delay = next.map_or(RESCAN, |at| {
-                let ms = at
-                    .as_millisecond()
-                    .saturating_sub(engine.now().as_millisecond());
+                let ms = at.saturating_sub(engine.now().as_millisecond());
                 Duration::from_millis(ms.max(1).unsigned_abs()).min(RESCAN)
             });
             tokio::select! {
@@ -356,47 +409,128 @@ impl Sender {
         }
     }
 
-    async fn remind(&self, engine: &Engine, auth: &Arc<AuthService>, alarm: Alarm) {
-        let Ok(body) = reminder_body(alarm) else {
-            return;
-        };
-        let at = alarm.at.as_millisecond();
-        let task = alarm.task.to_string();
-        let (db, key, task_id) = (auth.clone(), self.public_key.clone(), task.clone());
-        let Ok(Ok(ids)) =
-            tokio::task::spawn_blocking(move || db.store().unclaimed_web_push(&key, &task_id, at))
-                .await
-        else {
-            tracing::warn!("could not load Web Push targets");
-            return;
-        };
-        stream::iter(ids)
-            .for_each_concurrent(PARALLEL_SENDS, |id| {
-                let (task, body) = (task.clone(), &body);
-                async move {
-                    let now = engine.now().as_millisecond();
-                    let elapsed = now.saturating_sub(at).max(0).unsigned_abs() / 1000;
-                    let ttl = TTL.saturating_sub(elapsed);
-                    if ttl == 0 || !alarm.is_current(&engine.state()) {
-                        return;
-                    }
-                    let (idle, absolute) = auth.session_cutoffs(now);
-                    let db = auth.clone();
-                    let result = tokio::task::spawn_blocking(move || {
-                        db.store().claim_web_push(id, &task, at, idle, absolute)
-                    })
-                    .await;
-                    match result {
-                        Ok(Ok(Some(target))) => {
-                            self.deliver(auth, target, body, ttl).await;
-                        }
-                        Ok(Ok(None)) => {}
-                        _ => tracing::warn!("could not claim a Web Push delivery"),
-                    }
-                }
+    async fn rescan(
+        &self,
+        engine: &Engine,
+        auth: &Arc<AuthService>,
+        finished: &mut BTreeSet<Occurrence>,
+    ) -> Option<i64> {
+        let now = engine.now();
+        let now_ms = now.as_millisecond();
+        let cutoff_ms = now_ms.saturating_sub(TTL_MS);
+        let cutoff = Timestamp::from_millisecond(cutoff_ms).unwrap_or(Timestamp::MIN);
+        finished.retain(|(at, _)| *at > cutoff_ms);
+        let db = auth.clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || db.store().prune_web_push(now_ms, cutoff_ms)).await,
+            Ok(Ok(()))
+        ) {
+            tracing::warn!("could not prune Web Push subscriptions and claims");
+        }
+
+        let mut next = None;
+        let mut seen = BTreeSet::new();
+        let mut sends = FuturesUnordered::new();
+        for alarm in alarms(&engine.state(), cutoff) {
+            let at = alarm.at.as_millisecond();
+            if alarm.at > now {
+                next = earliest(next, Some(at));
+                break;
+            }
+            let occurrence = (at, alarm.task);
+            if at <= cutoff_ms || finished.contains(&occurrence) || !seen.insert(occurrence) {
+                continue;
+            }
+            let (db, key, task) = (
+                auth.clone(),
+                self.public_key.clone(),
+                alarm.task.to_string(),
+            );
+            let Ok(Ok(targets)) = tokio::task::spawn_blocking(move || {
+                db.store().unclaimed_web_push(&key, &task, at, now_ms)
             })
-            .await;
+            .await
+            else {
+                tracing::warn!("could not load Web Push targets");
+                continue;
+            };
+            if targets.is_empty() {
+                finished.insert(occurrence);
+            }
+            // One bound across all alarms, not one network round trip per alarm.
+            for (id, retry_at) in targets {
+                if let Some(retry) = retry_at.filter(|&retry| retry > now_ms) {
+                    next = earliest(next, Some(retry));
+                    continue;
+                }
+                sends.push(self.remind(engine, auth, alarm, id));
+                if sends.len() >= PARALLEL_SENDS {
+                    next = earliest(next, sends.next().await.flatten());
+                }
+            }
+        }
+        while let Some(retry) = sends.next().await {
+            next = earliest(next, retry);
+        }
+        next
     }
+
+    async fn remind(
+        &self,
+        engine: &Engine,
+        auth: &Arc<AuthService>,
+        alarm: Alarm,
+        id: i64,
+    ) -> Option<i64> {
+        let at = alarm.at.as_millisecond();
+        let expires = at.saturating_add(TTL_MS);
+        let now = engine.now().as_millisecond();
+        if now >= expires || !alarm.is_current(&engine.state()) {
+            return None;
+        }
+        let task = alarm.task.to_string();
+        let (db, key) = (auth.clone(), task.clone());
+        let result =
+            tokio::task::spawn_blocking(move || db.store().claim_web_push(id, &key, at, now)).await;
+        let (target, attempt) = match result {
+            Ok(Ok(Some(claim))) => claim,
+            Ok(Ok(None)) => return None,
+            _ => {
+                tracing::warn!("could not claim a Web Push delivery");
+                return None;
+            }
+        };
+        let remaining = expires.saturating_sub(engine.now().as_millisecond());
+        let body = {
+            let state = engine.state();
+            if remaining <= 0 || !alarm.is_current(&state) {
+                return None;
+            }
+            let task_row = state.tasks.get(&alarm.task)?;
+            reminder_body(alarm, &task_row.title).ok()?
+        };
+        let Delivery::Retry(requested) = self
+            .deliver(auth, target, &body, remaining.unsigned_abs() / 1000)
+            .await
+        else {
+            return None;
+        };
+        let next = next_retry(at, engine.now().as_millisecond(), attempt, requested)?;
+        let db = auth.clone();
+        if !matches!(
+            tokio::task::spawn_blocking(move || db.store().retry_web_push(id, &task, at, next))
+                .await,
+            Ok(Ok(()))
+        ) {
+            tracing::warn!("could not release a Web Push delivery claim for retry");
+            return None;
+        }
+        Some(next)
+    }
+}
+
+fn earliest(current: Option<i64>, candidate: Option<i64>) -> Option<i64> {
+    current.into_iter().chain(candidate).min()
 }
 
 /// RFC 8291 section 3 and RFC 8188: a single final record, no padding beyond the 0x02 delimiter.

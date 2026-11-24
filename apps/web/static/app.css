@@ -706,7 +706,8 @@ a {
 
 .settings-reminders p {
   margin: 0;
-  padding-inline: calc(var(--space-2) * 2 + var(--component-icon-small)) var(--space-2);
+  /* Match the menu item's start padding, icon width, and gap. */
+  padding-inline: calc(var(--space-2) * 2 + var(--component-icon)) var(--space-2);
   color: var(--color-ink-3);
   font: var(--text-nav-sub);
 }

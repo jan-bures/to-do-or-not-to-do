@@ -24,11 +24,11 @@ export async function requestReminderPermission() {
   }
 }
 
-export function showReminderNotification(title, task, open) {
+export function showReminderNotification(title, task, key, open) {
   try {
     if (reminderPermission() !== "granted") return false;
-    // No body, task ID, list name or other task details go to the system.
-    const notification = new Notification(title);
+    // No body, list name or notes go to the system. The opaque tag matches Web Push.
+    const notification = new Notification(title, { tag: reminderTag(key) });
     notification.onclick = (event) => {
       event.preventDefault();
       try { window.focus(); } catch { /* The browser can refuse a focus request. */ }
@@ -90,6 +90,19 @@ export function reminderKey(task, at) {
   return `${task}@${at}`;
 }
 
+export function reminderTag(key) {
+  return `todo-reminder:${key}`;
+}
+
+export function onReminderOpen(open) {
+  navigator.serviceWorker?.addEventListener?.("message", ({ data, source }) => {
+    if (source?.scriptURL === new URL("/app/reminder-worker.js", location.origin).href
+        && data?.type === "todo-open-reminder" && typeof data.task === "string") {
+      open(data.task);
+    }
+  });
+}
+
 export async function claimReminder(key, at, cutoff, eligible, legacy) {
   listen();
   for (const [id, time] of seen) if (time < cutoff) seen.delete(id);
@@ -139,8 +152,8 @@ let prepared;
 let signingOut = false;
 let pendingEnable;
 
-export async function sessionInfo(signal) {
-  const response = await fetch("/auth/session", { ...fetchOptions, signal });
+async function sessionInfo() {
+  const response = await fetch("/auth/session", fetchOptions);
   if (!response.ok) throw new Error("No live session");
   return response.json();
 }
@@ -198,9 +211,10 @@ export async function webPushState() {
     const registration = await activeRegistration();
     let subscription = await registration.pushManager.getSubscription();
     if (subscription) {
-      const status = matchesKey(subscription, key) && await pushRequest("/status", "POST", { endpoint: subscription.endpoint });
+      const { endpoint, keys } = subscription.toJSON();
+      const status = matchesKey(subscription, key) && await pushRequest("/status", "POST", { endpoint, keys });
       if (!status || (status.ok && !(await status.json()).active)) {
-        // Expiry, a new passkey session, or a rotated key invalidate the old subscription.
+        // Revocation, inactivity, or a rotated key requires opting in again.
         await subscription.unsubscribe();
         subscription = null;
       } else if (!status.ok) {

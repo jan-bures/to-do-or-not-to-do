@@ -15,12 +15,15 @@ use crate::app::AppState;
 use crate::auth::invite::Issuer;
 use crate::auth::pairing::format_code;
 use crate::auth::service::{AuthService, STEP_UP_MS};
-use crate::auth::session::{MaybeSession, OwnerSession, blocking, check_csrf, clear_cookie};
+use crate::auth::session::{
+    ClientIp, MaybeSession, OwnerSession, blocking, check_csrf, clear_cookie, cookie_value,
+};
 use crate::auth::store::{AgentRow, CredentialRoot, RevocationImpact, ShareTarget};
 use axum::Form;
+use axum::extract::rejection::FormRejection;
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
 use axum::http::header::SET_COOKIE;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Redirect, Response};
 use serde::Deserialize;
 use std::collections::BTreeMap;
@@ -208,11 +211,30 @@ pub struct CsrfForm {
 /// `POST /auth/logout`.
 pub async fn logout(
     State(app): State<AppState>,
-    s: OwnerSession,
-    Form(f): Form<CsrfForm>,
+    MaybeSession(session): MaybeSession,
+    ClientIp(ip): ClientIp,
+    headers: HeaderMap,
+    form: Result<Form<CsrfForm>, FormRejection>,
 ) -> PageResult {
-    guard(&app, &s, &f.csrf, false)?;
-    blocking(&app.authsvc, move |svc| svc.end_session(&s.row, s.ip)).await??;
+    let signed_out = || ApiError::new(StatusCode::UNAUTHORIZED, "signed_out", "sign in first");
+    let Form(f) = match form {
+        Ok(form) => form,
+        Err(_) if session.is_some() => return Err(crate::auth::session::csrf_failed().into()),
+        Err(_) => return Ok(signed_out().into_response()),
+    };
+    if let Some(s) = session {
+        guard(&app, &s, &f.csrf, false)?;
+        blocking(&app.authsvc, move |svc| svc.end_session(&s.row, s.ip)).await??;
+    } else {
+        let cookie = cookie_value(&headers);
+        if !blocking(&app.authsvc, move |svc| {
+            svc.end_expired_browser(&f.csrf, cookie.as_deref(), ip)
+        })
+        .await??
+        {
+            return Ok(signed_out().into_response());
+        }
+    }
     let mut res = Redirect::to("/login").into_response();
     res.headers_mut().insert(SET_COOKIE, clear_cookie());
     Ok(res)
@@ -537,7 +559,33 @@ pub async fn devices(State(app): State<AppState>, s: OwnerSession) -> PageResult
         }
         body.push_str("</ul>");
     }
-    body.push_str(r#"</section><section aria-labelledby="browser-passkeys"><h2 id="browser-passkeys">Browser passkeys</h2>"#);
+    body.push_str("</section>");
+    let hash = s.row.id_hash.clone();
+    let browsers = blocking(&app.authsvc, move |svc| {
+        svc.store().web_push_browsers(&hash, now)
+    })
+    .await??;
+    if !browsers.is_empty() {
+        body.push_str(r#"<section aria-labelledby="browser-devices"><h2 id="browser-devices">Browsers</h2><ul class="rows" role="list">"#);
+        for browser in browsers {
+            let mut facts = vec![
+                "Background reminders".into(),
+                last_active(Some(browser.last_seen_at), now),
+            ];
+            if browser.current {
+                facts.push("This browser".into());
+            }
+            let action = format!(
+                r#"<details class="confirm"><summary class="danger"><span class="confirm-open">Revoke</span><span class="confirm-cancel">Cancel</span></summary>
+<form class="stack" method="post" action="/admin/devices/browsers/{}/revoke">{}<p>Sign out this browser and stop its background reminders?</p><button type="submit" class="danger">Confirm revoke</button></form></details>"#,
+                browser.id,
+                csrf_field(&s),
+            );
+            row(&mut body, &browser.name, &facts, "", &action);
+        }
+        body.push_str("</ul></section>");
+    }
+    body.push_str(r#"<section aria-labelledby="browser-passkeys"><h2 id="browser-passkeys">Browser passkeys</h2>"#);
     let fresh = app.authsvc.is_fresh(&s.row);
     let hash = s.row.id_hash.clone();
     let (passkeys, current) = blocking(&app.authsvc, move |svc| {
@@ -611,6 +659,24 @@ pub async fn device_revoke(
     guard(&app, &s, &f.csrf, true)?;
     if !blocking(&app.authsvc, move |svc| {
         svc.revoke_device_from_session(&s.row, &id, s.ip)
+    })
+    .await??
+    {
+        return Err(not_found());
+    }
+    Ok(Redirect::to("/admin/devices").into_response())
+}
+
+/// `POST /admin/devices/browsers/{id}/revoke`.
+pub async fn browser_revoke(
+    State(app): State<AppState>,
+    s: OwnerSession,
+    Path(id): Path<i64>,
+    Form(f): Form<CsrfForm>,
+) -> PageResult {
+    guard(&app, &s, &f.csrf, true)?;
+    if !blocking(&app.authsvc, move |svc| {
+        svc.revoke_web_push_browser(id, s.ip)
     })
     .await??
     {

@@ -1,7 +1,7 @@
-//! Web Push registrations are owned by the current passkey session, never by a bearer token.
+//! Web Push registrations belong to opt-in browsers. Only passkey sessions can manage them.
 
 use super::error::ApiError;
-use super::{ApiJson, ApiPath, RequestCancel, Work, blocking, no_such_endpoint};
+use super::{ApiJson, RequestCancel, Work, blocking, no_such_endpoint};
 use crate::app::AppState;
 use crate::auth::store::web_push::Registered;
 use crate::auth::{Authenticated, Principal};
@@ -12,7 +12,6 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
-use todo_core::ids::TaskId;
 use utoipa::ToSchema;
 
 #[derive(Serialize, ToSchema)]
@@ -35,11 +34,6 @@ impl Endpoint {
 #[derive(Serialize, ToSchema)]
 pub(crate) struct SubscriptionStatus {
     active: bool,
-}
-
-#[derive(Serialize, ToSchema)]
-pub(crate) struct Title {
-    title: String,
 }
 
 fn session(caller: Authenticated) -> Result<String, ApiError> {
@@ -132,21 +126,25 @@ pub(crate) async fn unregister(
     .await?
 }
 
-#[utoipa::path(post, path = "/api/v1/web-push/status", tag = "web-push", request_body = Endpoint,
+#[utoipa::path(post, path = "/api/v1/web-push/status", tag = "web-push", request_body = Registration,
     responses((status = 200, body = SubscriptionStatus)), security(("web_session" = [], "csrf" = [])))]
 pub(crate) async fn status(
     State(app): State<AppState>,
     caller: Authenticated,
-    ApiJson(body): ApiJson<Endpoint>,
+    RequestCancel(cancel): RequestCancel,
+    ApiJson(body): ApiJson<Registration>,
 ) -> Result<Json<SubscriptionStatus>, ApiError> {
     let session = session(caller)?;
     let sender = sender(&app)?;
-    let endpoint = body.validate()?;
+    let target = body.validate().ok_or_else(invalid)?;
     let auth = app.authsvc.clone();
-    blocking(&app, Work::Read, move || {
-        let active = auth
-            .store()
-            .has_web_push(&session, &endpoint, sender.public_key())?;
+    blocking(&app, Work::Write, move || {
+        if !cancel.begin_commit() {
+            return Err(ApiError::timeout());
+        }
+        let active =
+            auth.store()
+                .confirm_web_push(&session, sender.public_key(), &target, auth.now())?;
         Ok(Json(SubscriptionStatus { active }))
     })
     .await?
@@ -175,9 +173,12 @@ pub(crate) async fn test(
             auth.now(),
         )? {
             Some(target) => Ok(target),
-            None if auth
-                .store()
-                .has_web_push(&session, &endpoint, worker.public_key())? =>
+            None if auth.store().has_web_push(
+                &session,
+                &endpoint,
+                worker.public_key(),
+                auth.now(),
+            )? =>
             {
                 Err(ApiError::too_many_requests(30))
             }
@@ -192,31 +193,10 @@ pub(crate) async fn test(
             "subscription_expired",
             "enable Web Push again",
         )),
-        Delivery::Failed => Err(ApiError::new(
+        Delivery::Failed | Delivery::Retry(_) => Err(ApiError::new(
             StatusCode::BAD_GATEWAY,
             "push_failed",
             "the push service did not accept the notification",
         )),
     }
-}
-
-#[utoipa::path(get, path = "/api/v1/web-push/tasks/{id}", tag = "web-push",
-    params(("id" = TaskId, Path, description = "Task ID")),
-    responses((status = 200, body = Title)), security(("web_session" = [], "csrf" = [])))]
-pub(crate) async fn title(
-    State(app): State<AppState>,
-    caller: Authenticated,
-    ApiPath(id): ApiPath<TaskId>,
-) -> Result<Json<Title>, ApiError> {
-    session(caller)?;
-    sender(&app)?;
-    let state = app.engine.state();
-    let task = state
-        .tasks
-        .get(&id)
-        .filter(|task| task.completed_at.is_none() && state.is_live(id.into()))
-        .ok_or_else(|| ApiError::not_found("task is not open"))?;
-    Ok(Json(Title {
-        title: task.title.clone(),
-    }))
 }

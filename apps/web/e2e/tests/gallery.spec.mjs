@@ -80,7 +80,7 @@ for (const scheme of ["light", "dark"]) {
       ["off", "default", "Off."], ["on", "granted", "On."], ["blocked", "denied", "Blocked by the browser"],
     ]) {
       test(`background reminders ${name} in Settings (${scheme})`, async ({ page, browser, baseURL }) => {
-        const capture = async (tab, suffix) => {
+        const capture = async (tab, suffix, crop = false) => {
           const w = watch(tab);
           await mockPush(tab, permission, name === "on");
           await open(tab);
@@ -88,7 +88,14 @@ for (const scheme of ["light", "dark"]) {
           await expect(tab.locator("#reminder-notification-description")).toContainText(status);
           const sidebar = tab.locator(".sidebar");
           await expect(sidebar.getByRole("menuitem", { name: "Send test notification" })).toHaveCount(name === "on" ? 1 : 0);
-          await sidebar.screenshot({ path: `gallery/web-push-${name}-${scheme}${suffix}.png`, animations: "disabled" });
+          const gap = await tab.locator("#reminder-notification-description").evaluate(p => {
+            const label = document.querySelector("#reminder-notification-setting > span:not(.icon)");
+            return p.getBoundingClientRect().left + parseFloat(getComputedStyle(p).paddingLeft)
+              - label.getBoundingClientRect().left;
+          });
+          expect(Math.abs(gap)).toBeLessThan(0.5);
+          const area = crop ? sidebar.locator(".settings-menu") : sidebar;
+          await area.screenshot({ path: `gallery/web-push-${name}-${scheme}${suffix}.png`, animations: "disabled" });
           await w.check();
         };
         await page.setViewportSize(DESKTOP);
@@ -96,6 +103,11 @@ for (const scheme of ["light", "dark"]) {
         const scaled = await browser.newPage({ baseURL, viewport: DESKTOP, colorScheme: scheme,
           deviceScaleFactor: 1.5, locale: "en-GB", timezoneId: "Europe/Prague" });
         try { await capture(scaled, "-150"); } finally { await scaled.close(); }
+        if (name !== "off") {
+          const cropped = await browser.newPage({ baseURL, viewport: DESKTOP, colorScheme: scheme,
+            deviceScaleFactor: 2.5, locale: "en-GB", timezoneId: "Europe/Prague" });
+          try { await capture(cropped, "-menu-250", true); } finally { await cropped.close(); }
+        }
       });
     }
 

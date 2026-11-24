@@ -5,7 +5,9 @@ use crate::config::Config;
 use axum::{Router, body::Bytes, http::HeaderMap, routing::post};
 use p256::ecdsa::signature::Verifier;
 use serde_json::json;
-use todo_core::ids::ReminderId;
+use std::sync::atomic::{AtomicI64, Ordering};
+use todo_core::{Actor, Command};
+use uuid::Uuid;
 
 const AUTH: &str = "BTBZMqHH6r4Tts7J_aSIgg";
 const RECEIVER: &str = concat!(
@@ -114,16 +116,36 @@ fn only_supported_https_push_hosts_with_default_ports() {
     assert!(endpoint(&format!("https://fcm.googleapis.com/{}", "a".repeat(4096))).is_none());
 }
 
-#[test]
-fn payload_contains_only_task_and_reminder_time() {
-    let task = TaskId::from_uuid(uuid::Uuid::from_u128(1));
-    let alarm = Alarm {
-        task,
-        reminder: ReminderId::from_uuid(uuid::Uuid::from_u128(2)),
-        at: Timestamp::from_millisecond(8123).unwrap(),
-    };
-    let body: serde_json::Value = serde_json::from_slice(&reminder_body(alarm).unwrap()).unwrap();
-    assert_eq!(body, json!({ "task": task, "at": 8123 }));
+// Decrypt as a browser would: ECDH with the receiver's private key, with the sender key and
+// salt taken from the RFC 8188 header. Do not reuse the sender's encryption implementation.
+fn decrypt(body: &[u8], receiver: &SecretKey, auth: &[u8]) -> serde_json::Value {
+    let salt = &body[..16];
+    assert_eq!(u32::from_be_bytes(body[16..20].try_into().unwrap()), 4096);
+    assert_eq!(body[20], 65);
+    let sender = PublicKey::from_sec1_bytes(&body[21..86]).unwrap();
+    let shared = diffie_hellman(receiver.to_nonzero_scalar(), sender.as_affine());
+    let info = [
+        b"WebPush: info\0".as_slice(),
+        receiver.public_key().to_encoded_point(false).as_bytes(),
+        &body[21..86],
+    ]
+    .concat();
+    let mut ikm = [0; 32];
+    Hkdf::<Sha256>::new(Some(auth), shared.raw_secret_bytes())
+        .expand(&info, &mut ikm)
+        .unwrap();
+    let hkdf = Hkdf::<Sha256>::new(Some(salt), &ikm);
+    let mut key = [0; 16];
+    let mut nonce = [0; 12];
+    hkdf.expand(b"Content-Encoding: aes128gcm\0", &mut key)
+        .unwrap();
+    hkdf.expand(b"Content-Encoding: nonce\0", &mut nonce)
+        .unwrap();
+    let mut plaintext = Aes128Gcm::new(&key.into())
+        .decrypt(&Nonce::from(nonce), &body[86..])
+        .unwrap();
+    assert_eq!(plaintext.pop(), Some(2));
+    serde_json::from_slice(&plaintext).unwrap()
 }
 
 fn subscription(i: i64) -> Subscription {
@@ -137,13 +159,17 @@ fn subscription(i: i64) -> Subscription {
 }
 
 async fn server() -> (tempfile::TempDir, Server) {
+    server_with(Options::default()).await
+}
+
+async fn server_with(options: Options) -> (tempfile::TempDir, Server) {
     let dir = tempfile::tempdir().unwrap();
     let config = Config {
         data_dir: dir.path().to_owned(),
         bind: "127.0.0.1:0".parse().unwrap(),
         ..Config::default()
     };
-    let server = Server::bind(&config, Options::default()).await.unwrap();
+    let server = Server::bind(&config, options).await.unwrap();
     // Only the database foreign key matters here; no WebAuthn ceremony or deployment credentials.
     let connection = rusqlite::Connection::open(config.database_path()).unwrap();
     connection.execute("INSERT INTO passkeys (id, cred_id, name, passkey, created_at) VALUES (1, 'fixture', 'Fixture', '{}', 0)", []).unwrap();
@@ -189,43 +215,40 @@ async fn cap_durable_claims_and_session_revocation() {
             .unwrap(),
         Registered::AtCapacity
     ));
-    let ids = store.unclaimed_web_push("key", "task", 100).unwrap();
+    let idle = 2 * 60 * 60 * 1000;
+    let session = store.session("fixture").unwrap().unwrap();
+    store.purge_sessions(idle, 0).unwrap();
+    assert!(store.session("fixture").unwrap().is_none());
+    let ids = store.unclaimed_web_push("key", "task", idle, idle).unwrap();
     assert_eq!(ids.len() as i64, MAX_SUBSCRIPTIONS);
     assert!(
         store
-            .claim_web_push(ids[0], "task", 100, 0, 0)
+            .claim_web_push(ids[0].0, "task", idle, idle)
             .unwrap()
             .is_some()
     );
     assert!(
         store
-            .claim_web_push(ids[0], "task", 100, 0, 0)
+            .claim_web_push(ids[0].0, "task", idle, idle)
             .unwrap()
             .is_none()
     );
     assert!(
         store
-            .claim_web_push(ids[1], "task", 100, 1, 0)
-            .unwrap()
-            .is_none()
-    );
-    assert!(
-        store
-            .unclaimed_web_push("key", "task", 0)
+            .unclaimed_web_push("key", "task", 0, idle)
             .unwrap()
             .is_empty()
     );
     assert!(
         !store
-            .unclaimed_web_push("key", "task", 100)
+            .unclaimed_web_push("key", "task", idle, idle)
             .unwrap()
             .contains(&ids[0])
     );
-    let session = store.session("fixture").unwrap().unwrap();
     auth.end_session(&session, None).unwrap();
     assert!(
         store
-            .unclaimed_web_push("key", "task", 100)
+            .unclaimed_web_push("key", "task", idle, idle)
             .unwrap()
             .is_empty()
     );
@@ -277,7 +300,7 @@ async fn gone_response_removes_the_subscription() {
     );
     assert!(
         !store
-            .has_web_push("fixture", sub.endpoint.as_str(), key)
+            .has_web_push("fixture", sub.endpoint.as_str(), key, 1)
             .unwrap()
     );
     mock.abort();
@@ -285,9 +308,6 @@ async fn gone_response_removes_the_subscription() {
 
 #[tokio::test]
 async fn committed_alarm_is_sent_when_due_and_not_resent_after_worker_restart() {
-    use todo_core::{Actor, Command};
-    use uuid::Uuid;
-
     let (_dir, server) = server().await;
     let auth = server.auth_service();
     let engine = server.engine();
@@ -310,16 +330,19 @@ async fn committed_alarm_is_sent_when_due_and_not_resent_after_worker_restart() 
     row.created_at = now;
     row.last_seen_at = now;
     store.create_session(&row, 1).unwrap();
+    let receiver = secret_key().unwrap();
+    let mut sub = subscription(0);
+    sub.p256dh
+        .copy_from_slice(receiver.public_key().to_encoded_point(false).as_bytes());
     assert!(matches!(
         store
-            .register_web_push("live", sender.public_key(), &subscription(0), now)
+            .register_web_push("live", sender.public_key(), &sub, now)
             .unwrap(),
         Registered::Stored
     ));
+    store.expire_session("live").unwrap();
 
-    let (list, task, reminder) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
     let at = Timestamp::from_millisecond(now + 250).unwrap();
-    let actor = Actor::owner("test").unwrap();
     let wake = engine.enable_web_push();
     let (stop, shutdown) = watch::channel(false);
     let worker = tokio::spawn(sender.clone().run(
@@ -328,24 +351,18 @@ async fn committed_alarm_is_sent_when_due_and_not_resent_after_worker_restart() 
         wake.clone(),
         shutdown,
     ));
-    for body in [
-        json!({"cmd":"create_list", "id":list, "name":"Test list"}),
-        json!({"cmd":"create_task", "id":task, "list":list, "title":"Test title"}),
-        json!({"cmd":"add_reminder", "id":reminder, "task":task, "at":at}),
-    ] {
-        engine
-            .execute(
-                &actor,
-                Uuid::new_v4(),
-                &serde_json::from_value::<Command>(body).unwrap(),
-            )
-            .unwrap();
-    }
+    let expected_title = "é".repeat(200);
+    let task = commit_alarm(&engine, at, &format!("{expected_title}x"));
     let message = tokio::time::timeout(Duration::from_secs(5), requests.recv())
         .await
         .unwrap()
         .unwrap();
-    assert!(message.len() > 86);
+    assert_eq!(
+        decrypt(&message, &receiver, &sub.auth),
+        json!({
+            "task": task, "at": at.as_millisecond(), "title": expected_title,
+        })
+    );
     assert!(engine.now() >= at);
     stop.send(true).unwrap();
     worker.await.unwrap();
@@ -361,4 +378,248 @@ async fn committed_alarm_is_sent_when_due_and_not_resent_after_worker_restart() 
     worker.await.unwrap();
     service.abort();
     server.spawn().unwrap().shutdown().await.unwrap();
+}
+
+fn commit_alarm(engine: &Engine, at: Timestamp, title: &str) -> Uuid {
+    let (list, task, reminder) = (Uuid::new_v4(), Uuid::new_v4(), Uuid::new_v4());
+    let actor = Actor::owner("test").unwrap();
+    for body in [
+        json!({"cmd":"create_list", "id":list, "name":"Test list"}),
+        json!({"cmd":"create_task", "id":task, "list":list, "title":title, "notes":"Never in a push"}),
+        json!({"cmd":"add_reminder", "id":reminder, "task":task, "at":at}),
+    ] {
+        engine
+            .execute(
+                &actor,
+                Uuid::new_v4(),
+                &serde_json::from_value::<Command>(body).unwrap(),
+            )
+            .unwrap();
+    }
+    task
+}
+
+#[tokio::test]
+async fn stale_logout_without_cookie_cannot_revoke_a_live_session() {
+    let (_dir, server) = server().await;
+    let auth = server.auth_service();
+    let store = auth.store();
+    let mut row = store.session("fixture").unwrap().unwrap();
+    row.id_hash = "logout-fixture".into();
+    row.created_at = auth.now();
+    row.last_seen_at = row.created_at;
+    store.create_session(&row, 1).unwrap();
+    let sub = subscription(0);
+    store
+        .register_web_push(&row.id_hash, "key", &sub, row.created_at)
+        .unwrap();
+    assert!(!auth.end_expired_browser(&row.csrf, None, None).unwrap());
+    assert!(
+        store
+            .has_web_push(&row.id_hash, sub.endpoint.as_str(), "key", row.created_at)
+            .unwrap()
+    );
+    store.expire_session(&row.id_hash).unwrap();
+    assert!(!auth.end_expired_browser("wrong-token", None, None).unwrap());
+    assert!(auth.end_expired_browser(&row.csrf, None, None).unwrap());
+    assert!(
+        !store
+            .has_web_push(&row.id_hash, sub.endpoint.as_str(), "key", row.created_at)
+            .unwrap()
+    );
+}
+
+#[tokio::test]
+async fn confirmation_refreshes_browser_activity_after_a_new_sign_in() {
+    let (_dir, server) = server().await;
+    let auth = server.auth_service();
+    let store = auth.store();
+    let sub = subscription(0);
+    let now = 42;
+    let mut new_session = store.session("fixture").unwrap().unwrap();
+    store
+        .register_web_push("fixture", "key", &sub, now)
+        .unwrap();
+    let id = store.web_push_browsers("fixture", now).unwrap()[0].id;
+    store.expire_session("fixture").unwrap();
+    let seen = now + INACTIVITY_MS - 1;
+    new_session.id_hash = "new-login".into();
+    store.create_session(&new_session, 1).unwrap();
+    let mut wrong = subscription(0);
+    wrong.auth[0] ^= 1;
+    assert!(
+        !store
+            .confirm_web_push("new-login", "key", &wrong, seen)
+            .unwrap()
+    );
+    assert!(
+        store
+            .confirm_web_push("new-login", "key", &sub, seen)
+            .unwrap()
+    );
+    let rows = store.web_push_browsers("new-login", seen).unwrap();
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].id, id);
+    assert!(rows[0].current);
+    assert_eq!(rows[0].last_seen_at, seen);
+    assert!(
+        store
+            .claim_web_push(id, "task", seen, seen)
+            .unwrap()
+            .is_some()
+    );
+    store.prune_web_push(seen + INACTIVITY_MS - 1, 0).unwrap();
+    assert!(
+        store
+            .has_web_push(
+                "new-login",
+                sub.endpoint.as_str(),
+                "key",
+                seen + INACTIVITY_MS - 1
+            )
+            .unwrap()
+    );
+    store.prune_web_push(seen + INACTIVITY_MS, 0).unwrap();
+    assert!(
+        !store
+            .confirm_web_push("new-login", "key", &sub, seen + INACTIVITY_MS)
+            .unwrap()
+    );
+    assert!(
+        !auth.revoke_web_push_browser(id, None).unwrap(),
+        "pruning removes the browser row and cascades to its subscription"
+    );
+}
+
+#[tokio::test]
+async fn retries_503_and_429_without_exceeding_ttl() {
+    const START: i64 = 1_800_000_000_000;
+    let clock = Arc::new(AtomicI64::new(START));
+    let reading = clock.clone();
+    let (_dir, server) = server_with(Options {
+        clock: Arc::new(move || {
+            Timestamp::from_millisecond(reading.load(Ordering::Relaxed)).unwrap()
+        }),
+        ..Options::default()
+    })
+    .await;
+    let auth = server.auth_service();
+    let engine = server.engine();
+    let mut sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    sender.client = Client::builder().no_proxy().build().unwrap();
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = calls.clone();
+    let router = Router::new().fallback(post(move |headers: HeaderMap| async move {
+        let n = count.fetch_add(1, Ordering::Relaxed);
+        match n {
+            0 => {
+                assert_eq!(headers["ttl"], "900");
+                StatusCode::SERVICE_UNAVAILABLE
+            }
+            1 => {
+                assert_eq!(headers["ttl"], "885");
+                return (StatusCode::TOO_MANY_REQUESTS, [(RETRY_AFTER, "90")]).into_response();
+            }
+            2 => {
+                assert_eq!(headers["ttl"], "795");
+                StatusCode::CREATED
+            }
+            3 => StatusCode::SERVICE_UNAVAILABLE,
+            _ => panic!("unexpected Web Push retry"),
+        }
+        .into_response()
+    }));
+    use axum::response::IntoResponse as _;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    sender.test_destination =
+        Some(Url::parse(&format!("http://{}/send", listener.local_addr().unwrap())).unwrap());
+    let mock = tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+    auth.store()
+        .register_web_push("fixture", sender.public_key(), &subscription(0), START)
+        .unwrap();
+    let task = commit_alarm(
+        &engine,
+        Timestamp::from_millisecond(START).unwrap(),
+        "Retry me",
+    );
+    let mut finished = BTreeSet::new();
+    for (offset, call_count, next) in [
+        (0, 1, Some(15_000)), // 503 -> first backoff
+        (14_999, 1, Some(15_000)),
+        (15_000, 2, Some(105_000)), // 429 -> Retry-After beats exponential backoff
+        (104_999, 2, Some(105_000)),
+        (105_000, 3, None),
+        (106_000, 3, None),
+    ] {
+        clock.store(START + offset, Ordering::Relaxed);
+        assert_eq!(
+            sender.rescan(&engine, &auth, &mut finished).await,
+            next.map(|at| START + at)
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), call_count);
+    }
+    assert!(finished.contains(&(START, TaskId::from_uuid(task))));
+    let second_at = START + TTL_MS;
+    commit_alarm(
+        &engine,
+        Timestamp::from_millisecond(second_at).unwrap(),
+        "Do not retry late",
+    );
+    clock.store(second_at, Ordering::Relaxed);
+    assert_eq!(
+        sender.rescan(&engine, &auth, &mut finished).await,
+        Some(second_at + 15_000)
+    );
+    clock.store(second_at + TTL_MS, Ordering::Relaxed);
+    assert_eq!(sender.rescan(&engine, &auth, &mut finished).await, None);
+    assert_eq!(calls.load(Ordering::Relaxed), 4);
+    assert_eq!(next_retry(START, START, 1, RetryAfter::parse("900")), None);
+    let date =
+        httpdate::fmt_http_date(UNIX_EPOCH + Duration::from_secs((START / 1000 + 60) as u64));
+    assert_eq!(
+        next_retry(START, START, 1, RetryAfter::parse(&date)),
+        Some(START + 60_000)
+    );
+    mock.abort();
+}
+
+#[test]
+fn warns_at_most_once_per_interval_on_auth_failure() {
+    #[derive(Clone, Default)]
+    struct Log(Arc<Mutex<Vec<u8>>>);
+    impl io::Write for Log {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().write(bytes)
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let output = Log::default();
+    let log = output.clone();
+    let subscriber = tracing_subscriber::fmt()
+        .without_time()
+        .with_ansi(false)
+        .with_max_level(tracing::Level::WARN)
+        .with_writer(move || log.clone())
+        .finish();
+    let sender = Sender::new(secret_key().unwrap(), None).unwrap();
+    tracing::subscriber::with_default(subscriber, || {
+        assert_eq!(
+            sender.rejected(StatusCode::UNAUTHORIZED, Some("do not log this")),
+            Delivery::Failed
+        );
+        assert_eq!(
+            sender.rejected(StatusCode::FORBIDDEN, None),
+            Delivery::Failed
+        );
+    });
+    let raw = output.0.lock().unwrap();
+    let line = std::str::from_utf8(&raw).unwrap();
+    assert_eq!(line.lines().count(), 1, "{line}");
+    assert!(
+        line.contains("WARN") && line.contains("status=401"),
+        "{line}"
+    );
+    assert!(!line.contains("do not log this"));
 }

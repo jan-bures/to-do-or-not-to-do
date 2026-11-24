@@ -42,33 +42,39 @@ test("Web Push opts in on a trusted gesture, sends a test, disables and unsubscr
   await w.check();
 });
 
-test("the worker and visible tab share a claim; the worker fetches only the title and opens the task", async ({ page }) => {
+test("the worker notifies even when the tab won the claim, then opens the task without reloading", async ({ page }) => {
   const w = watch(page);
-  await mockPush(page, "granted", true);
-  let titleAvailable = true;
-  await page.route("**/auth/session", route => route.fulfill({ json: { csrf: "worker-csrf" } }));
-  await page.route("**/api/v1/web-push/tasks/*", route => {
-    expect(route.request().headers()["x-csrf-token"]).toBe("worker-csrf");
-    return titleAvailable ? route.fulfill({ json: { title: REMINDER_TASK } }) : route.fulfill({ status: 204 });
-  });
+  const { calls, endpoint } = await mockPush(page, "granted", true);
   await beforeReminder(page);
   await settings(page).click();
   await page.clock.runFor(32);
   await expect(status(page)).toContainText("On.");
+  expect(calls.find(c => c.path.endsWith("/status"))).toMatchObject({
+    body: { endpoint, keys: { auth: "fixture", p256dh: "fixture" } },
+  });
   await page.keyboard.press("Escape");
   await page.getByRole("button", { name: REMINDER_TASK, exact: true }).click();
   const task = new URL(page.url()).pathname.split("/").at(-1);
   expect(task).toMatch(/^[a-f0-9-]{36}$/);
+  await page.goBack();
+  await expect(page).not.toHaveURL(/\/task\//);
   // Load the worker module in an isolated page context with worker event and notification shims.
   // Unlike a vendor push service, this works offline and still exercises the real IndexedDB claim.
   await page.evaluate(async () => {
-    const log = window.workerMock = { notifications: [], actions: [] };
+    const log = window.workerMock = { notifications: [], actions: [], windows: true };
+    self.skipWaiting = async () => log.actions.push("skip waiting");
     self.registration = { showNotification: async (title, options) => log.notifications.push({ title, options }) };
     self.clients = {
-      matchAll: async () => [{ url: location.href, focused: true, navigate: async path => {
-        log.actions.push(path);
-        return { focus: async () => log.actions.push("focused") };
-      } }],
+      claim: async () => log.actions.push("claim clients"),
+      matchAll: async () => log.windows ? [{
+        url: location.href,
+        focus: async () => log.actions.push("focused"),
+        postMessage: data => {
+          log.actions.push(data);
+          const source = { scriptURL: new URL("/app/reminder-worker.js", location.origin).href };
+          navigator.serviceWorker.dispatchEvent(Object.assign(new Event("message"), { data, source }));
+        },
+      }] : [],
       openWindow: async path => log.actions.push(path),
     };
     await import("/app/reminder-worker.js");
@@ -77,21 +83,33 @@ test("the worker and visible tab share a claim; the worker fetches only the titl
     });
   });
   const at = Date.parse("2026-11-21T14:30:00Z");
-  await page.clock.runFor(9948);
-  await page.evaluate(async payload => window.workerEvent("push", { data: { json: () => payload } }), { task, at });
-  await page.clock.runFor(8000);
-  await expect(reminderToast(page)).toHaveCount(0);
-  await page.evaluate(async ({ task, at }) => {
+  await page.clock.runFor(18000);
+  // The visible tab reached the fallback first and committed the claim.
+  await expect(reminderToast(page)).toContainText(REMINDER_TASK);
+  await page.evaluate(async ({ task, at, title }) => {
+    await window.workerEvent("install", {});
+    await window.workerEvent("activate", {});
+    await window.workerEvent("push", { data: { json: () => ({ task, at, title }) } });
     await window.workerEvent("push", { data: { json: () => ({ task, at }) } });
-    await window.workerEvent("notificationclick", { notification: {
+    await window.workerEvent("push", { data: { json: () => { throw new SyntaxError(); } } });
+    window.clickReminder = () => window.workerEvent("notificationclick", { notification: {
       data: { task }, close: () => window.workerMock.actions.push("closed"),
     } });
-  }, { task, at });
-  expect(await page.evaluate(() => window.workerMock.notifications.map(n => n.title))).toEqual([REMINDER_TASK]);
-  expect(await page.evaluate(() => window.workerMock.actions)).toEqual(["closed", `/app/all/task/${task}`, "focused"]);
-  titleAvailable = false;
-  await page.evaluate(async payload => window.workerEvent("push", { data: { json: () => payload } }), { task, at: at + 1000 });
-  expect(await page.evaluate(() => window.workerMock.notifications.at(-1).title)).toBe("Reminder");
+    await window.clickReminder();
+  }, { task, at, title: REMINDER_TASK });
+  expect(await page.evaluate(() => window.workerMock.notifications.map(({ title, options }) => [title, options.tag]))).toEqual([
+    [REMINDER_TASK, `todo-reminder:${task}@${at}`],
+    ["Reminder", `todo-reminder:${task}@${at}`],
+    ["Reminder", "todo-reminder"],
+  ]);
+  await expect(page.locator(".detail .d-title")).toHaveText(REMINDER_TASK);
+  await expect(page).toHaveURL(new RegExp(`/app/list/[^/]+/task/${task}`));
+  // These shims would have disappeared if notificationclick had reloaded the app.
+  expect(await page.evaluate(() => window.workerMock.actions)).toEqual([
+    "skip waiting", "claim clients", "closed", "focused", { type: "todo-open-reminder", task },
+  ]);
+  await page.evaluate(async () => { window.workerMock.windows = false; await window.clickReminder(); });
+  expect(await page.evaluate(() => window.workerMock.actions.at(-1))).toBe(`/app/all/task/${task}`);
   await w.check();
 });
 

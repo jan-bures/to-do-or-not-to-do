@@ -330,6 +330,59 @@ CREATE TABLE web_push_claims (
 ) WITHOUT ROWID;
 CREATE INDEX web_push_claims_by_time ON web_push_claims (at);
 ",
+    // Browser identities outlive login sessions. Explicit revocation still cascades to push data.
+    r"
+ALTER TABLE web_push_claims RENAME TO web_push_claims_old;
+ALTER TABLE web_push_subscriptions RENAME TO web_push_subscriptions_old;
+CREATE TABLE web_push_browsers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session TEXT NOT NULL,
+    passkey INTEGER NOT NULL REFERENCES passkeys(id) ON DELETE CASCADE,
+    step_up_passkey INTEGER REFERENCES passkeys(id) ON DELETE CASCADE,
+    logout_csrf TEXT NOT NULL
+);
+CREATE INDEX web_push_browsers_by_session ON web_push_browsers (session);
+CREATE INDEX web_push_browsers_by_passkey ON web_push_browsers (passkey);
+CREATE INDEX web_push_browsers_by_step_up ON web_push_browsers (step_up_passkey);
+CREATE TRIGGER web_push_browser_step_up AFTER UPDATE OF step_up_passkey_id ON sessions
+BEGIN
+    UPDATE web_push_browsers SET step_up_passkey = NEW.step_up_passkey_id WHERE session = NEW.id_hash;
+END;
+CREATE TABLE web_push_subscriptions (
+    id INTEGER PRIMARY KEY REFERENCES web_push_browsers(id) ON DELETE CASCADE,
+    endpoint TEXT NOT NULL UNIQUE CHECK (length(endpoint) <= 4096),
+    p256dh BLOB NOT NULL CHECK (length(p256dh) = 65),
+    auth BLOB NOT NULL CHECK (length(auth) = 16),
+    vapid_key TEXT NOT NULL,
+    registered_at INTEGER NOT NULL,
+    last_seen_at INTEGER NOT NULL,
+    tested_at INTEGER
+);
+CREATE TABLE web_push_claims (
+    subscription INTEGER NOT NULL REFERENCES web_push_subscriptions(id) ON DELETE CASCADE,
+    task TEXT NOT NULL,
+    at INTEGER NOT NULL,
+    attempt INTEGER NOT NULL DEFAULT 1,
+    retry_at INTEGER,
+    PRIMARY KEY (subscription, task, at)
+) WITHOUT ROWID;
+-- The previous schema had no revocation-only token. Keep its subscriptions and claims; their
+-- token will be filled on the next confirmation. The live session can still sign out normally.
+INSERT INTO web_push_browsers (id, session, passkey, step_up_passkey, logout_csrf)
+    SELECT p.id, s.id_hash, s.passkey_id, s.step_up_passkey_id, '' FROM web_push_subscriptions_old p
+    JOIN sessions s ON s.id_hash = p.session WHERE s.passkey_id IS NOT NULL;
+INSERT INTO web_push_subscriptions (id, endpoint, p256dh, auth, vapid_key, registered_at, last_seen_at, tested_at)
+    SELECT p.id, p.endpoint, p.p256dh, p.auth, p.vapid_key, p.registered_at,
+           max(p.registered_at, s.last_seen_at), p.tested_at
+    FROM web_push_subscriptions_old p JOIN web_push_browsers b ON b.id = p.id
+    JOIN sessions s ON s.id_hash = b.session;
+INSERT INTO web_push_claims (subscription, task, at)
+    SELECT c.subscription, c.task, c.at FROM web_push_claims_old c
+    JOIN web_push_subscriptions p ON p.id = c.subscription;
+DROP TABLE web_push_claims_old;
+DROP TABLE web_push_subscriptions_old;
+CREATE INDEX web_push_claims_by_time ON web_push_claims (at);
+",
 ];
 
 /// Projection tables, in a fixed order (used for clearing and dumping).

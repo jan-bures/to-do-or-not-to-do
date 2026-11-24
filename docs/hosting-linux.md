@@ -264,10 +264,13 @@ adding the new config section. An older binary rejects the unknown section. On t
    **Add to Home Screen** and opt in from the installed app.
 
 Allow outbound HTTPS to the supported browser push services (Google FCM, Mozilla autopush, Apple Web Push,
-Windows WNS); no inbound port, cloud account or Firebase credentials are needed. The push body is encrypted
-and contains only a task ID and reminder time. Session expiry or sign-out ends delivery rather than keeping
-sessions alive in the background. With the default limits, even an opted-in browser stops receiving push after
-one hour idle or 12 hours since sign-in; sign in and turn on background reminders again to resume.
+Windows WNS); no inbound port, cloud account or Firebase credentials are needed. The sender connects directly
+and does not use an egress proxy. The task ID, reminder time, and up to 200 characters of the title leave the
+server only end-to-end encrypted to the subscribed browser (RFC 8291). Notes are never sent.
+
+Login expiry does not stop reminders or keep the session alive. Explicit sign-out, revocation under
+**Devices → Browsers**, a 404/410 from the push service, or 30 days without opening the signed-in app on that
+browser ends delivery. Temporary failures are retried with backoff within the reminder's 15-minute lifetime.
 
 Back up the VAPID file separately in a password manager or other private secret store; the normal database
 backup does not include it. Treat database copies as private: they also hold push endpoints and subscription

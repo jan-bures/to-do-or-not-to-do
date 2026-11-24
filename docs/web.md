@@ -591,24 +591,27 @@ shared intent shows the first from local today onward, or the latest if all are 
 changes elsewhere while the picker is open, close and reopen it before editing. Adding, changing and
 removing a reminder all offer Undo.
 
-**Reminder alerts** can reach a signed-in browser when no app tab is open. If the server has
+**Reminder alerts** can reach an opted-in browser when no app tab is open. If the server has
 [Web Push configured](hosting-linux.md#web-push-reminders), choose **Settings → Turn on background reminders**.
 The browser asks permission only when you choose this action. Settings shows On, Off, or Blocked by the browser;
 if blocked, allow notifications in the browser's site settings. Choose **Send test notification** to check delivery.
-On iOS/iPadOS, add the app to the Home Screen and opt in from there. The setting belongs to this browser's
-current passkey session. Signing out unsubscribes, and expiry or revocation stops delivery. Sign in and opt in
-again after the session expires.
+On iOS/iPadOS, add the app to the Home Screen and opt in from there.
 
-The server schedules live reminders for incomplete tasks and claims each task and scheduled time once per
-subscription. It uses Web Push with VAPID and encrypted payloads: only the task ID and Unix time (milliseconds),
-never its title or notes. The expiry is at most 15 minutes after the due time. The `/app` service worker fetches
-only the title through the cookie- and CSRF-authenticated API and shows **Reminder** if it can't fetch it. These
-requests don't extend the session. A notification click focuses or opens `/app` on the task, signing in first if
-needed. The worker is same-origin and handles no fetches or offline caching.
+Reminders keep working after the login session expires. To turn them off, use Settings, sign out explicitly on
+that browser, or revoke its **Background reminders** row under **Devices → Browsers**. A registration also ends
+if the push service reports it is gone or you don't open the signed-in app on that browser for 30 days.
+
+The server schedules live reminders for incomplete tasks. It uses VAPID and end-to-end encryption (RFC 8291):
+the push service can't read the task ID, reminder time, or title (up to 200 characters). Notes are never sent.
+The server retries temporary delivery failures with backoff up to 15 minutes after the due time. The service
+worker needs no login or API call to show the notification. A click focuses an existing app tab and opens the
+task without reloading. If no tab is open, a click opens `/app` on the task, signing in first if needed. The
+worker handles no fetches or offline caching.
 
 The in-tab schedule still uses the shared `alarms` list and ignores alarms more than 24 hours old. When background
-reminders are on, a visible tab waits eight seconds before offering a toast. The service worker and tabs claim
-the same task and scheduled instant in one IndexedDB transaction so they don't both alert. With Web Push
+reminders are on, a visible tab waits eight seconds before offering a toast. The service worker records the same
+task and scheduled instant in IndexedDB to suppress the fallback. It always shows a notification for each push,
+even if the tab already claimed it. Matching notification tags let the browser coalesce alerts. With Web Push
 unavailable, **Settings → Enable reminder notifications** still controls the in-tab system alerts where supported;
 otherwise the alert appears in the toast strip. The toast offers **Complete** and **Snooze 10 min** with Undo.
 
@@ -707,7 +710,7 @@ The status bar shows shortcuts only when their actions are available.
   `reminder-settings-{not-enabled,allowed,blocked,unsupported}-{light,dark}.png` and fallback toasts in
   `reminder-toast-{light,dark}.png` and `reminder-toast-phone-{light,dark}.png`.
   Background reminder states are in `web-push-{off,on,blocked}-{light,dark}.png` and the matching
-  `-150.png` captures at 150%.
+  `-150.png` captures at 150%. The On and Blocked `-menu-250.png` crops show the menu at 250%.
   Workflow captures `board-{light,dark}.png`, `board-detail-{light,dark}.png`, `board-phone-{light,dark}.png`,
   `board-drag-{light,dark}.png`, `board-move-{light,dark}.png`, `list-status-{light,dark}.png` and
   `list-settings-{light,dark}.png` against the same renovation data as desktop.
