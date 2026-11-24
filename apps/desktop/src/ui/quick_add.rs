@@ -425,7 +425,7 @@ impl DestinationControls {
             .border_color(if accepted { p.wash } else { p.line })
             .bg(if accepted { p.wash } else { p.raised })
             .text_color(p.ink)
-            .style(ty::COUNT.with_weight(500))
+            .style(ty::COUNT.with_weight(ty::DUE.weight))
             .child(if accepted {
                 label.into_any_element()
             } else {

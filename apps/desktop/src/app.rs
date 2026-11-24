@@ -369,9 +369,9 @@ fn wire_windows(
         let view = cx.entity();
         cx.subscribe(&view, move |_, _, event: &QuickAddEvent, cx| {
             win::hide(hwnds.quick);
-            if let QuickAddEvent::Submitted(text) = event {
+            if let QuickAddEvent::Submitted(draft) = event {
                 let added = main
-                    .update(cx, |root, _, cx| root.quick_add(text, cx))
+                    .update(cx, |root, _, cx| root.quick_add(draft, cx))
                     .unwrap_or(false);
                 if !added {
                     // Not paired yet: show the window that says so.
