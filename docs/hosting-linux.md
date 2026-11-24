@@ -213,8 +213,8 @@ key_file = "/etc/todo/assistant-model.secret"
   before starting the service. Generate it once (for example, with `openssl rand -hex 32`) and install
   it as `todo:todo` mode `0600`. Use a new key, not the attachment or ingest key. An explicit
   `assistant.key_file` still works, including an existing key that was stored under `data_dir`.
-  Outside Linux the default is `assistant.secret` in the working directory. For development, the
-  server can create the key if its directory is writable and no vault exists yet.
+  Outside Linux, set `assistant.key_file` explicitly. For development, the server can create the key
+  if its directory is writable and no vault exists yet.
   Tokens and list-sharing permissions are encrypted in `data_dir/assistant.vault`. The vault and key
   are not in the task database or its backups. Retain them safely and separately if a VM move must
   preserve sign-ins; otherwise sign in and configure list access again. Never restore a vault copy to
@@ -225,8 +225,10 @@ key_file = "/etc/todo/assistant-model.secret"
   OpenAI for device codes and ChatGPT inference. It is not an API key or the desktop's dynamic SIWC
   registration. Device-code sign-in does not appear without it. With ChatGPT enabled, a connected
   account can be used from any owner session. A ChatGPT sign-out removes that account and its
-  consent on all devices. If revocation fails, the server keeps only the grant information needed
-  to retry it with backoff, including after a restart. You can also disconnect the app in ChatGPT settings.
+  consent on all devices. Reconnecting an account also queues its previous grant for revocation if
+  the refresh token changed. The server retries temporary failures across restarts, up to ten attempts
+  or seven days. It holds at most 64 pending grants and drops the oldest if needed to allow local
+  sign-out. If revocation is not confirmed, you can disconnect the app in ChatGPT settings.
 - For private inference, the server (not the phone or browser) needs a route to the upstream. Join the
   server to your tailnet with shields-up and grant only outbound access to the trusted model port.
   The URL may use a MagicDNS name ending in `.ts.net`, a Tailscale address (IPv4 `100.64.0.0/10` or

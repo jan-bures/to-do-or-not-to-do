@@ -466,6 +466,145 @@ async fn a_full_attempt_table_refuses_upstream_device_start_until_pruned() {
 }
 
 #[tokio::test]
+async fn sign_out_waits_for_detached_refresh_and_revokes_the_rotated_grant() {
+    let dir = tempfile::tempdir().unwrap();
+    let entered = Arc::new(Notify::new());
+    let finish = Arc::new(Notify::new());
+    let router = Router::new()
+        .route("/oauth/token", post({
+            let (entered, finish) = (entered.clone(), finish.clone());
+            move || async move {
+                entered.notify_one();
+                finish.notified().await;
+                Json(json!({"access_token":"fixture-new-access","refresh_token":"fixture-rotated","expires_in":3600}))
+            }
+        }))
+        .route("/oauth/revoke", post(|Json(body): Json<Value>| async move {
+            assert_eq!(body["token"], "fixture-rotated");
+            StatusCode::NO_CONTENT
+        }));
+    let (openai, mock) = upstream(router).await;
+    let service = service(openai, dir.path());
+    let mut auth = auth();
+    auth.expires_at = 0;
+    let id = service.insert(auth).await.unwrap().id;
+    let caller = tokio::spawn({
+        let service = service.clone();
+        async move { service.credential(id, None).await }
+    });
+    tokio::time::timeout(Duration::from_secs(3), entered.notified())
+        .await
+        .unwrap();
+    caller.abort();
+    let sign_out = async {
+        let job = service.remove(id).await.unwrap();
+        assert!(service.retry_revocation(job).await.unwrap());
+    };
+    tokio::pin!(sign_out);
+    // Poll sign-out while the refresh still owns this account's gate.
+    assert!(futures_util::poll!(&mut sign_out).is_pending());
+    finish.notify_one();
+    tokio::time::timeout(Duration::from_secs(3), sign_out)
+        .await
+        .unwrap();
+    assert!(matches!(
+        service.credential(id, None).await,
+        Err(Error::AccountMissing)
+    ));
+    let (_, restarted) = Vault::open(dir.path(), &dir.path().join("assistant.secret")).unwrap();
+    assert!(restarted.accounts.is_empty() && restarted.revocations.is_empty());
+    mock.abort();
+}
+
+#[tokio::test]
+async fn reconnect_queues_only_the_replaced_refresh_token_in_the_vault() {
+    let dir = tempfile::tempdir().unwrap();
+    let service = Assistant::open(config(dir.path()), dir.path())
+        .unwrap()
+        .unwrap();
+    let id = service.insert(auth()).await.unwrap().id;
+    assert_eq!(service.insert(auth()).await.unwrap().id, id);
+    assert!(service.records.lock().await.revocations.is_empty());
+    let mut fresh = auth();
+    fresh.refresh = "fixture-reconnected".into();
+    assert_eq!(service.insert(fresh).await.unwrap().id, id);
+    let (_, restarted) = Vault::open(dir.path(), &dir.path().join("assistant.secret")).unwrap();
+    assert_eq!(restarted.accounts[&id].refresh, "fixture-reconnected");
+    assert_eq!(restarted.revocations.len(), 1);
+    assert_eq!(
+        restarted.revocations.values().next().unwrap().grant.refresh,
+        "fixture-refresh"
+    );
+}
+
+#[tokio::test]
+async fn terminal_or_exhausted_revocations_are_removed() {
+    let dir = tempfile::tempdir().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let router = Router::new()
+        .route(
+            "/oauth/revoke",
+            post({
+                let calls = calls.clone();
+                move || async move {
+                    match calls.fetch_add(1, Ordering::SeqCst) {
+                        0 => StatusCode::BAD_REQUEST,
+                        1 => StatusCode::TOO_MANY_REQUESTS,
+                        _ => panic!("revocation should no longer retry"),
+                    }
+                }
+            }),
+        )
+        .route(
+            "/.well-known/openid-configuration",
+            get(|| async { Json(json!({"issuer":"fixture"})) }),
+        );
+    let (openai, mock) = upstream(router).await;
+    let service = service(openai, dir.path());
+    for (flow, attempts, expired) in [
+        (Flow::Device, 0, false),
+        (Flow::Loopback, 0, false),
+        (Flow::Device, vault::MAX_REVOCATION_ATTEMPTS - 1, false),
+        (Flow::Device, 0, true),
+    ] {
+        let mut auth = auth();
+        auth.flow = flow;
+        let id = service.insert(auth).await.unwrap().id;
+        let job = service.remove(id).await.unwrap();
+        {
+            let guard = service.records.clone().lock_owned().await;
+            let mut records = guard.clone();
+            let pending = records.revocations.get_mut(&job).unwrap();
+            pending.attempts = attempts;
+            if expired {
+                pending.queued_at = openai::now() - 8 * 24 * 3600;
+            }
+            service.commit(guard, records).await.unwrap();
+        }
+        assert!(!service.retry_revocation(job).await.unwrap());
+        assert!(service.records.lock().await.revocations.is_empty());
+        assert!(!service.retry_revocation(job).await.unwrap());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    mock.abort();
+}
+
+#[cfg(not(target_os = "linux"))]
+#[test]
+fn an_enabled_relay_needs_an_explicit_key_path_outside_linux() {
+    let dir = tempfile::tempdir().unwrap();
+    let settings = Config {
+        chatgpt: true,
+        ..Default::default()
+    };
+    assert!(matches!(
+        Assistant::open(settings, dir.path()),
+        Err(InitError::MissingKeyPath)
+    ));
+    assert!(!dir.path().join("assistant.vault").exists());
+}
+
+#[tokio::test]
 async fn failed_revocation_is_backed_off_persisted_and_retried_after_restart() {
     let dir = tempfile::tempdir().unwrap();
     let calls = Arc::new(AtomicUsize::new(0));

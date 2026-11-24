@@ -40,9 +40,9 @@ use crate::{
     config::ConfigError,
     engine::Engine,
 };
-use openai::{DeviceGrant, LoopbackGrant, OpenAi};
+use openai::{DeviceGrant, LoopbackGrant, OpenAi, RevokeError};
 use upstream::Private;
-use vault::{Credential, Flow, PendingRevocation, Records, Revocation, Vault};
+use vault::{Credential, Flow, Records, Revocation, Vault};
 
 pub(crate) use upstream::PRIVATE_CHAT_HEAD_TIMEOUT;
 pub use upstream::PrivateConfig;
@@ -51,7 +51,7 @@ const MAX_ATTEMPTS: usize = 8;
 const MAX_ACCOUNTS: usize = 12;
 const MAX_RULES: usize = 4096;
 const DEVICE_EXPIRY: Duration = Duration::from_secs(15 * 60);
-const LOOPBACK_EXPIRY: Duration = Duration::from_secs(180);
+const LOOPBACK_EXPIRY: Duration = Duration::from_secs(600);
 const POLL_WAIT: Duration = Duration::from_secs(5);
 const REFRESH_MARGIN: u64 = 60;
 
@@ -64,7 +64,7 @@ pub struct Config {
     /// OAuth client ID authorized for OpenAI device-code login and ChatGPT inference.
     pub chatgpt_device_client_id: Option<String>,
     /// An owner-only encryption key file, created if absent on a fresh installation.
-    /// Defaults to `/etc/todo/assistant.secret` on Linux, `assistant.secret` elsewhere.
+    /// Defaults to `/etc/todo/assistant.secret` on Linux and is required elsewhere.
     pub key_file: Option<PathBuf>,
     /// Optional private model gateway.
     pub private: Option<PrivateConfig>,
@@ -102,6 +102,8 @@ impl Config {
 pub(crate) enum InitError {
     #[error(transparent)]
     Vault(#[from] vault::Error),
+    #[error("assistant.key_file must be set explicitly outside Linux")]
+    MissingKeyPath,
     #[error("invalid assistant private model base URL")]
     PrivateAddress,
     #[error("could not read the assistant private model key file: {0}")]
@@ -116,6 +118,7 @@ impl InitError {
     pub(crate) fn owner_reason(&self) -> &'static str {
         match self {
             Self::Vault(_) => "Could not open the assistant vault or its encryption key.",
+            Self::MissingKeyPath => "Set assistant.key_file to enable the relay on this server.",
             Self::PrivateKey(_) | Self::BadPrivateKey => "Could not load the private model key.",
             Self::PrivateAddress => "The private model address is invalid.",
             Self::Http => "Could not initialize the assistant HTTP client.",
@@ -233,13 +236,12 @@ impl Assistant {
             .then(|| OpenAi::new(config.chatgpt_device_client_id))
             .transpose()?;
         let private = config.private.as_ref().map(Private::open).transpose()?;
-        let key = config.key_file.unwrap_or_else(|| {
-            PathBuf::from(if cfg!(target_os = "linux") {
-                "/etc/todo/assistant.secret"
-            } else {
-                "assistant.secret"
+        let key = config
+            .key_file
+            .or_else(|| {
+                cfg!(target_os = "linux").then(|| PathBuf::from("/etc/todo/assistant.secret"))
             })
-        });
+            .ok_or(InitError::MissingKeyPath)?;
         let (vault, records) = Vault::open(dir, &key)?;
         Ok(Some(Arc::new(Self {
             openai,
@@ -338,6 +340,11 @@ impl Assistant {
             };
             let mut records = guard.clone();
             let result = auth.public(id);
+            if let Some(old) = guard.accounts.get(&id)
+                && old.refresh != auth.refresh
+            {
+                records.queue_revocation(Revocation::from(old), openai::now());
+            }
             records.accounts.insert(id, auth);
             self.commit(guard, records).await?;
             return Ok(result);
@@ -446,15 +453,7 @@ impl Assistant {
         let guard = self.records.clone().lock_owned().await;
         let mut records = guard.clone();
         let auth = records.accounts.remove(&id).ok_or(Error::AccountMissing)?;
-        let job = Uuid::new_v4();
-        records.revocations.insert(
-            job,
-            PendingRevocation {
-                grant: Revocation::from(&auth),
-                attempts: 0,
-                retry_at: 0,
-            },
-        );
+        let job = records.queue_revocation(Revocation::from(&auth), openai::now());
         // Sign-out drops the credential and consent immediately, even if revocation must retry.
         self.commit(guard, records).await?;
         Ok(job)
@@ -464,25 +463,31 @@ impl Assistant {
         let openai = self.openai.as_ref().ok_or(Error::Disabled)?;
         let _gate = self.revocation_gate.lock().await;
         let Some(pending) = self.records.lock().await.revocations.get(&job).cloned() else {
-            return Ok(true);
-        };
-        if pending.retry_at > openai::now() {
             return Ok(false);
-        }
-        let revoked = openai.revoke(&pending.grant).await.is_ok();
+        };
+        let now = openai::now();
+        let result = if pending.expired(now) {
+            Err(RevokeError::Terminal)
+        } else if pending.retry_at > now {
+            return Ok(false);
+        } else {
+            openai.revoke(&pending.grant).await
+        };
         let guard = self.records.clone().lock_owned().await;
         let mut records = guard.clone();
-        if revoked {
-            records.revocations.remove(&job);
-        } else {
-            let mut pending = pending;
+        // It may have been evicted while the upstream request was running. Don't reinsert it.
+        if let Some(pending) = records.revocations.get_mut(&job) {
+            let now = openai::now();
             let delay = (60 << pending.attempts.min(6)).min(3600);
             pending.attempts = pending.attempts.saturating_add(1);
-            pending.retry_at = openai::now().saturating_add(delay);
-            records.revocations.insert(job, pending);
+            if matches!(result, Err(RevokeError::Retry)) && !pending.expired(now) {
+                pending.retry_at = now.saturating_add(delay);
+            } else {
+                records.revocations.remove(&job);
+            }
+            self.commit(guard, records).await?;
         }
-        self.commit(guard, records).await?;
-        Ok(revoked)
+        Ok(result.is_ok())
     }
 
     pub(crate) async fn run_revocations(&self, mut shutdown: watch::Receiver<bool>) {
@@ -497,7 +502,7 @@ impl Assistant {
                 _ = tick.tick() => {
                     let now = openai::now();
                     let jobs: Vec<_> = self.records.lock().await.revocations.iter()
-                        .filter(|(_, pending)| pending.retry_at <= now)
+                        .filter(|(_, pending)| pending.retry_at <= now || pending.expired(now))
                         .take(MAX_ACCOUNTS)
                         .map(|(&job, _)| job)
                         .collect();

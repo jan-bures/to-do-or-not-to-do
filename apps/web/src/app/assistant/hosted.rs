@@ -351,7 +351,7 @@ pub(super) fn HostedCards(
                                                 draft.update(|p| p.hosted_model.clear());
                                             }
                                             refresh().await;
-                                            if !signed_out.revoked { error.set(Some("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.".into())); }
+                                            if !signed_out.revoked { error.set(Some("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.".into())); }
                                         }
                                         Err(err) => error.set(Some(err.to_string())),
                                     }

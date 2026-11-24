@@ -106,6 +106,19 @@ pub(super) struct PendingRevocation {
     pub grant: Revocation,
     pub attempts: u32,
     pub retry_at: u64,
+    #[serde(default)]
+    pub queued_at: u64,
+}
+
+const MAX_REVOCATIONS: usize = 64;
+pub(super) const MAX_REVOCATION_ATTEMPTS: u32 = 10;
+const MAX_REVOCATION_AGE: u64 = 7 * 24 * 3600;
+
+impl PendingRevocation {
+    pub fn expired(&self, now: u64) -> bool {
+        self.attempts >= MAX_REVOCATION_ATTEMPTS
+            || now.saturating_sub(self.queued_at) >= MAX_REVOCATION_AGE
+    }
 }
 
 #[derive(Clone, Deserialize, Serialize)]
@@ -127,6 +140,36 @@ impl Default for Records {
             accounts: BTreeMap::new(),
             revocations: BTreeMap::new(),
         }
+    }
+}
+
+impl Records {
+    pub fn queue_revocation(&mut self, grant: Revocation, now: u64) -> Uuid {
+        self.revocations.retain(|_, pending| !pending.expired(now));
+        // Never prevent local sign-out because remote revocations have filled the queue.
+        while self.revocations.len() >= MAX_REVOCATIONS {
+            let Some(oldest) = self
+                .revocations
+                .iter()
+                .min_by_key(|(_, p)| p.queued_at)
+                .map(|(&id, _)| id)
+            else {
+                break;
+            };
+            self.revocations.remove(&oldest);
+            tracing::debug!("dropped oldest pending assistant revocation at queue capacity");
+        }
+        let id = Uuid::new_v4();
+        self.revocations.insert(
+            id,
+            PendingRevocation {
+                grant,
+                attempts: 0,
+                retry_at: now,
+                queued_at: now,
+            },
+        );
+        id
     }
 }
 
@@ -258,6 +301,24 @@ impl Vault {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn revocation_queue_keeps_new_jobs_when_full() {
+        let mut records = Records::default();
+        let grant = Revocation {
+            flow: Flow::Device,
+            client_id: "fixture".into(),
+            refresh: "fixture-refresh".into(),
+        };
+        let oldest = records.queue_revocation(grant.clone(), 1);
+        for _ in 1..MAX_REVOCATIONS {
+            records.queue_revocation(grant.clone(), 2);
+        }
+        let newest = records.queue_revocation(grant, 3);
+        assert_eq!(records.revocations.len(), MAX_REVOCATIONS);
+        assert!(records.revocations.contains_key(&newest));
+        assert!(!records.revocations.contains_key(&oldest));
+    }
 
     #[test]
     fn vault_round_trips_and_refuses_tampering_or_a_missing_key() {

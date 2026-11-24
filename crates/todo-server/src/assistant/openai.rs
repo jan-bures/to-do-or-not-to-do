@@ -31,6 +31,33 @@ const SCOPES: &str =
     "openid profile email offline_access resource.invoke chatgpt.tokens.use.direct";
 const AUTH_TIMEOUT: Duration = Duration::from_secs(7);
 
+/// Revocation failures do not affect local sign-out. Only transient ones are retried.
+#[derive(Debug, thiserror::Error)]
+pub(super) enum RevokeError {
+    #[error("revocation failed temporarily")]
+    Retry,
+    #[error("revocation is unsupported or was rejected")]
+    Terminal,
+}
+
+impl RevokeError {
+    fn check(status: StatusCode) -> Result<(), Self> {
+        if status.is_success() {
+            Ok(())
+        } else if status.is_client_error()
+            && !matches!(
+                status,
+                StatusCode::REQUEST_TIMEOUT | StatusCode::TOO_MANY_REQUESTS
+            )
+            || status == StatusCode::NOT_IMPLEMENTED
+        {
+            Err(Self::Terminal)
+        } else {
+            Err(Self::Retry)
+        }
+    }
+}
+
 pub(super) struct OpenAi {
     http: Client,
     pub issuer: String,
@@ -554,16 +581,18 @@ impl OpenAi {
         Ok(())
     }
 
-    pub async fn revoke(&self, credential: &super::vault::Revocation) -> Result<(), Error> {
+    pub async fn revoke(&self, credential: &super::vault::Revocation) -> Result<(), RevokeError> {
         let req = match credential.flow {
             Flow::Device => self.http.post(format!("{}/oauth/revoke", self.issuer))
                 .json(&json!({"token": credential.refresh, "token_type_hint": "refresh_token", "client_id": credential.client_id})),
             Flow::Loopback => {
                 #[derive(Deserialize)]
                 struct Discovery { issuer: String, revocation_endpoint: Option<Url> }
-                let doc: Discovery = self.auth(self.http.get(format!("{}/.well-known/openid-configuration", self.issuer))).await?;
-                let issuer = Url::parse(&self.issuer).map_err(|_| Error::Upstream)?;
-                let url = doc.revocation_endpoint.filter(|u| doc.issuer == self.issuer && u.origin() == issuer.origin() && u.username().is_empty() && u.password().is_none() && u.query().is_none() && u.fragment().is_none()).ok_or(Error::Unsupported)?;
+                let response = self.http.get(format!("{}/.well-known/openid-configuration", self.issuer)).timeout(AUTH_TIMEOUT).send().await.map_err(|_| RevokeError::Retry)?;
+                RevokeError::check(response.status())?;
+                let doc: Discovery = read_json(response).await.map_err(|_| RevokeError::Retry)?;
+                let issuer = Url::parse(&self.issuer).map_err(|_| RevokeError::Terminal)?;
+                let url = doc.revocation_endpoint.filter(|u| doc.issuer == self.issuer && u.origin() == issuer.origin() && u.username().is_empty() && u.password().is_none() && u.query().is_none() && u.fragment().is_none()).ok_or(RevokeError::Terminal)?;
                 self.http.post(url).form(&[("token", credential.refresh.as_str()), ("token_type_hint", "refresh_token"), ("client_id", credential.client_id.as_str())])
             }
         };
@@ -571,8 +600,8 @@ impl OpenAi {
             .timeout(AUTH_TIMEOUT)
             .send()
             .await
-            .map_err(network_error)?;
-        super::upstream::check_status(res.status())
+            .map_err(|_| RevokeError::Retry)?;
+        RevokeError::check(res.status())
     }
 
     fn request(
