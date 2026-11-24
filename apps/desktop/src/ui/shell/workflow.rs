@@ -95,7 +95,7 @@ pub(super) fn mark_width(window: &Window, stage: QueryStatus) -> f32 {
 
 impl ShellView {
     pub(super) fn quick_features(&self) -> ListFeatures {
-        intent::quick_add_features(&self.store.view(), self.ui.room.into())
+        intent::draft_features(&self.store.view(), self.ui.room.into(), &self.quick_draft)
     }
 
     pub(super) fn quick_stage(&self) -> QueryStatus {

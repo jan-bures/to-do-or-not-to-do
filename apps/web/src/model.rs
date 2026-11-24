@@ -1228,6 +1228,38 @@ pub fn detail(state: &State, now: &Now, id: TaskId) -> Option<Detail> {
 #[cfg(test)]
 mod tests {
     #![allow(clippy::unwrap_used)]
+    #[test]
+    fn my_day_suggestion_leaves_the_destination_unchanged_until_chosen() {
+        use todo_client::intent::{self, quick_add, suggest};
+        let state = crate::fixtures::list_suggestion_state();
+        let ctx = crate::fixtures::now().eval();
+        let room = intent::TaskRoom::MyDay;
+        let model = suggest::ListSuggester::from_state(&state);
+        let mut draft = quick_add::Draft {
+            text: "orchid propagation greenhouse tomorrow !!".into(),
+            ..Default::default()
+        };
+        let offer = suggest::suggest_for_draft(&model, &state, room, &draft, &ctx);
+        assert_eq!(
+            offer
+                .and_then(|id| state.lists.get(&id))
+                .map(|list| list.name.as_str()),
+            Some("Garden")
+        );
+        assert_eq!(
+            intent::effective_destination(&state, room, &draft),
+            intent::default_list(&state)
+        );
+        draft.list = offer;
+        let (_, commands) =
+            intent::submit_workflow_draft(&state, room, &draft, &ctx, uuid::Uuid::nil);
+        let [todo_core::Command::CreateTask(task)] = commands.as_slice() else {
+            panic!("expected one task");
+        };
+        assert_eq!(Some(task.list), offer);
+        assert_eq!(task.my_day, Some(ctx.today));
+    }
+
     use super::*;
     use crate::fixtures;
     use todo_core::Command;

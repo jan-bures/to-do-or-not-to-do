@@ -91,6 +91,35 @@ class WorkflowModelTest {
     }
 
     @Test
+    fun quickAddOffersAndUsesOnlyAnAcceptedDestination() {
+        val inbox = engine.createList("Tasks", myDay) as RoomKey.List
+        engine.setListFeatures(list.id, ListFeaturesPatch(true, true, ListView.LIST))
+        repeat(3) {
+            engine.addTask(inbox, "invoice reminder", FIXTURE_NOW)
+            engine.addTask(list, "orchid propagation greenhouse", FIXTURE_NOW)
+        }
+        val draft = WorkflowQuickAddDraft(QuickAddDraft("orchid propagation greenhouse tomorrow !!", null, false, null), null, null)
+        val suggested = engine.quickAddContext(myDay, draft, FIXTURE_NOW, true)
+        assertEquals(list.id, suggested.destination?.id)
+        assertFalse(suggested.features.workflow)
+        assertNull(engine.quickAddContext(myDay, draft, FIXTURE_NOW, false).destination)
+        assertNull(engine.quickAddContext(list, draft, FIXTURE_NOW, true).destination)
+
+        val accepted = draft.copy(base = draft.base.copy(pickedList = list.id), status = OpenStage.IN_PROGRESS)
+        val picked = engine.quickAddContext(myDay, accepted, FIXTURE_NOW, false)
+        assertTrue(picked.features.workflow)
+        assertTrue(picked.features.timeline)
+        val task = engine.addWorkflowTask(myDay, accepted, FIXTURE_NOW)
+        assertEquals(WorkflowStage.IN_PROGRESS, engine.taskWorkflow(task)?.stage)
+        val fallback = engine.addTaskDraft(myDay, draft.base, FIXTURE_NOW)
+        val model = model()
+        model.open(myDay)
+        val rows = model.read().room.tasks
+        assertEquals(list.id, rows.single { it.id == task }.list)
+        assertEquals(inbox.id, rows.single { it.id == fallback }.list)
+    }
+
+    @Test
     fun columnMoveUndoCompletionAndReopenUseTheSameWorkflow() {
         engine.setListFeatures(list.id, ListFeaturesPatch(true, true, ListView.BOARD))
         val task = engine.addWorkflowTask(list, WorkflowQuickAddDraft(QuickAddDraft("Build a shelf", "2026-11-22", false, null), null,

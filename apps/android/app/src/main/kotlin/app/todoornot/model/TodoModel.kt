@@ -120,6 +120,7 @@ data class UiState(
      * the room before ([Actions.setDone]) only writes.
      */
     val generation: Long = 0L,
+    val composerRevision: Long = 0L,
     /** Today's date (ISO) by the model's clock: where the date picker opens for a task with no due date. */
     val today: String = "",
     /** Last local reorder (including Undo). Only these two rows glide when its read lands. */
@@ -534,7 +535,10 @@ class TodoModel(
                     if (it) {
                         published = generation
                         val ids = if (_ui.value.bulkIds.isEmpty()) emptyList() else bulkSelection.retain(bulkVisible(read.state))
-                        _ui.value = withBulk(read.state.copy(attachment = transfers.status(read.state.selected)), ids)
+                        _ui.value = withBulk(read.state.copy(
+                            attachment = transfers.status(read.state.selected),
+                            composerRevision = generation,
+                        ), ids)
                     }
                 }
             }
@@ -864,6 +868,9 @@ class TodoModel(
         withContext(io) { engine.bulkDestinations(tasks, filter) }
 
     override fun composerNow(): LocalNow = now()
+
+    override fun composerContext(room: RoomKey, draft: WorkflowQuickAddDraft, offerSuggestion: Boolean) =
+        engine.quickAddContext(room, draft, now(), offerSuggestion)
 
     override fun setDateFormat(key: String): Boolean {
         if (!saveDateFormat(key)) {

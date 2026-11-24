@@ -93,6 +93,35 @@ test("quick-add creates a destination on a fresh account and keeps focus", async
   await w.check();
 });
 
+test("My Day quick-add offers a destination and routes only when accepted", async ({ page }) => {
+  await open(page, "/app?fixture=list-suggestion");
+  const add = page.getByRole("textbox", { name: "Add a task" });
+  const suggestion = page.getByRole("button", { name: "In Garden?" });
+  await add.fill("orchid propagation greenhouse tomorrow !!");
+  await expect(suggestion).toBeVisible();
+  await suggestion.click();
+  await expect(page.getByRole("button", { name: "Remove destination: Garden" })).toBeVisible();
+  await add.press("Enter");
+  await expect(row(page, "orchid propagation greenhouse").getByText("Garden", { exact: true })).toBeVisible();
+  await expect(page.locator(".qa-list-chip")).toHaveCount(0);
+
+  await add.fill("orchid propagation greenhouse pots");
+  await expect(suggestion).toBeVisible();
+  await page.getByRole("button", { name: "Dismiss list suggestion: Garden" }).click();
+  await add.fill("orchid propagation greenhouse trays");
+  await expect(suggestion).toHaveCount(0);
+  await add.press("Enter");
+  await expect(row(page, "orchid propagation greenhouse trays").getByText("Tasks", { exact: true })).toBeVisible();
+
+  await add.fill("orchid propagation greenhouse tags");
+  await suggestion.click();
+  await page.getByRole("button", { name: "Remove destination: Garden" }).click();
+  await expect(suggestion).toHaveCount(0);
+  await add.fill("");
+  await add.fill("orchid propagation greenhouse tags");
+  await expect(suggestion).toBeVisible();
+});
+
 test("quick-add keeps ordinary trailing words and escaped syntax in the title", async ({ page }) => {
   await open(page, "/app?fixture=blank");
   const add = page.getByRole("textbox", { name: "Add a task" });
@@ -193,6 +222,7 @@ test("phone quick-add anchors the calendar above the composer and clears chips",
   await calendar.getByRole("button", { name: "Next week" }).click();
   await expect(add).toHaveValue("Water the plants !!");
   await page.getByRole("button", { name: "Remove due date: Mon 23.11." }).click();
+  await expect(page.locator(".qa-date-chip")).toBeHidden();
   await page.getByRole("button", { name: "Remove priority: Normal" }).click();
   await expect(add).toHaveValue("Water the plants");
   await expect(page.getByRole("button", { name: /^Remove (due date|priority):/ })).toHaveCount(0);

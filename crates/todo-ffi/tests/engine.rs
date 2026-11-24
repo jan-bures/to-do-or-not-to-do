@@ -163,6 +163,7 @@ fn workflow_bindings_share_preview_projection_and_tracked_changes() {
             picked_due: None,
             cleared_due: false,
             picked_priority: None,
+            picked_list: None,
         },
         start_date: None,
         status: None,

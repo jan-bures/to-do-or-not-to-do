@@ -139,6 +139,20 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         "work" => Some(work()),
         "list-status" | "list-settings" | "board" | "board-detail" | "timeline"
         | "timeline-month" | "timeline-tray" | "timeline-planned" => Some(workflow_room(name)),
+        "quick-add-suggestion" | "quick-add-destination" => {
+            let mut b = Builder::new();
+            let home = b.collection("Home", "lagoon");
+            let inbox = b.list(home, "Tasks", "lagoon");
+            let garden = b.list(home, "Garden", "fern");
+            for _ in 0..3 {
+                b.task(t(inbox, "invoice reminder"));
+                b.task(t(garden, "orchid propagation greenhouse"));
+            }
+            Some(Fixture {
+                quick_add_text: Some("orchid propagation greenhouse tomorrow !!"),
+                ..fixture(b, UiState::default(), MORNING)
+            })
+        }
         "quick-add-chips" | "quick-add-calendar" | "quick-add-priority" => Some(Fixture {
             quick_add_text: Some("Water the plants zítra !!"),
             ..my_day()

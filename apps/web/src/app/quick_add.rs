@@ -1,7 +1,8 @@
 //! The room composer, its priority picker and the date picker shared with task detail.
 
+use crate::model::{self, RoomId};
 use leptos::prelude::*;
-use todo_client::intent::{self, calendar, quick_add};
+use todo_client::intent::{self, calendar, quick_add, suggest};
 use todo_core::{model::Priority, query::QueryStatus, time::Date};
 use todo_design::Icon;
 
@@ -65,6 +66,7 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
         ..Default::default()
     };
     let draft = RwSignal::new(initial());
+    let dismissed = RwSignal::new(false);
     let calendar = DatePicker::new(
         DetailPicker::anchored("qa-date", "qa-calendar"),
         "qa-active-day",
@@ -83,8 +85,70 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
     let room = Memo::new(move |_| c.room.get());
     let features = Memo::new(move |_| {
         c.state
-            .with(|state| intent::quick_add_features(state, (&room.get()).into()))
+            .with(|state| draft.with(|d| intent::draft_features(state, (&room.get()).into(), d)))
     });
+    let stale = Memo::new(move |_| {
+        c.state.with(|state| {
+            draft.with(|d| {
+                d.list.is_some()
+                    && intent::chosen_destination(state, (&room.get()).into(), d).is_none()
+            })
+        })
+    });
+    Effect::new(move |previous| {
+        let current = room.get();
+        if let Some(previous) = previous
+            && previous != current
+        {
+            draft.update(|d| d.list = None);
+            dismissed.set(false);
+        } else if stale.get() {
+            dismissed.set(true);
+            draft.update(|d| d.list = None);
+        }
+        current
+    });
+    let destination = Memo::new(move |_| {
+        let room = room.get();
+        if !matches!(
+            room,
+            RoomId::Smart("my_day" | "important" | "planned" | "all")
+        ) {
+            return None;
+        }
+        c.state.with(|state| {
+            draft.with(|d| {
+                let accepted = d.list.is_some();
+                let id = if accepted {
+                    intent::chosen_destination(state, (&room).into(), d)
+                } else if !dismissed.get() && !d.text.trim().is_empty() {
+                    c.list_suggester.with(|cache| {
+                        suggest::suggest_for_draft(
+                            cache.model(),
+                            state,
+                            (&room).into(),
+                            d,
+                            &c.now.get().eval(),
+                        )
+                    })
+                } else {
+                    None
+                }?;
+                let list = state.lists.get(&id)?;
+                Some((
+                    id,
+                    list.name.clone(),
+                    model::swatch(list.color.as_deref(), id.as_uuid().as_bytes()),
+                    accepted,
+                ))
+            })
+        })
+    });
+    let clear_destination = move || {
+        dismissed.set(true);
+        draft.update(|d| d.list = None);
+        platform::focus(INPUT);
+    };
     let starts = RwSignal::new(false);
     Effect::new(move |_| {
         room.track();
@@ -126,6 +190,7 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
         });
         if id.is_some() && commands.into_iter().all(|command| c.submit(command)) {
             draft.set(initial());
+            dismissed.set(false);
         }
     };
     let parsed = Memo::new(move |_| {
@@ -151,7 +216,9 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
     });
     let pick = move |choice| {
         if !c.read_only() {
-            draft.update(|d| d.pick(choice, &now().eval(), features.get_untracked()));
+            let flags = features.get_untracked();
+            let eval = now().eval();
+            draft.update(|d| d.pick(choice, &eval, flags));
         }
     };
     let choose_day = move |day| {
@@ -219,7 +286,15 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
                     aria-label=move || column.map_or_else(|| "Add a task".into(), |_| add_placeholder.get().unwrap_or_default())
                     placeholder=move || add_placeholder.get().unwrap_or_default()
                     prop:value=move || draft.with(|d| d.text.clone())
-                    on:input=move |ev| draft.update(|d| d.edit_with_features(event_target_value(&ev), &c.now.get_untracked().eval(), features.get_untracked())) />
+                    on:input=move |ev| {
+                        let text = event_target_value(&ev);
+                        if text.trim().is_empty() {
+                            dismissed.set(false);
+                            draft.update(|d| d.list = None);
+                        }
+                        let flags = features.get_untracked();
+                        draft.update(|d| d.edit_with_features(text, &c.now.get_untracked().eval(), flags));
+                    } />
                 <span class="qa-date-announcement" role="status">{move || {
                     let mut labels = Vec::new();
                     if let Some(date) = date.get() { labels.push(if due.get().is_some() { format!("Due {date}") } else { date }); }
@@ -229,7 +304,7 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
                     }
                     labels.join(". ")
                 }}</span>
-                <div class="qa-chips" class:has-chips=move || date.with(Option::is_some) || status_chip() || priority.get() != Priority::None>
+                <div class="qa-chips" class:has-chips=move || date.with(Option::is_some) || status_chip() || priority.get() != Priority::None || destination.with(Option::is_some)>
                     <Show when=status_chip>
                         <button type="button" class="qa-status-chip" disabled=move || c.read_only()
                             aria-label=move || format!("Remove status: {}", workflow::stage_info(status.get()).0)
@@ -250,6 +325,29 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
                             {move || quick_add::priority_option(priority.get()).mark}{icon(Icon::X)}
                         </button>
                     </Show>
+                    {move || destination.get().map(|(id, name, hue, accepted)| {
+                        let label = if accepted { name.clone() } else { format!("In {name}?") };
+                        let remove = if accepted { format!("Remove destination: {name}") } else { format!("Dismiss list suggestion: {name}") };
+                        view! {
+                            <div class="qa-list-chip" class:accepted=accepted data-list-hue=hue>
+                                {if accepted {
+                                    view! { <span class="qa-list-label"><span class="qa-list-swatch" aria-hidden="true"/><span>{label}</span></span> }.into_any()
+                                } else {
+                                    view! {
+                                        <button type="button" class="qa-list-label" title=name disabled=move || c.read_only()
+                                            on:click=move |_| {
+                                                draft.update(|d| d.list = Some(id));
+                                                platform::focus(INPUT);
+                                            }>
+                                            <span class="qa-list-swatch" aria-hidden="true"/><span>{label}</span>
+                                        </button>
+                                    }.into_any()
+                                }}
+                                <button type="button" class="qa-list-remove" title=remove.clone() aria-label=remove
+                                    disabled=move || c.read_only() on:click=move |_| clear_destination()>{icon(Icon::X)}</button>
+                            </div>
+                        }
+                    })}
                 </div>
                 <div class="qa-tools">
                     <Show when=move || features.get().workflow>

@@ -102,9 +102,41 @@ pub fn task_destination(state: &State, room: TaskRoom) -> Option<ListId> {
     }
 }
 
+impl TaskRoom {
+    pub fn allows_list_choice(self) -> bool {
+        matches!(
+            self,
+            Self::MyDay | Self::Important | Self::Planned | Self::Other
+        )
+    }
+}
+
+/// The chosen live list in a smart room, or the room's usual destination.
+pub fn effective_destination(
+    state: &State,
+    room: TaskRoom,
+    draft: &quick_add::Draft,
+) -> Option<ListId> {
+    chosen_destination(state, room, draft).or_else(|| task_destination(state, room))
+}
+
+pub fn chosen_destination(
+    state: &State,
+    room: TaskRoom,
+    draft: &quick_add::Draft,
+) -> Option<ListId> {
+    draft
+        .list
+        .filter(|id| room.allows_list_choice() && state.is_live((*id).into()))
+}
+
 /// Feature flags for the list that will receive the composer submission.
 pub fn quick_add_features(state: &State, room: TaskRoom) -> ListFeatures {
-    task_destination(state, room)
+    draft_features(state, room, &quick_add::Draft::default())
+}
+
+pub fn draft_features(state: &State, room: TaskRoom, draft: &quick_add::Draft) -> ListFeatures {
+    effective_destination(state, room, draft)
         .and_then(|id| state.lists.get(&id))
         .map_or_else(ListFeatures::default, |l| l.features)
 }
@@ -130,10 +162,15 @@ pub fn submit_draft(
     ctx: &EvalContext,
     new_id: impl FnMut() -> Uuid,
 ) -> (Option<TaskId>, Vec<Command>) {
+    if draft.list.is_some() {
+        return submit_workflow_draft(state, room, draft, ctx, new_id);
+    }
+    let room = room.into();
     let parsed = draft.parsed(ctx);
     build_task(
         state,
-        room.into(),
+        room,
+        task_destination(state, room),
         &parsed,
         ctx.today,
         draft.due == quick_add::DueChoice::Clear,
@@ -150,10 +187,11 @@ pub fn submit_workflow_draft(
     new_id: impl FnMut() -> Uuid,
 ) -> (Option<TaskId>, Vec<Command>) {
     let room = room.into();
-    let parsed = draft.parsed_with_features(ctx, quick_add_features(state, room));
+    let parsed = draft.parsed_with_features(ctx, draft_features(state, room, draft));
     build_task(
         state,
         room,
+        effective_destination(state, room, draft),
         &parsed,
         ctx.today,
         draft.due == quick_add::DueChoice::Clear,
@@ -170,12 +208,22 @@ pub fn add_task(
     today: Date,
     new_id: impl FnMut() -> Uuid,
 ) -> (Option<TaskId>, Vec<Command>) {
-    build_task(state, room.into(), parsed, today, false, new_id)
+    let room = room.into();
+    build_task(
+        state,
+        room,
+        task_destination(state, room),
+        parsed,
+        today,
+        false,
+        new_id,
+    )
 }
 
 fn build_task(
     state: &State,
     room: TaskRoom,
+    destination: Option<ListId>,
     parsed: &Parsed,
     today: Date,
     clear_due: bool,
@@ -185,7 +233,7 @@ fn build_task(
         return (None, Vec::new());
     }
     let mut commands = Vec::new();
-    let list = task_destination(state, room).unwrap_or_else(|| {
+    let list = destination.unwrap_or_else(|| {
         let id = ListId::from_uuid(new_id());
         commands.push(create_list(id, list_collection(state, room), DEFAULT_LIST));
         id
@@ -627,6 +675,125 @@ mod tests {
         assert_eq!(model.suggest("blue wrench", &w.state), None);
         w.state.lists.remove(&seeds);
         assert_eq!(model.suggest("zluta repa", &w.state), None);
+    }
+
+    #[test]
+    fn smart_composers_suggest_only_a_non_default_list_using_the_parsed_title() {
+        let mut w = World::new();
+        let inbox = w.list("Tasks");
+        let garden = w.list("Garden");
+        let ctx = EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"));
+        for _ in 0..3 {
+            w.task(inbox, "invoice reminder");
+            w.task(garden, "orchid propagation greenhouse");
+        }
+        let model = suggest::ListSuggester::from_state(&w.state);
+        let mut draft = quick_add::Draft {
+            text: "orchid propagation greenhouse tomorrow !!".into(),
+            ..Default::default()
+        };
+        let offer = |room, draft: &quick_add::Draft| {
+            suggest::suggest_for_draft(&model, &w.state, room, draft, &ctx)
+        };
+        for room in [
+            TaskRoom::MyDay,
+            TaskRoom::Important,
+            TaskRoom::Planned,
+            TaskRoom::Other,
+        ] {
+            assert_eq!(offer(room, &draft), Some(garden));
+        }
+        assert_eq!(offer(TaskRoom::List(inbox), &draft), None);
+        assert_eq!(
+            offer(
+                TaskRoom::Collection(CollectionId::from_uuid(Uuid::nil())),
+                &draft
+            ),
+            None
+        );
+        draft.list = Some(garden);
+        assert_eq!(offer(TaskRoom::MyDay, &draft), None);
+        draft.list = None;
+        draft.text = "invoice reminder".into();
+        assert_eq!(model.suggest(&draft.text, &w.state).unwrap().list, inbox);
+        assert_eq!(offer(TaskRoom::MyDay, &draft), None);
+
+        // A known date token alone must not be evidence for a destination.
+        let mut model = model;
+        for _ in 0..10 {
+            model.observe("tomorrow", garden);
+        }
+        draft.text = "Go tomorrow !!".into();
+        assert_eq!(model.suggest(&draft.text, &w.state).unwrap().list, garden);
+        assert_eq!(
+            suggest::suggest_for_draft(&model, &w.state, TaskRoom::MyDay, &draft, &ctx),
+            None
+        );
+    }
+
+    #[test]
+    fn chosen_quick_add_list_supplies_features_and_preserves_smart_room_defaults() {
+        let mut w = World::new();
+        let inbox = w.list("Tasks");
+        let garden = w.list("Garden");
+        w.run(Command::UpdateList {
+            id: garden,
+            name: None,
+            color: None,
+            features: Some(todo_core::command::ListFeaturesPatch {
+                timeline: Some(true),
+                workflow: Some(true),
+                ..Default::default()
+            }),
+        });
+        let ctx = EvalContext::utc("2026-11-21T10:35:00Z".parse().expect("timestamp"));
+        let draft = quick_add::Draft {
+            text: "Propagate orchids status:wip".into(),
+            list: Some(garden),
+            start_date: Some(ctx.today),
+            ..Default::default()
+        };
+        for room in [
+            TaskRoom::MyDay,
+            TaskRoom::Important,
+            TaskRoom::Planned,
+            TaskRoom::Other,
+        ] {
+            for submit in [submit_draft, submit_workflow_draft] {
+                let (_, commands) = submit(&w.state, room, &draft, &ctx, Uuid::nil);
+                let [Command::CreateTask(task)] = commands.as_slice() else {
+                    panic!("expected a task");
+                };
+                assert_eq!(task.list, garden);
+                assert_eq!(task.title, "Propagate orchids");
+                assert_eq!(task.status, todo_core::model::WorkflowStatus::InProgress);
+                assert_eq!(task.start_date, Some(ctx.today));
+                assert_eq!(task.my_day, (room == TaskRoom::MyDay).then_some(ctx.today));
+                assert_eq!(
+                    task.priority,
+                    if room == TaskRoom::Important {
+                        Priority::High
+                    } else {
+                        Priority::None
+                    }
+                );
+                assert_eq!(task.due, (room == TaskRoom::Planned).then_some(ctx.today));
+            }
+        }
+        assert_eq!(
+            effective_destination(&w.state, TaskRoom::List(inbox), &draft),
+            Some(inbox)
+        );
+        w.run(Command::Delete { id: garden.into() });
+        let (_, commands) =
+            submit_workflow_draft(&w.state, TaskRoom::MyDay, &draft, &ctx, Uuid::nil);
+        let [Command::CreateTask(task)] = commands.as_slice() else {
+            panic!("expected a task in the fallback list");
+        };
+        assert_eq!(task.list, inbox);
+        assert_eq!(task.status, todo_core::model::WorkflowStatus::Todo);
+        assert_eq!(task.start_date, None);
+        assert_eq!(task.my_day, Some(ctx.today));
     }
 
     #[test]

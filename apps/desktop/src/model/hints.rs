@@ -80,6 +80,8 @@ pub enum Stop {
     QuickStatus,
     QuickRemoveDate,
     QuickRemovePriority,
+    QuickAcceptList,
+    QuickRemoveList,
     QuickDue,
     QuickPriority,
     /// The Activity room's Clear filter, while the feed shows one agent's changes.
@@ -119,12 +121,14 @@ pub enum Stop {
     Account,
 }
 
-pub const QUICK_ADD_STOPS: [Stop; 7] = [
+pub const QUICK_ADD_STOPS: [Stop; 9] = [
     Stop::QuickInput,
     Stop::QuickRemoveStatus,
     Stop::QuickStatus,
     Stop::QuickRemoveDate,
     Stop::QuickRemovePriority,
+    Stop::QuickAcceptList,
+    Stop::QuickRemoveList,
     Stop::QuickDue,
     Stop::QuickPriority,
 ];
@@ -133,7 +137,7 @@ pub const QUICK_ADD_STOPS: [Stop; 7] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 50] = [
+pub const TAB_ORDER: [Stop; 52] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -163,6 +167,8 @@ pub const TAB_ORDER: [Stop; 50] = [
     Stop::QuickRemoveStatus,
     Stop::QuickRemoveDate,
     Stop::QuickRemovePriority,
+    Stop::QuickAcceptList,
+    Stop::QuickRemoveList,
     Stop::QuickStatus,
     Stop::QuickDue,
     Stop::QuickPriority,
@@ -220,6 +226,8 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::QuickRemoveStatus
         | Stop::QuickRemoveDate
         | Stop::QuickRemovePriority
+        | Stop::QuickAcceptList
+        | Stop::QuickRemoveList
         | Stop::QuickDue
         | Stop::QuickPriority
         | Stop::ActivityFilter
@@ -683,6 +691,8 @@ mod tests {
                 QuickRemoveStatus,
                 QuickRemoveDate,
                 QuickRemovePriority,
+                QuickAcceptList,
+                QuickRemoveList,
                 QuickStatus,
                 QuickDue,
                 QuickPriority,
@@ -733,6 +743,8 @@ mod tests {
                 QuickPriority,
                 QuickDue,
                 QuickStatus,
+                QuickRemoveList,
+                QuickAcceptList,
                 QuickRemovePriority,
                 QuickRemoveDate,
                 QuickRemoveStatus,
@@ -932,14 +944,23 @@ mod tests {
         let present = |s| {
             !matches!(
                 s,
-                QuickRemoveDate | QuickRemovePriority | QuickRemoveStatus | QuickStatus
+                QuickRemoveDate
+                    | QuickRemovePriority
+                    | QuickAcceptList
+                    | QuickRemoveList
+                    | QuickRemoveStatus
+                    | QuickStatus
             )
         };
         assert_eq!(tab_stop(QuickInput, true, present), QuickDue);
         assert_eq!(tab_stop(QuickDue, true, present), QuickPriority);
         assert_eq!(tab_stop(QuickPriority, false, present), QuickDue);
         assert_eq!(tab_stop(QuickDue, false, |_| true), QuickStatus);
-        assert_eq!(tab_stop(QuickStatus, false, |_| true), QuickRemovePriority);
+        assert_eq!(tab_stop(QuickStatus, false, |_| true), QuickRemoveList);
+        assert_eq!(
+            tab_stop(QuickRemovePriority, true, |_| true),
+            QuickAcceptList
+        );
     }
 
     #[test]

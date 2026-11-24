@@ -10,10 +10,16 @@ use todo_client::activity::{
     Undos,
 };
 use todo_client::failure::undo_message;
+use todo_client::intent::{
+    self, TaskRoom,
+    quick_add::Draft,
+    suggest::{self, ReplicaSuggester},
+};
 use todo_client::outbox::FailedEntry;
 use todo_client::protocol::EventRef;
 use todo_client::{CommandId, Connection, Epoch, TrackedCommand, TrackedUndo};
 use todo_core::event::Event;
+use todo_core::model::List;
 use todo_core::time::Timestamp;
 use todo_core::undo::undo_batch;
 use todo_core::{Actor, Command, State, UndoOptions, apply, decide};
@@ -27,6 +33,7 @@ use crate::session::Session;
 #[allow(missing_debug_implementations)]
 pub struct LocalStore {
     state: RefCell<Arc<State>>,
+    list_suggester: RefCell<ReplicaSuggester>,
     now: Now,
     date_format: Cell<todo_client::date_format::DateFormat>,
     sync: SyncInfo,
@@ -68,6 +75,7 @@ impl LocalStore {
 #[allow(missing_debug_implementations)]
 pub struct LiveStore {
     pub session: Session,
+    list_suggester: RefCell<ReplicaSuggester>,
     synced_at: Cell<Option<Timestamp>>,
     date_format: Cell<todo_client::date_format::DateFormat>,
     undos: RefCell<Undos>,
@@ -78,6 +86,7 @@ impl LiveStore {
         Self {
             date_format: Cell::new(session.data().load_ui().date_format),
             session,
+            list_suggester: RefCell::default(),
             synced_at: Cell::new(None),
             undos: RefCell::default(),
         }
@@ -94,6 +103,7 @@ impl Store {
     pub fn fixture(f: &Fixture) -> Self {
         Self::Local(LocalStore {
             state: RefCell::new(Arc::new(f.state.clone())),
+            list_suggester: RefCell::default(),
             now: f.now.clone(),
             date_format: Cell::new(f.now.date_format),
             sync: f.sync.clone(),
@@ -120,6 +130,33 @@ impl Store {
             Self::Local(s) => s.state.borrow().clone(),
             Self::Live(s) => s.session.client().view(),
         }
+    }
+
+    pub fn quick_destination(
+        &self,
+        room: TaskRoom,
+        draft: &Draft,
+        dismissed: bool,
+    ) -> Option<List> {
+        let state = self.view();
+        let id = if draft.list.is_some() {
+            intent::chosen_destination(&state, room, draft)
+        } else if !dismissed && room.allows_list_choice() && !draft.text.trim().is_empty() {
+            let mut cache = match self {
+                Self::Local(s) => s.list_suggester.borrow_mut(),
+                Self::Live(s) => s.list_suggester.borrow_mut(),
+            };
+            suggest::suggest_for_draft(
+                cache.for_state(&state),
+                &state,
+                room,
+                draft,
+                &self.now().eval(),
+            )
+        } else {
+            None
+        }?;
+        state.lists.get(&id).cloned()
     }
 
     /// Applies a command at once and (live) queues it for the server. An error is a message for the

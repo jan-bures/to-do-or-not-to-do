@@ -41,7 +41,8 @@ Options:
                     resize-handle-hover, caption-hover,
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
-                    quick-add-calendar, quick-add-priority, detail-due-calendar, pairing, pairing-code, open-failed or open-failed-confirm.
+                    quick-add-suggestion, quick-add-destination, quick-add-calendar, quick-add-priority,
+                    detail-due-calendar, pairing, pairing-code, open-failed or open-failed-confirm.
                     Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-error, ai-blocked.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
@@ -187,6 +188,8 @@ pub const FIXTURES: &[&str] = &[
     "handover-complete-50",
     "quick-add",
     "quick-add-chips",
+    "quick-add-suggestion",
+    "quick-add-destination",
     "quick-add-calendar",
     "detail-due-calendar",
     "quick-add-priority",

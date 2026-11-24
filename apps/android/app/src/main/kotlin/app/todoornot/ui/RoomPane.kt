@@ -68,6 +68,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -213,7 +214,7 @@ internal fun RoomPane(
             }
         }
         val left = hand.mirrors(wide)
-        val holders = rememberSaveableStateHolder()
+        val holders = key(state.generation) { rememberSaveableStateHolder() }
         var addingWithFilter by remember(state.generation, state.searching) { mutableStateOf(false) }
         var focusAdd by remember { mutableStateOf(false) }
         val coverTimeline = !wide && state.timeline != null
@@ -303,7 +304,8 @@ internal fun RoomPane(
                     Box(Modifier.weight(1f)) {
                         Composer(room.addPlaceholder, draft, keyboard, actions,
                             if (focusAdd) {{ focusAdd = false }} else null, docked = true,
-                            features = state.listFeatures ?: ChecklistFeatures, onSubmit = closeTimelineAdd)
+                            features = state.listFeatures ?: ChecklistFeatures, onSubmit = closeTimelineAdd,
+                            room = room.key, replicaRevision = state.composerRevision)
                     }
                     IconButton("x", "Close quick add", onClick = closeTimelineAdd)
                 } else if (filterShown) {
@@ -324,7 +326,8 @@ internal fun RoomPane(
                     ) else holders.SaveableStateProvider("composer") {
                         Composer(room.addPlaceholder, draft, keyboard, actions,
                             composerFocus ?: if (focusAdd) {{ focusAdd = false }} else null, docked = true,
-                            features = state.listFeatures ?: ChecklistFeatures)
+                            features = state.listFeatures ?: ChecklistFeatures,
+                            room = room.key, replicaRevision = state.composerRevision)
                     }
                 }
                 AnimatedVisibility(!keyboard, enter = expandVertically(tween(M.PANEL)), exit = shrinkVertically(tween(M.PANEL, easing = M.EASE_EXIT.cubic()))) {

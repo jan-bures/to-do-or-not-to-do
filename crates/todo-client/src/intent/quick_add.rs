@@ -402,6 +402,8 @@ pub enum DueChoice {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Draft {
     pub text: String,
+    /// Explicitly chosen destination in a smart room.
+    pub list: Option<todo_core::ids::ListId>,
     pub due: DueChoice,
     /// Picked start date; hidden when Timeline is disabled.
     pub start_date: Option<Date>,

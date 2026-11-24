@@ -378,6 +378,28 @@ pub fn task_activity_state() -> State {
 /// The gallery's state: two collections, a few loose lists, a My Day with 12 tasks (3 done).
 #[must_use]
 #[allow(clippy::too_many_lines)]
+pub fn list_suggestion_state() -> State {
+    let mut b = Builder {
+        state: State::new(),
+        owner: Actor::owner(DEVICE).unwrap_or(Actor::System),
+        at: now().at,
+    };
+    for (n, name, title) in [
+        (1, "Tasks", "invoice reminder"),
+        (2, "Garden", "orchid propagation greenhouse"),
+    ] {
+        b.run(todo_client::intent::create_list(list(n), None, name));
+        for i in 0..3 {
+            b.run(Command::CreateTask(Box::new(NewTask::new(
+                task(n * 10 + i),
+                list(n),
+                title,
+            ))));
+        }
+    }
+    b.state
+}
+
 pub fn state() -> State {
     let mut b = Builder {
         state: State::new(),

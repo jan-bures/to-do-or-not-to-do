@@ -12,6 +12,8 @@ pub struct QuickAddDraft {
     pub picked_due: Option<String>,
     pub cleared_due: bool,
     pub picked_priority: Option<u8>,
+    #[uniffi(default = None)]
+    pub picked_list: Option<String>,
 }
 
 impl From<QuickAddDraft> for quick_add::Draft {
@@ -26,6 +28,7 @@ impl From<QuickAddDraft> for quick_add::Draft {
                     .map_or(quick_add::DueChoice::Default, quick_add::DueChoice::Date)
             },
             priority: d.picked_priority.and_then(priority),
+            list: d.picked_list.and_then(|id| id.parse().ok()),
             ..Self::default()
         }
     }
@@ -41,6 +44,7 @@ impl From<quick_add::Draft> for QuickAddDraft {
             },
             cleared_due: d.due == quick_add::DueChoice::Clear,
             picked_priority: d.priority.map(|p| p as u8),
+            picked_list: d.list.map(|id| id.to_string()),
         }
     }
 }
@@ -106,6 +110,19 @@ pub fn quick_add_pick_priority(draft: QuickAddDraft, level: u8, now: LocalNow) -
     let mut draft = quick_add::Draft::from(draft);
     draft.pick_priority(level, &Now::new(now).eval());
     draft.into()
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddDestination {
+    pub id: String,
+    pub name: String,
+    pub hue: String,
+}
+
+#[derive(Debug, uniffi::Record)]
+pub struct QuickAddContext {
+    pub features: ListFeatures,
+    pub destination: Option<QuickAddDestination>,
 }
 
 /// Feature-aware draft for workflow and start-date composers.

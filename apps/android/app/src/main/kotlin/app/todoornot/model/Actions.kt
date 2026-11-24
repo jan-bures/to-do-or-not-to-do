@@ -36,6 +36,7 @@ interface Actions {
     fun moveBoardCard(list: String, id: String, stage: WorkflowStage, slot: BoardSlot, generation: Long) = Unit
     fun setStartDate(id: String, date: String?) = Unit
     fun scheduleTimeline(task: TimelineTask, edit: TimelineEdit, today: String, generation: Long) = Unit
+    fun composerContext(room: app.todoornot.core.RoomKey, draft: WorkflowQuickAddDraft, offerSuggestion: Boolean): app.todoornot.core.QuickAddContext? = null
     fun composerNow(): app.todoornot.core.LocalNow = app.todoornot.core.localNow()
     fun setDateFormat(key: String): Boolean = false
     /**

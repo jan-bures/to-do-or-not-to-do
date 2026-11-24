@@ -308,8 +308,9 @@ ones. Pass the title returned by `quick_add::parse`, not the raw composer text. 
 counts of hashed words, word pairs and character fragments, not training titles. It abstains unless
 at least two live lists have three training tasks each, the folded title has a word of at least three
 characters, and it recognizes a feature. The default confidence threshold is 0.9.
-The model checks the winner against the current replica before suggesting it. UI integration in
-My Day, Planned, Important and All is pending on every client; the current destination is unchanged.
+Desktop, web, and Android offer a dismissible destination chip in My Day, Planned, Important, and All.
+Accepting it sends the task to that list with its enabled features and the smart room's defaults.
+Without a choice, quick-add uses the room's default destination.
 
 To measure it locally, set `TODO_SUGGEST_SNAPSHOT` to a JSON replica snapshot (`State` or a record
 with a `state` field) and run `cargo test -p todo-client --lib suggest_eval -- --ignored --nocapture`.

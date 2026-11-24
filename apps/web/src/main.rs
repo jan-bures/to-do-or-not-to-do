@@ -48,6 +48,8 @@ async fn start() {
         };
         let state = if dst {
             fixtures::fallback_state()
+        } else if query.contains("fixture=list-suggestion") {
+            fixtures::list_suggestion_state()
         } else if query.contains("fixture=blank") {
             todo_core::State::new()
         } else if query.contains("fixture=finished-no-tomorrow") {

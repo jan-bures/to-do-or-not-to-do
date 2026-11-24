@@ -18,6 +18,8 @@ import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,7 +43,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.focus.focusProperties
 import androidx.compose.ui.focus.focusRequester
@@ -60,6 +61,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.LocalNow
+import app.todoornot.core.QuickAddDestination
+import app.todoornot.core.RoomKey
 import app.todoornot.core.QuickAddDraft
 import app.todoornot.core.QuickAddMonth
 import app.todoornot.core.calendarMoveDays
@@ -94,9 +97,10 @@ private val M = Tokens.Motion
 
 private val draftSaver = listSaver<WorkflowQuickAddDraft, Any>(
     save = { listOf(it.base.text, it.base.pickedDue.orEmpty(), it.base.clearedDue, it.base.pickedPriority?.toInt() ?: -1,
-        it.startDate.orEmpty(), it.status?.name.orEmpty()) },
+        it.startDate.orEmpty(), it.status?.name.orEmpty(), it.base.pickedList.orEmpty()) },
     restore = { WorkflowQuickAddDraft(
-        QuickAddDraft(it[0] as String, (it[1] as String).ifEmpty { null }, it[2] as Boolean, (it[3] as Int).takeIf { n -> n >= 0 }?.toUByte()),
+        QuickAddDraft(it[0] as String, (it[1] as String).ifEmpty { null }, it[2] as Boolean, (it[3] as Int).takeIf { n -> n >= 0 }?.toUByte(),
+            (it.getOrNull(6) as? String)?.ifEmpty { null }),
         (it[4] as String).ifEmpty { null }, OpenStage.entries.firstOrNull { stage -> stage.name == it[5] },
     ) },
 )
@@ -104,7 +108,7 @@ private val draftSaver = listSaver<WorkflowQuickAddDraft, Any>(
 /** The room's composer, docked above the keyboard. Only submitting sends a command. */
 @Composable
 internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, actions: Actions, focus: (() -> Unit)?, docked: Boolean = false,
-    features: ListFeatures = ChecklistFeatures, initialStage: OpenStage? = null, onSubmit: () -> Unit = {},
+    features: ListFeatures = ChecklistFeatures, room: RoomKey? = null, replicaRevision: Long = 0, initialStage: OpenStage? = null, onSubmit: () -> Unit = {},
 ) {
     val r = LocalDesign.current.room
     val requester = remember { FocusRequester() }
@@ -116,11 +120,24 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
             focus()
         }
     }
-    val featureAware = features.workflow || features.timeline
-    var pending by rememberSaveable(draft, initialStage, stateSaver = draftSaver) {
+    var dismissed by rememberSaveable(room, draft, initialStage) { mutableStateOf(false) }
+    var pending by rememberSaveable(room, draft, initialStage, stateSaver = draftSaver) {
         mutableStateOf(WorkflowQuickAddDraft(QuickAddDraft(draft, null, false, null), null, initialStage))
     }
-    val preview = remember(pending, features) { workflowQuickAddPreview(pending, actions.composerNow(), features) }
+    val context = remember(actions, room, pending, dismissed, replicaRevision) {
+        room?.let { actions.composerContext(it, pending, !dismissed) }
+    }
+    val flags = context?.features ?: features
+    val destination = context?.destination
+    val accepted = pending.base.pickedList != null
+    fun clearDestination() {
+        dismissed = true
+        pending = pending.copy(base = pending.base.copy(pickedList = null))
+    }
+    LaunchedEffect(accepted, destination) {
+        if (accepted && destination == null) clearDestination()
+    }
+    val preview = remember(pending, flags) { workflowQuickAddPreview(pending, actions.composerNow(), flags) }
     val priority = preview.priority?.toInt() ?: 0
     val stage = preview.status ?: OpenStage.TODO
     val shape = RoundedCornerShape(Tokens.Radius.COMPOSER.dp)
@@ -128,13 +145,14 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
     var priorityOpen by remember { mutableStateOf(false) }
     var statusOpen by remember { mutableStateOf(false) }
     fun pick(choice: WorkflowQuickAddPick) {
-        pending = workflowQuickAddPick(pending, choice, actions.composerNow(), features)
+        pending = workflowQuickAddPick(pending, choice, actions.composerNow(), flags)
     }
     fun chooseDate(date: String?) { pick(WorkflowQuickAddPick.Due(date)) }
     fun choosePriority(level: Int) { pick(WorkflowQuickAddPick.Priority(level.toUByte())) }
     fun submit() {
         if (preview.title.isBlank()) return
-        if (featureAware) actions.addWorkflow(pending) else actions.add(pending.base)
+        if (flags.workflow || flags.timeline) actions.addWorkflow(pending) else actions.add(pending.base)
+        dismissed = false
         pending = WorkflowQuickAddDraft(QuickAddDraft("", null, false, null), null, initialStage)
         onSubmit()
     }
@@ -159,7 +177,13 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                 Icon("plus", r.accentStrong)
                 BasicTextField(
                     value = pending.base.text,
-                    onValueChange = { pending = workflowQuickAddEdit(pending, it, actions.composerNow(), features) },
+                    onValueChange = {
+                        if (it.isBlank()) {
+                            dismissed = false
+                            pending = pending.copy(base = pending.base.copy(pickedList = null))
+                        }
+                        pending = workflowQuickAddEdit(pending, it, actions.composerNow(), flags)
+                    },
                     modifier = Modifier.weight(1f).focusRequester(requester).onFocusChanged { fieldFocused = it.isFocused }
                         .semantics { contentDescription = placeholder },
                     textStyle = Tokens.Type.COMPOSER.style(r.ink),
@@ -175,7 +199,7 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                     },
                 )
                 Row {
-                    if (features.workflow) Box {
+                    if (flags.workflow) Box {
                         val mark = stage.workflowStage()
                         IconButton(mark.icon, "Choose status: ${mark.label}", mark.ink(), expanded = statusOpen) { statusOpen = true }
                         if (statusOpen) AnchoredPopup(onDismiss = { statusOpen = false }, above = true) { overlay ->
@@ -195,7 +219,7 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                         calendarNow?.let { opened ->
                             CalendarPopup(opened, preview.due, onChoose = ::chooseDate, onDismiss = { calendarNow = null },
                                 start = preview.startDate,
-                                onStart = if (features.timeline) { date -> pick(WorkflowQuickAddPick.Start(date)) } else null)
+                                onStart = if (flags.timeline) { date -> pick(WorkflowQuickAddPick.Start(date)) } else null)
                         }
                     }
                     Box {
@@ -209,16 +233,19 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                 }
             }
             AnimatedVisibility(
-                visible = preview.dateLabel != null || priority > 0 || stage != OpenStage.TODO,
+                visible = preview.dateLabel != null || priority > 0 || stage != OpenStage.TODO || destination != null,
                 enter = fadeIn(tween(M.OVERLAY_IN, easing = M.EASE_ENTER.cubic())),
                 exit = fadeOut(tween(M.OVERLAY_OUT, easing = M.EASE_EXIT.cubic())),
             ) {
                 androidx.compose.foundation.layout.FlowRow(Modifier.padding(horizontal = S.S3.dp), horizontalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                     preview.dateLabel?.let { label -> QuickChip(label, "Remove dates: $label", date = true) {
-                        if (features.timeline && preview.startDate != null) pick(WorkflowQuickAddPick.Start(null))
+                        if (flags.timeline && preview.startDate != null) pick(WorkflowQuickAddPick.Start(null))
                         if (preview.due != null) chooseDate(null)
                     } }
                     if (priority > 0) QuickChip("!".repeat(priority), "Remove priority: ${priorityName(priority)}", date = false) { choosePriority(0) }
+                    destination?.let { list ->
+                        DestinationChip(list, accepted, { pending = pending.copy(base = pending.base.copy(pickedList = list.id)) }, ::clearDestination)
+                    }
                     if (stage != OpenStage.TODO) {
                         val mark = stage.workflowStage()
                         QuickChip(mark.label, "Remove status: ${mark.label}", date = false, icon = mark.icon) {
@@ -228,6 +255,37 @@ internal fun Composer(placeholder: String, draft: String, keyboard: Boolean, act
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DestinationChip(list: QuickAddDestination, accepted: Boolean, accept: () -> Unit, dismiss: () -> Unit) {
+    val design = LocalDesign.current
+    val r = design.room
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    val remove = if (accepted) "Remove destination: ${list.name}" else "Dismiss list suggestion: ${list.name}"
+    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.drawBehind {
+        val height = (S.S6.dp).toPx()
+        drawRoundRect(if (accepted) r.wash else r.raised, Offset(0f, (size.height - height) / 2),
+            Size(size.width, height), CornerRadius(Tokens.Radius.MD.dp.toPx()))
+        if (!accepted) {
+            val line = Tokens.Elevation.HAIRLINE.dp.toPx()
+            drawRoundRect(r.line, Offset(line / 2, (size.height - height + line) / 2),
+                Size(size.width - line, height - line), CornerRadius(Tokens.Radius.MD.dp.toPx()),
+                style = androidx.compose.ui.graphics.drawscope.Stroke(line))
+        }
+    }) {
+        Row(
+            Modifier.heightIn(min = P.TOUCH.dp).clip(shape)
+                .then(if (accepted) Modifier else Modifier.widthIn(min = P.TOUCH.dp).clickable(role = Role.Button, onClick = accept))
+                .padding(start = S.S2.dp),
+            horizontalArrangement = Arrangement.spacedBy(S.S1.dp), verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(Modifier.size(S.S2.dp).background(design.list(list.hue).swatch, CircleShape))
+            Label(if (accepted) list.name else "In ${list.name}?", Tokens.Type.COUNT, r.ink,
+                modifier = Modifier.widthIn(max = P.CHIP_MAX.dp), weight = Tokens.Type.DUE.weight)
+        }
+        IconButton("x", remove, r.ink, onClick = dismiss)
     }
 }
 

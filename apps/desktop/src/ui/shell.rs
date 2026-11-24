@@ -268,6 +268,7 @@ pub struct ShellView {
     landscape: HeaderCache,
     quick_add: Entity<TextInput>,
     quick_draft: quick_add::Draft,
+    quick_list_dismissed: bool,
     quick_focus: quick_pickers::Controls,
     workflow: workflow::Controls,
     board: board::BoardUi,
@@ -429,6 +430,7 @@ impl ShellView {
                     }
                     if this.add_draft(&draft, this.ui.room, cx) {
                         this.quick_draft = quick_add::Draft::default();
+                        this.quick_list_dismissed = false;
                         input.update(cx, |i, cx| i.reset(window, cx));
                         cx.notify();
                     }
@@ -437,6 +439,7 @@ impl ShellView {
                     if this.on_board() {
                         this.board.composer = None;
                         this.quick_draft = quick_add::Draft::default();
+                        this.quick_list_dismissed = false;
                         input.update(cx, |i, cx| i.reset(window, cx));
                         cx.notify();
                     }
@@ -447,12 +450,14 @@ impl ShellView {
                     }
                 }
                 InputEvent::Changed => {
+                    let text = input.read(cx).content.to_string();
+                    if text.trim().is_empty() {
+                        this.quick_draft.list = None;
+                        this.quick_list_dismissed = false;
+                    }
                     let features = this.quick_features();
-                    this.quick_draft.edit_with_features(
-                        input.read(cx).content.to_string(),
-                        &this.store.now().eval(),
-                        features,
-                    );
+                    this.quick_draft
+                        .edit_with_features(text, &this.store.now().eval(), features);
                     cx.notify();
                 }
             },
@@ -499,6 +504,7 @@ impl ShellView {
             palette,
             painted_hue,
             landscape: HeaderCache::default(),
+            quick_list_dismissed: false,
             quick_draft: quick_add::Draft {
                 text: quick_add.read(cx).content.to_string(),
                 ..Default::default()
@@ -672,6 +678,17 @@ impl ShellView {
             }
         }
         let room_changed = room != self.shell.room.key;
+        if room_changed {
+            self.quick_draft.list = None;
+            self.quick_list_dismissed = false;
+        } else if self
+            .quick_draft
+            .list
+            .is_some_and(|id| !state.is_live(id.into()))
+        {
+            self.quick_draft.list = None;
+            self.quick_list_dismissed = true;
+        }
         let old_view = self.view();
         let outgoing_body = (room_changed && self.animate).then(|| self.capture_body(0.));
         if self
@@ -1521,6 +1538,10 @@ impl ShellView {
             "sidebar-new-menu" | "tab-new-collection" => Some(MenuKind::New),
             "sync-failures" => Some(MenuKind::SyncFailures),
             "priority-menu" => task.map(|task| MenuKind::Priority { task }),
+            "quick-add-destination" => {
+                self.quick_draft.list = self.quick_destination().map(|list| list.id);
+                None
+            }
             "quick-add-calendar" => Some(MenuKind::Date(self.quick_calendar())),
             "detail-due-calendar" => task.map(|task| self.detail_calendar(task)),
             "quick-add-priority" => Some(MenuKind::QuickPriority),
@@ -1921,19 +1942,7 @@ impl ShellView {
         cx.notify();
     }
 
-    /// Adds a task typed into a quick-add, to `room`. Returns whether it was added.
-    pub fn add_task(&mut self, text: &str, room: RoomKey, cx: &mut Context<Self>) -> bool {
-        self.add_draft(
-            &quick_add::Draft {
-                text: text.into(),
-                ..Default::default()
-            },
-            room,
-            cx,
-        )
-    }
-
-    fn add_draft(
+    pub(super) fn add_draft(
         &mut self,
         draft: &quick_add::Draft,
         room: RoomKey,
@@ -2722,10 +2731,12 @@ impl ShellView {
         let date = self.quick_date_label(&parsed);
         let has_date = date.is_some();
         let priority = parsed.priority.unwrap_or_default();
-        let workflow = self.shell.room.features.workflow;
+        let workflow = self.quick_features().workflow;
         let stage = self.quick_stage();
+        let destination = self.quick_destination();
         let status_chip = workflow && stage != todo_core::query::QueryStatus::Todo;
-        let has_chips = has_date || priority != Priority::None || status_chip;
+        let has_chips =
+            has_date || priority != Priority::None || status_chip || destination.is_some();
         // On the finished day the field stays, but quietly: on the pane with a hairline, so the hand-over
         // to tomorrow leads. Ctrl+N or a click wakes it up.
         let quiet = self.shell.room.finished_day() && !focused && !typed;
@@ -2760,6 +2771,16 @@ impl ShellView {
             .when(priority != Priority::None, |field| {
                 field.child(self.quick_priority_chip(priority, window, cx))
             })
+            .children(destination.map(|list| {
+                self.quick_focus.destination.render(
+                    &list,
+                    self.quick_draft.list.is_some(),
+                    (self.theme, *p),
+                    window,
+                    cx,
+                    Self::choose_quick_destination,
+                )
+            }))
             .when(workflow, |field| {
                 field.child(self.quick_status_button(window, cx))
             })
@@ -4519,6 +4540,8 @@ impl ShellView {
             Stop::QuickPriority => &self.quick_focus.priority,
             Stop::QuickRemoveDate => &self.quick_focus.remove_date,
             Stop::QuickRemovePriority => &self.quick_focus.remove_priority,
+            Stop::QuickAcceptList => &self.quick_focus.destination.accept,
+            Stop::QuickRemoveList => &self.quick_focus.destination.remove,
             Stop::ActivityFilter => &self.activity_filter_focus,
             Stop::ActivityRefresh => &self.activity_refresh_focus,
             Stop::ActivityMore => &self.activity_more_focus,
@@ -4577,7 +4600,7 @@ impl ShellView {
                 .repeat_target()
                 .is_some_and(|id| self.task_has_start(id)),
             Stop::QuickStatus => {
-                self.shell.room.features.workflow && !self.on_board() && !self.on_timeline()
+                self.quick_features().workflow && !self.on_board() && !self.on_timeline()
             }
             Stop::QuickRemoveStatus => {
                 self.has_stop(Stop::QuickStatus)
@@ -4592,6 +4615,11 @@ impl ShellView {
             Stop::QuickRemoveDate => {
                 self.has_stop(Stop::QuickInput)
                     && self.quick_date_label(&self.quick_preview()).is_some()
+            }
+            Stop::QuickAcceptList | Stop::QuickRemoveList => {
+                self.has_stop(Stop::QuickInput)
+                    && (stop == Stop::QuickRemoveList || self.quick_draft.list.is_none())
+                    && self.quick_destination().is_some()
             }
             Stop::QuickRemovePriority => {
                 self.has_stop(Stop::QuickInput)

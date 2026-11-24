@@ -553,7 +553,11 @@ impl RootView {
     fn push_progress(&self, cx: &mut Context<Self>) {
         let progress = self.my_day_progress(cx);
         if let Some(q) = self.quick.as_ref().and_then(WeakEntity::upgrade) {
-            q.update(cx, |q, cx| q.set_progress(progress, cx));
+            let store = match &self.screen {
+                Screen::Shell(s) => Some(s.read(cx).store().clone()),
+                _ => None,
+            };
+            q.update(cx, |q, cx| q.set_room(progress, store, cx));
         }
     }
 
@@ -567,10 +571,14 @@ impl RootView {
 
     /// Adds a task typed into the global quick-add to My Day. Returns false when there is nowhere to add
     /// it yet (not paired).
-    pub fn quick_add(&mut self, text: &str, cx: &mut Context<Self>) -> bool {
+    pub fn quick_add(
+        &mut self,
+        draft: &crate::model::quick_add::Draft,
+        cx: &mut Context<Self>,
+    ) -> bool {
         match &self.screen {
             Screen::Shell(s) => s.update(cx, |s, cx| {
-                s.add_task(text, RoomKey::Smart(Smart::MyDay), cx)
+                s.add_draft(draft, RoomKey::Smart(Smart::MyDay), cx)
             }),
             Screen::Pairing(_) | Screen::Starting | Screen::Failed(_) => false,
         }

@@ -320,6 +320,7 @@ pub fn quick_add_date(text: String, now: LocalNow) -> Option<String> {
 #[derive(uniffi::Object)]
 pub struct TodoEngine {
     client: Client,
+    list_suggester: Mutex<intent::suggest::ReplicaSuggester>,
     recovered: Option<CacheRecovery>,
     /// Built by [`TodoEngine::fixture`]: only such an engine takes the test hooks
     /// ([`TodoEngine::fixture_delete_task`], [`TodoEngine::fixture_restore_task`]).
@@ -505,6 +506,7 @@ impl TodoEngine {
     fn new(client: Client, recovered: Option<CacheRecovery>, fixture: bool) -> Arc<Self> {
         Arc::new(Self {
             client,
+            list_suggester: Mutex::default(),
             recovered,
             fixture,
             undos: Mutex::new(HashMap::new()),
@@ -886,6 +888,54 @@ impl TodoEngine {
             .into(),
             now,
         )
+    }
+
+    /// Quick-add feature flags and the list to display in its destination chip.
+    pub fn quick_add_context(
+        &self,
+        room: RoomKey,
+        draft: crate::quick_add::WorkflowQuickAddDraft,
+        now: LocalNow,
+        offer_suggestion: bool,
+    ) -> crate::quick_add::QuickAddContext {
+        use crate::quick_add::{QuickAddContext, QuickAddDestination};
+        let smart = matches!(
+            room,
+            RoomKey::Smart {
+                list: SmartList::MyDay | SmartList::Important | SmartList::Planned | SmartList::All,
+            }
+        );
+        let room = intent_room(room);
+        let state = self.client.view();
+        let draft = draft.into();
+        let destination = smart
+            .then(|| {
+                let id = intent::chosen_destination(&state, room, &draft).or_else(|| {
+                    if !offer_suggestion || draft.list.is_some() || draft.text.trim().is_empty() {
+                        return None;
+                    }
+                    let mut cache = self.list_suggester.lock().ok()?;
+                    intent::suggest::suggest_for_draft(
+                        cache.for_state(&state),
+                        &state,
+                        room,
+                        &draft,
+                        &Now::new(now).eval(),
+                    )
+                })?;
+                let list = state.lists.get(&id)?;
+                Some(QuickAddDestination {
+                    id: id.to_string(),
+                    name: list.name.clone(),
+                    hue: crate::lists::swatch(list.color.as_deref(), id.as_uuid().as_bytes())
+                        .into(),
+                })
+            })
+            .flatten();
+        QuickAddContext {
+            features: intent::draft_features(&state, room, &draft).into(),
+            destination,
+        }
     }
 
     /// Adds a task using the same draft that the composer previews.

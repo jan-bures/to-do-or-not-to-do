@@ -122,6 +122,7 @@ pub struct Toast {
 #[derive(Clone, Copy)]
 pub struct Ctx {
     state: RwSignal<Arc<State>>,
+    list_suggester: Memo<todo_client::intent::suggest::ReplicaSuggester>,
     sync: RwSignal<Sync>,
     ai: assistant::Ui,
     sign_in_started: StoredValue<bool>,
@@ -730,8 +731,18 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let detail_modal = Memo::new(move |_| {
         !ai.modal.get() && (narrow.get() || beside_ai.get()) && detail.with(Option::is_some)
     });
+    let list_suggester = Memo::new_owning(
+        move |prev: Option<todo_client::intent::suggest::ReplicaSuggester>| {
+            let mut cache = prev.unwrap_or_default();
+            state.with(|state| {
+                cache.for_state(state);
+            });
+            (cache, true)
+        },
+    );
     let c = Ctx {
         state,
+        list_suggester,
         sync: RwSignal::new(backend::status()),
         ai,
         sign_in_started: StoredValue::new(false),

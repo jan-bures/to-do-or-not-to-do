@@ -6,7 +6,51 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::hash::{DefaultHasher, Hash, Hasher};
-use todo_core::{State, ids::ListId, model::Task, query::fold};
+use std::sync::{Arc, Weak};
+use todo_core::{
+    State,
+    ids::ListId,
+    model::Task,
+    query::{EvalContext, fold},
+};
+
+use super::{TaskRoom, default_list, draft_features, quick_add::Draft};
+
+/// Train once per replica view, including optimistic state changes.
+#[derive(Debug, Default)]
+pub struct ReplicaSuggester {
+    state: Weak<State>,
+    model: ListSuggester,
+}
+
+impl ReplicaSuggester {
+    pub fn for_state(&mut self, state: &Arc<State>) -> &ListSuggester {
+        if !std::ptr::eq(self.state.as_ptr(), Arc::as_ptr(state)) {
+            self.model = ListSuggester::from_state(state);
+            self.state = Arc::downgrade(state);
+        }
+        &self.model
+    }
+
+    pub fn model(&self) -> &ListSuggester {
+        &self.model
+    }
+}
+
+pub fn suggest_for_draft(
+    suggester: &ListSuggester,
+    state: &State,
+    room: TaskRoom,
+    draft: &Draft,
+    ctx: &EvalContext,
+) -> Option<ListId> {
+    if !room.allows_list_choice() || draft.list.is_some() {
+        return None;
+    }
+    let parsed = draft.parsed_with_features(ctx, draft_features(state, room, draft));
+    let list = suggester.suggest(&parsed.title, state)?.list;
+    (Some(list) != default_list(state)).then_some(list)
+}
 
 const MIN_TASKS: u64 = 3;
 

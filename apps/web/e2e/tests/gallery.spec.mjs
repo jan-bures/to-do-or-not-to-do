@@ -476,6 +476,20 @@ for (const scheme of ["light", "dark"]) {
       await w.check();
     });
 
+    test(`quick-add list destination (${scheme})`, async ({ page }) => {
+      for (const [layout, size] of [["desktop", DESKTOP], ["phone", PHONE]]) {
+        await page.setViewportSize(size);
+        await open(page, "/app?fixture=list-suggestion");
+        await page.getByRole("textbox", { name: "Add a task" }).fill("orchid propagation greenhouse tomorrow !!");
+        const suggestion = page.getByRole("button", { name: "In Garden?" });
+        await expect(suggestion).toBeVisible();
+        await shot(page, `${layout}-quick-add-suggestion-${scheme}`);
+        await suggestion.click();
+        await expect(page.getByRole("button", { name: "Remove destination: Garden" })).toBeVisible();
+        await shot(page, `${layout}-quick-add-destination-${scheme}`);
+      }
+    });
+
     test(`organizing rooms (${scheme})`, async ({ page }) => {
       const w = watch(page);
       await page.setViewportSize(DESKTOP);

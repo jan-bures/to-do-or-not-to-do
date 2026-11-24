@@ -7,8 +7,10 @@ pub(super) use quick_add::Pick;
 use todo_client::intent::{calendar, quick_add};
 use todo_core::{ids::TaskId, model::Priority, time::Date};
 
+use super::super::quick_add::DestinationControls;
 use super::{ShellView, menu::MenuKind};
 use crate::model::hints::Stop;
+use crate::model::{RoomKey, Smart};
 use crate::theme::{Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::kit;
 
@@ -18,6 +20,7 @@ pub(super) struct Controls {
     pub remove_priority: FocusHandle,
     pub date: FocusHandle,
     pub priority: FocusHandle,
+    pub destination: DestinationControls,
 }
 
 impl Controls {
@@ -28,6 +31,7 @@ impl Controls {
             remove_priority: cx.focus_handle(),
             date: cx.focus_handle(),
             priority: cx.focus_handle(),
+            destination: DestinationControls::new(cx),
         }
     }
 
@@ -37,6 +41,8 @@ impl Controls {
             &self.remove_priority,
             &self.date,
             &self.priority,
+            &self.destination.accept,
+            &self.destination.remove,
         ]
         .into_iter()
         .any(|h| h.is_focused(window))
@@ -129,6 +135,32 @@ enum CalendarAction {
 }
 
 impl ShellView {
+    pub(super) fn quick_destination(&self) -> Option<todo_core::model::List> {
+        if !matches!(
+            self.ui.room,
+            RoomKey::Smart(Smart::MyDay | Smart::Important | Smart::Planned | Smart::All)
+        ) {
+            return None;
+        }
+        self.store.quick_destination(
+            self.ui.room.into(),
+            &self.quick_draft,
+            self.quick_list_dismissed,
+        )
+    }
+
+    pub(super) fn choose_quick_destination(
+        &mut self,
+        choice: Option<todo_core::ids::ListId>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.quick_draft.list = choice;
+        self.quick_list_dismissed = choice.is_none();
+        window.focus(&self.quick_focus.input, cx);
+        cx.notify();
+    }
+
     pub(super) fn quick_preview(&self) -> quick_add::Parsed {
         self.quick_draft
             .parsed_with_features(&self.store.now().eval(), self.quick_features())
@@ -675,6 +707,51 @@ mod tests {
         cx.simulate_keystrokes(key);
         cx.simulate_event(gpui::KeyUpEvent {
             keystroke: gpui::Keystroke::parse(key).expect("key"),
+        });
+    }
+
+    #[gpui::test]
+    fn quick_add_destination_is_opt_in_and_clears_after_submit(cx: &mut gpui::TestAppContext) {
+        cx.update(|app| app.bind_keys(crate::ui::input::key_bindings()));
+        let fixture = crate::fixtures::by_name("quick-add-suggestion").expect("suggestion fixture");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let mut view = ShellView::new(
+                std::rc::Rc::new(crate::store::Store::fixture(&fixture)),
+                fixture.ui,
+                crate::theme::Theme::Light,
+                fixture.quick_add_text,
+                window,
+                cx,
+            );
+            view.still();
+            view
+        });
+        let garden = cx.update(|window, cx| {
+            let view = shell.read(cx);
+            let suggestion = view.quick_destination().expect("suggestion");
+            assert_eq!(suggestion.name, "Garden");
+            assert_eq!(view.quick_draft.list, None);
+            window.focus(&view.quick_focus.destination.accept.clone(), cx);
+            suggestion.id
+        });
+        press(cx, "enter");
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            assert_eq!(view.quick_draft.list, Some(garden));
+            assert!(view.quick_focus.input.is_focused(window));
+        });
+        press(cx, "enter");
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            let state = view.store.view();
+            assert!(
+                state
+                    .tasks
+                    .values()
+                    .any(|t| t.list == garden && t.my_day == Some(view.store.now().today()))
+            );
+            assert_eq!(view.quick_draft, quick_add::Draft::default());
+            assert!(!view.quick_list_dismissed);
         });
     }
 

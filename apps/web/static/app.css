@@ -1655,6 +1655,65 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
   height: var(--component-icon-small);
 }
 
+.qa-list-chip {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+  height: calc(var(--component-chip) + 2 * var(--hairline));
+  border: var(--hairline) solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-raised);
+  color: var(--color-ink);
+  font: var(--text-count);
+}
+
+.qa-list-chip.accepted {
+  border-color: var(--color-wash);
+  background: var(--color-wash);
+}
+
+.qa-list-label,
+.qa-list-remove {
+  display: inline-flex;
+  align-items: center;
+  height: 100%;
+  border-radius: var(--radius-md);
+}
+
+.qa-list-label {
+  gap: var(--component-meta-gap);
+  min-width: 0;
+  padding: 0 var(--space-2);
+  max-width: var(--desktop-chip-max);
+}
+
+.qa-list-label > :last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.qa-list-swatch {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  border-radius: var(--radius-checkbox);
+  background: var(--list-swatch);
+}
+
+.qa-list-remove {
+  flex: none;
+  justify-content: center;
+  padding: 0 var(--space-1);
+}
+
+.qa-list-remove .icon {
+  width: var(--component-icon-small);
+  height: var(--component-icon-small);
+}
+
+.qa-list-chip button:hover:not(:disabled) { background: var(--color-hover); }
+
 .qa-date-chip.no-date {
   display: none;
   opacity: 0;
@@ -3527,6 +3586,9 @@ a.source:hover {
   .qa-tools { grid-area: tools; gap: 0; }
   .qa-chips { grid-area: chips; align-self: stretch; }
   .qa-chips button, .qa-tool { min-height: var(--phone-touch); min-width: var(--phone-touch); }
+  .qa-chips .qa-list-chip button::before { content: none; }
+  .qa-list-chip { height: var(--space-6); }
+  .qa-list-label { max-width: var(--phone-chip-max); }
   .qa-chips button { position: relative; isolation: isolate; background: transparent; }
   .qa-chips button::before {
     content: "";
