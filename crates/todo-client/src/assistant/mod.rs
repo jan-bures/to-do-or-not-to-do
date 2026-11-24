@@ -12,6 +12,8 @@ macro_rules! opaque_debug {
     )+};
 }
 
+#[cfg(all(feature = "native", not(target_arch = "wasm32")))]
+pub mod browser_sign_in;
 pub mod endpoint;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]

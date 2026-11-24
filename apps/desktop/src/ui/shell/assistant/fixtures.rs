@@ -20,6 +20,11 @@ impl ShellView {
         self.ai.open = name != "ai-pending";
         self.settle_detail();
         if name == "ai-unconfigured" {
+            self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
+                chatgpt: true,
+                private_models: true,
+                ..Default::default()
+            });
             cx.notify();
             return;
         }
@@ -253,7 +258,9 @@ impl ShellView {
                 | "ai-chatgpt-signed-out"
                 | "ai-chatgpt-device-code"
                 | "ai-chatgpt-signed-in"
+                | "ai-chatgpt-account"
                 | "ai-chatgpt-consent"
+                | "ai-private-relay"
         ) {
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
             if let Some(collection) = state.lists[&errands.id].collection {
@@ -281,7 +288,7 @@ impl ShellView {
                     self.ai.cloud.code = Some("EXAMPLE-1".into());
                 }
                 if signed_in {
-                    self.ai.profile.model = "gpt-sample".into();
+                    self.ai.profile.model = "fixture-model".into();
                     self.ai.profile.chatgpt_account = Some(Uuid::from_u128(1));
                     self.ai.cloud.fixture = Some(chatgpt::AccountView {
                         id: Uuid::from_u128(1),
@@ -289,6 +296,18 @@ impl ShellView {
                         consented_lists: None,
                     });
                 }
+                let mut accounts: Vec<_> = self
+                    .ai
+                    .cloud
+                    .fixture
+                    .iter()
+                    .map(|account| todo_client::assistant::relay::Account {
+                        id: account.id,
+                        label: account.label.clone(),
+                        approved: false,
+                        approved_lists: BTreeSet::new(),
+                    })
+                    .collect();
                 if name == "ai-chatgpt-signed-in" {
                     let added = todo_client::assistant::relay::Account {
                         id: Uuid::from_u128(2),
@@ -297,21 +316,16 @@ impl ShellView {
                         approved_lists: BTreeSet::new(),
                     };
                     self.ai.cloud.signed_in = Some((added.id, added.label.clone()));
-                    self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
-                        chatgpt: true,
-                        chatgpt_device_code: true,
-                        accounts: vec![
-                            todo_client::assistant::relay::Account {
-                                id: Uuid::from_u128(1),
-                                label: "you@example.com".into(),
-                                approved: false,
-                                approved_lists: BTreeSet::new(),
-                            },
-                            added,
-                        ],
-                        ..Default::default()
-                    });
+                    accounts.push(added);
                 }
+                self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
+                    chatgpt: true,
+                    chatgpt_device_code: name != "ai-chatgpt-account",
+                    private_models: true,
+                    accounts,
+                    access: self.ai.profile.access.clone(),
+                    ..Default::default()
+                });
                 if let Some(view) = &mut self.ai.fixture {
                     if !signed_in {
                         view.composer = Composer::ChooseModel;
@@ -346,6 +360,17 @@ impl ShellView {
                     self.open_ai_settings(window, cx);
                 }
                 cx.notify();
+                return;
+            }
+            if name == "ai-private-relay" {
+                self.ai.profile.private_relay = true;
+                self.ai.profile.model = "fixture-model".into();
+                self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
+                    private_models: true,
+                    access: self.ai.profile.access.clone(),
+                    ..Default::default()
+                });
+                self.open_ai_settings(window, cx);
                 return;
             }
             self.open_ai_settings(window, cx);

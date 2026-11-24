@@ -25,9 +25,11 @@ for (const theme of ["light", "dark"]) {
       await page.setViewportSize(MEDIUM);
       await expect(panel(page)).toHaveAttribute("aria-modal", "true");
       await page.locator("#assistant-settings").click();
-      await expect(aiSettings(page)).toBeVisible();
-      await expect(aiSettings(page).getByRole("heading", { name: "ChatGPT", exact: true })).toBeInViewport();
-      await expect(aiSettings(page).getByLabel("API key", { exact: true })).toHaveValue("");
+      const settings = aiSettings(page);
+      await expect(settings).toBeVisible();
+      await expect(settings.getByRole("heading", { name: "This device", exact: true })).toBeInViewport();
+      await expect(settings.locator(".ai-provider:visible")).toHaveCount(1);
+      await expect(settings.getByLabel("API key", { exact: true })).toHaveValue("");
       await shot(page, "medium-settings", theme);
       await page.keyboard.press("Escape");
       await expect(aiSettings(page)).not.toBeVisible();

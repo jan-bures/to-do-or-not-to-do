@@ -123,64 +123,63 @@ impl ShellView {
         }
         let active = self.ai.cloud.active(&setup.draft);
         if cloud {
-            if let Some((_, label)) = &self.ai.cloud.signed_in {
-                card = card.child(text(
-                    ty::META,
-                    p.ink,
-                    format!(
-                        "Connected {}. Your selection hasn’t changed.",
-                        model::labels::one_line(label)
-                    ),
-                ));
-            }
-            for (index, account) in self.ai.cloud.saved().into_iter().enumerate() {
+            let accounts = self.ai.cloud.saved();
+            for (index, account) in accounts.iter().enumerate() {
                 let id = account.id;
                 let selected = Some(id) == setup.draft.chatgpt_account;
-                card = card.child(
+                let label = model::labels::one_line(&account.label);
+                let choice = div()
+                    .flex_1()
+                    .min_w_0()
+                    .min_h(px(component::BUTTON_SMALL))
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S2))
+                    .px(px(space::S1))
+                    .rounded(px(radius::MD))
+                    .when(selected, |row| row.bg(p.wash))
+                    .child(div().size(px(component::ICON_SMALL)).flex_none().children(
+                        selected.then(|| {
+                            kit::icon(Icon::Check, component::ICON_SMALL, p.accent_strong)
+                        }),
+                    ))
+                    .child(one_line(text(ty::BODY, p.ink, label.clone())));
+                card = card.child(line(&p)).child(
                     div()
                         .flex()
                         .items_center()
-                        .justify_between()
                         .gap(px(space::S2))
                         .child(
-                            self.ai_button(
+                            self.ai_action(
                                 format!("assistant-chatgpt-account-{index}"),
-                                model::labels::one_line(&account.label),
-                                if selected {
-                                    Tone::Primary
-                                } else {
-                                    Tone::Outline
-                                },
+                                choice,
                                 !running,
                                 move |this, _, cx| this.choose_chatgpt_account(id, cx),
                                 cx,
                             )
-                            .aria_toggled(toggled(selected)),
+                            .aria_toggled(toggled(selected))
+                            .aria_label(label.clone())
+                            .tooltip(kit::tooltip(p, label.clone())),
                         )
-                        .child(self.ai_button(
-                            format!("assistant-chatgpt-signout-{index}"),
-                            "Sign out",
-                            Tone::Quiet,
-                            !running,
-                            move |this, _, cx| this.sign_out_chatgpt(id, cx),
-                            cx,
-                        )),
+                        .child(
+                            self.ai_button(
+                                format!("assistant-chatgpt-signout-{index}"),
+                                "Sign out",
+                                Tone::Quiet,
+                                !running,
+                                move |this, _, cx| this.sign_out_chatgpt(id, cx),
+                                cx,
+                            )
+                            .aria_label(format!("Sign out of {label}")),
+                        ),
                 );
             }
-            if self.ai.cloud.fixture_enabled
-                && let Some(account) = &active
-                && !self
-                    .ai
-                    .cloud
-                    .saved()
-                    .iter()
-                    .any(|saved| saved.id == account.id)
-            {
-                card = card.child(text(
+            if let Some((_, label)) = &self.ai.cloud.signed_in {
+                card = card.child(one_line(text(
                     ty::META,
-                    p.ink,
-                    model::labels::one_line(&account.label),
-                ));
+                    p.ink_2,
+                    format!("Connected {}.", model::labels::one_line(label)),
+                )));
             }
             card = card.child(self.ai_manage_usage(
                 "assistant-chatgpt-settings-usage",
@@ -203,35 +202,34 @@ impl ShellView {
                 .cloud
                 .status
                 .as_ref()
-                .is_some_and(|s| s.chatgpt_device_code)
-                || self.ai.cloud.fixture_enabled;
+                .is_some_and(|s| s.chatgpt_device_code);
             card = card.child(
                 div()
                     .flex()
                     .flex_wrap()
                     .gap(px(space::S2))
+                    .child(self.ai_button(
+                        "assistant-chatgpt-continue",
+                        if accounts.is_empty() {
+                            "Sign in with ChatGPT"
+                        } else {
+                            "Add another account"
+                        },
+                        Tone::Primary,
+                        !running,
+                        |this, _, cx| this.sign_in_chatgpt(true, cx),
+                        cx,
+                    ))
                     .children(device.then(|| {
                         self.ai_button(
                             "assistant-chatgpt-start-device",
-                            if active.is_some() || !self.ai.cloud.saved().is_empty() {
-                                "Add another ChatGPT account"
-                            } else {
-                                "Sign in with ChatGPT"
-                            },
-                            Tone::Outline,
+                            "Use a code instead",
+                            Tone::Quiet,
                             !running,
                             |this, _, cx| this.sign_in_chatgpt(false, cx),
                             cx,
                         )
-                    }))
-                    .child(self.ai_button(
-                        "assistant-chatgpt-continue",
-                        "Continue in browser",
-                        Tone::Quiet,
-                        !running,
-                        |this, _, cx| this.sign_in_chatgpt(true, cx),
-                        cx,
-                    )),
+                    })),
             );
             if active.is_none() {
                 return card;
@@ -242,65 +240,68 @@ impl ShellView {
         } else {
             model::labels::one_line(&setup.draft.model)
         };
-        card.child(
-            div()
-                .flex()
-                .items_center()
-                .justify_between()
-                .gap(px(space::S2))
-                .child(one_line(text(ty::COUNT, p.ink, model)).flex_1())
-                .child(self.ai_button(
-                    "assistant-chatgpt-models",
-                    "Choose model",
-                    Tone::Outline,
-                    !running,
-                    |this, _, cx| this.list_chatgpt_models(cx),
-                    cx,
-                )),
-        )
-        .when(setup.pick_model, |card| {
-            card.child(
+        card.child(line(&p))
+            .child(
                 div()
-                    .id("assistant-chatgpt-model-picker")
-                    .max_h(px(desktop::AI_COMPOSER_MAX))
-                    .overflow_y_scroll()
-                    .children(setup.models.iter().enumerate().map(|(i, m)| {
-                        let id = m.id.clone();
-                        self.ai_button(
-                            format!("assistant-chatgpt-model-{i}"),
-                            model::labels::one_line(&m.label),
-                            if setup.draft.model == m.id {
-                                Tone::Primary
-                            } else {
-                                Tone::Quiet
-                            },
-                            !running,
-                            move |this, _, cx| this.pick_chatgpt_model(id.clone(), cx),
-                            cx,
-                        )
-                    })),
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .gap(px(space::S2))
+                    .child(text(ty::META, p.ink_2, "Model").flex_none())
+                    .child(one_line(text(ty::COUNT, p.ink, model)).flex_1())
+                    .child(self.ai_button(
+                        "assistant-chatgpt-models",
+                        "Choose model",
+                        Tone::Outline,
+                        !running,
+                        |this, _, cx| this.list_chatgpt_models(cx),
+                        cx,
+                    )),
             )
-        })
-        .child(
-            self.ai_button(
-                "assistant-chatgpt-enabled",
-                "Enable assistant on this device",
-                if setup.draft.enabled {
-                    Tone::Primary
-                } else {
-                    Tone::Outline
-                },
-                !running && valid_model(&setup.draft.model),
-                |this, _, cx| {
-                    if let Some(setup) = &mut this.ai.settings {
-                        setup.draft.enabled = !setup.draft.enabled;
-                        cx.notify();
-                    }
-                },
-                cx,
+            .when(setup.pick_model, |card| {
+                card.child(
+                    div()
+                        .id("assistant-chatgpt-model-picker")
+                        .max_h(px(desktop::AI_COMPOSER_MAX))
+                        .overflow_y_scroll()
+                        .children(setup.models.iter().enumerate().map(|(i, m)| {
+                            let id = m.id.clone();
+                            self.ai_button(
+                                format!("assistant-chatgpt-model-{i}"),
+                                model::labels::one_line(&m.label),
+                                if setup.draft.model == m.id {
+                                    Tone::Primary
+                                } else {
+                                    Tone::Quiet
+                                },
+                                !running,
+                                move |this, _, cx| this.pick_chatgpt_model(id.clone(), cx),
+                                cx,
+                            )
+                        })),
+                )
+            })
+            .child(
+                self.ai_button(
+                    "assistant-chatgpt-enabled",
+                    "Enable assistant on this device",
+                    if setup.draft.enabled {
+                        Tone::Primary
+                    } else {
+                        Tone::Outline
+                    },
+                    !running && valid_model(&setup.draft.model),
+                    |this, _, cx| {
+                        if let Some(setup) = &mut this.ai.settings {
+                            setup.draft.enabled = !setup.draft.enabled;
+                            this.ai.cloud.signed_in = None;
+                            cx.notify();
+                        }
+                    },
+                    cx,
+                )
+                .aria_toggled(toggled(setup.draft.enabled)),
             )
-            .aria_toggled(toggled(setup.draft.enabled)),
-        )
     }
 
     pub(super) fn ai_manage_usage(
@@ -309,14 +310,40 @@ impl ShellView {
         tone: Tone,
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
-        self.ai_button(
+        let p = self.palette;
+        self.ai_action(
             id,
-            "Manage usage",
-            tone,
+            div()
+                .self_start()
+                .flex_none()
+                .h(px(component::BUTTON_SMALL))
+                .flex()
+                .items_center()
+                .gap(px(space::S1))
+                .rounded(px(radius::MD))
+                .border_1()
+                .border_color(if matches!(tone, Tone::Quiet) {
+                    gpui::transparent_black()
+                } else {
+                    p.line_strong
+                })
+                .px(px(space::S1))
+                .child(text(ty::BUTTON_SMALL, p.accent_strong, "Manage usage"))
+                .child(kit::icon(
+                    Icon::ExternalLink,
+                    component::ICON_SMALL,
+                    p.accent_strong,
+                )),
             true,
-            |_, _, cx| cx.open_url(USAGE),
+            |this, _, cx| {
+                this.ai.cloud.signed_in = None;
+                cx.open_url(USAGE);
+                cx.notify();
+            },
             cx,
         )
+        .role(Role::Link)
+        .aria_label("Manage usage")
     }
 
     pub(super) fn ai_chatgpt_consent(&self, cx: &mut Context<Self>) -> Stateful<Div> {

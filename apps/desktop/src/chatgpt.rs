@@ -1,24 +1,8 @@
 //! Native browser handoff. The paired server owns PKCE, token exchange and credentials.
-mod authorization;
-
-pub use authorization::Attempt;
+pub use todo_client::assistant::browser_sign_in::{Attempt, Error};
 pub use todo_client::assistant::native_relay::{
     NativeProvider as DesktopProvider, USAGE_URL as USAGE,
 };
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
-pub enum Error {
-    #[error("Couldn't reach your To-do server or ChatGPT.")]
-    Network,
-    #[error("Couldn't open or verify the local sign-in callback.")]
-    Callback,
-    #[error("Sign-in timed out. Start a new sign-in to try again.")]
-    TimedOut,
-    #[error("ChatGPT sign-in was canceled or declined.")]
-    Declined,
-    #[error("ChatGPT didn't return the authorization details. Start a new sign-in to try again.")]
-    MissingAuthorization,
-}
 
 #[derive(Clone)]
 pub struct AccountView {

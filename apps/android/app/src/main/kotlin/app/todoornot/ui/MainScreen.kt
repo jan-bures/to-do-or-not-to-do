@@ -460,7 +460,8 @@ private fun Screen(
                     CompositionLocalProvider(LocalSheetWidth provides if (right) windowWidth - requireNotNull(paneWidth) - gap else paneWidth,
                         LocalSheetAtEnd provides right) {
                         when (aiOverlay) {
-                            AssistantOverlay.SETTINGS -> AssistantSettings(ai, assistantModel) { aiOverlay = null }
+                            AssistantOverlay.SETTINGS, AssistantOverlay.DEVICE, AssistantOverlay.PRIVATE, AssistantOverlay.CHATGPT ->
+                                AssistantSettings(ai, assistantModel, aiOverlay?.provider) { aiOverlay = null }
                             AssistantOverlay.HISTORY -> AssistantHistory(ai.panel.turns, { aiOverlay = null }) { index ->
                                 scope.launch { if (index < aiScroll.layoutInfo.totalItemsCount) aiScroll.scrollToItem(index) }
                             }

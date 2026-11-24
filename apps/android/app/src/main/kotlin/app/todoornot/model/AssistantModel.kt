@@ -4,6 +4,7 @@ import app.todoornot.core.AndroidAssistant
 import app.todoornot.core.AssistantAccess
 import app.todoornot.core.AssistantAccessRow
 import app.todoornot.core.AssistantDeviceCode
+import app.todoornot.core.AssistantHosted
 import app.todoornot.core.AssistantHostedAccount
 import app.todoornot.core.AssistantHostedModel
 import app.todoornot.core.AssistantScopeReview
@@ -47,11 +48,48 @@ internal interface AssistantCore : Closeable {
     fun refreshRelay() {}
     fun models(account: String?): List<AssistantHostedModel> = emptyList()
     fun useHosted(account: String?, model: String) {}
+    fun useChatgptAccount(account: String) {}
+    fun startChatgptBrowser(): ChatGptBrowserSignIn? = null
     fun startChatgpt(): AssistantDeviceCode? = null
     fun pollChatgpt(attempt: String): AssistantHostedAccount? = null
     fun signOutChatgpt(account: String): Boolean = false
     fun scopeReview(): AssistantScopeReview? = null
     fun approveScope(review: AssistantScopeReview) {}
+}
+
+internal interface ChatGptBrowserSignIn : Closeable {
+    fun url(): String
+    suspend fun finish(): AssistantHostedAccount
+}
+
+internal enum class AssistantProvider(val label: String) {
+    DEVICE("This device"), PRIVATE("Your private models"), CHATGPT("ChatGPT");
+
+    fun available(hosted: AssistantHosted?): Boolean = when (this) {
+        DEVICE -> true
+        PRIVATE -> hosted?.privateModels == true
+        CHATGPT -> hosted?.chatgpt == true
+    }
+
+    companion object {
+        fun selected(hosted: AssistantHosted?) = when {
+            hosted?.selectedAccount != null -> CHATGPT
+            hosted?.privateSelected == true -> PRIVATE
+            else -> DEVICE
+        }
+    }
+}
+
+internal enum class ChatGptSignIn(val label: String) {
+    BROWSER("Sign in with ChatGPT"), ADD_ACCOUNT("Add another account"), CODE("Use a code instead");
+
+    companion object {
+        fun actions(hosted: AssistantHosted?): List<ChatGptSignIn> = buildList {
+            if (hosted?.chatgpt != true) return@buildList
+            add(if (hosted.accounts.isEmpty()) BROWSER else ADD_ACCOUNT)
+            if (hosted.deviceCode) add(CODE)
+        }
+    }
 }
 
 internal class NativeAssistant(private val native: AndroidAssistant) : AssistantCore {
@@ -77,6 +115,15 @@ internal class NativeAssistant(private val native: AndroidAssistant) : Assistant
     override fun refreshRelay() = native.refreshRelay()
     override fun models(account: String?) = native.relayModels(account)
     override fun useHosted(account: String?, model: String) = native.selectRelay(account, model)
+    override fun useChatgptAccount(account: String) = native.selectChatgptAccount(account)
+    override fun startChatgptBrowser(): ChatGptBrowserSignIn {
+        val attempt = native.startChatgptBrowser()
+        return object : ChatGptBrowserSignIn {
+            override fun url() = attempt.authorizationUrl()
+            override suspend fun finish() = attempt.finish()
+            override fun close() = attempt.close()
+        }
+    }
     override fun startChatgpt() = native.startChatgpt()
     override fun pollChatgpt(attempt: String) = native.pollChatgpt(attempt)
     override fun signOutChatgpt(account: String) = native.signOutChatgpt(account)
@@ -90,6 +137,7 @@ internal data class AssistantUi(
     val busy: Boolean = false,
     val problem: String? = null,
     val code: AssistantDeviceCode? = null,
+    val browserSignIn: Boolean = false,
     val signedIn: AssistantHostedAccount? = null,
     val hostedModels: List<AssistantHostedModel>? = null,
     val scopeReview: AssistantScopeReview? = null,
@@ -173,7 +221,7 @@ internal class AssistantModel(
         while (true) {
             val before = _ui.value
             if (before.busy) return
-            if (_ui.compareAndSet(before, before.copy(busy = true, problem = null))) break
+            if (_ui.compareAndSet(before, before.copy(busy = true, problem = null, signedIn = null))) break
         }
         scope.launch(io) {
             serial.withLock {
@@ -247,38 +295,79 @@ internal class AssistantModel(
         act { _ui.update { it.copy(hostedModels = core.models(account)) } }
     }
     fun useHosted(account: String?, model: String) = act { core.useHosted(account, model) }
+    fun useChatgptAccount(account: String) {
+        clearSignInStatus()
+        if (_ui.value.panel.hosted?.selectedAccount != account) act { core.useChatgptAccount(account) }
+    }
     fun signOutChatgpt(account: String) = act {
         val revoked = core.signOutChatgpt(account)
-        _ui.update { if (it.signedIn?.id == account) it.copy(signedIn = null) else it }
         if (!revoked) throw FfiException.Invalid("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.")
     }
-    fun startChatgpt() {
-        if (!foreground || closed || signIn?.isCompleted == false) return
-        signIn = scope.launch {
+    fun clearSignInStatus() { _ui.update { it.copy(signedIn = null) } }
+
+    fun startChatgptBrowser(open: (String) -> Unit) {
+        if (ChatGptSignIn.actions(_ui.value.panel.hosted).none { it != ChatGptSignIn.CODE }) return
+        signIn {
+            _ui.update { it.copy(browserSignIn = true) }
+            var handle: ChatGptBrowserSignIn? = null
             try {
-                val code = withContext(io) { serial.withLock {
-                    if (!foreground || closed) null else { followLifecycle(); core.startChatgpt() }
-                } } ?: return@launch
-                _ui.update { it.copy(code = code, problem = null, signedIn = null) }
-                while (!closed) {
-                    signInForeground.first { it }
-                    delay(1000)
-                    val account = withContext(io) { serial.withLock {
-                        if (!foreground || closed) null else core.pollChatgpt(code.attempt).also { publish() }
-                    } }
-                    if (account != null) {
-                        _ui.update { it.copy(signedIn = account, code = null) }
-                        break
+                withContext(io) { serial.withLock {
+                    if (foreground && !closed) {
+                        followLifecycle()
+                        handle = core.startChatgptBrowser()
                     }
+                } }
+                val attempt = handle ?: return@signIn
+                if (runCatching { open(attempt.url()) }.isFailure) {
+                    throw FfiException.Invalid("Couldn’t open your browser. Start a new sign-in to try again.")
                 }
-            } catch (err: FfiException.Invalid) {
+                val account = attempt.finish()
+                signInForeground.first { active -> active }
+                withContext(io) { serial.withLock {
+                    if (foreground && !closed) {
+                        followLifecycle()
+                        core.refreshRelay()
+                        publish()
+                        _ui.update { current -> current.copy(signedIn = account) }
+                    }
+                } }
+            } finally { handle?.close() }
+        }
+    }
+
+    fun startChatgpt() {
+        if (ChatGptSignIn.CODE !in ChatGptSignIn.actions(_ui.value.panel.hosted)) return
+        signIn {
+            val code = withContext(io) { serial.withLock {
+                if (!foreground || closed) null else { followLifecycle(); core.startChatgpt() }
+            } } ?: return@signIn
+            _ui.update { it.copy(code = code) }
+            while (!closed) {
+                signInForeground.first { it }
+                delay(1000)
+                val account = withContext(io) { serial.withLock {
+                    if (!foreground || closed) null else core.pollChatgpt(code.attempt).also { publish() }
+                } }
+                if (account != null) {
+                    _ui.update { it.copy(signedIn = account, code = null) }
+                    break
+                }
+            }
+        }
+    }
+
+    private fun signIn(start: suspend () -> Unit) {
+        if (!foreground || closed || _ui.value.busy || signIn?.isCompleted == false) return
+        _ui.update { it.copy(problem = null, signedIn = null) }
+        signIn = scope.launch {
+            try { start() } catch (err: FfiException.Invalid) {
                 _ui.update { it.copy(problem = err.detail) }
             } catch (_: FfiException) {
                 _ui.update { it.copy(problem = "ChatGPT sign-in didn’t finish. Try again.") }
-            } finally { _ui.update { it.copy(code = null) } }
+            } finally { _ui.update { it.copy(code = null, browserSignIn = false) } }
         }
     }
-    fun cancelChatgpt() { signIn?.cancel(); _ui.update { it.copy(code = null) } }
+    fun cancelChatgpt() { signIn?.cancel(); _ui.update { it.copy(code = null, browserSignIn = false, signedIn = null) } }
     fun declineScope() { _ui.update { it.copy(scopeReview = null) } }
     fun approveScope() {
         val shown = _ui.value

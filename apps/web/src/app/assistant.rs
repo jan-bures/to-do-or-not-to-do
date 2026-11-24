@@ -180,11 +180,9 @@ impl Ui {
             c.drawer.set(false);
             c.room_actions.close_menu(false);
             self.open.set(true);
-            if self.profile.with_value(|p| p.hosted.is_some()) {
-                leptos::task::spawn_local(async move {
-                    let _ = self.refresh_hosted().await;
-                });
-            }
+            leptos::task::spawn_local(async move {
+                let _ = self.refresh_hosted().await;
+            });
             self.focus_composer();
         }
     }
@@ -479,11 +477,19 @@ fn Empty() -> impl IntoView {
             <span class="ai-tile">{icon(Icon::Sparkles)}</span>
             <Show when=move || ready.get() fallback=move || view! {
                 <h3>"Connect a model"</h3>
-                <p>"Choose an OpenAI-compatible server to start. Lists are hidden until you allow access."</p>
-                <button type="button" id="assistant-connect" class="ai-option" aria-haspopup="dialog"
-                    on:click=move |_| ai.settings.set(Some("assistant-connect"))>
-                    {icon(Icon::Settings)}"Your own server"{icon(Icon::ArrowUpRight)}
-                </button>
+                <p>"Choose a model to start. Lists are hidden until you allow access."</p>
+                {[
+                    (settings::ProviderTab::ChatGpt, Icon::Sparkles),
+                    (settings::ProviderTab::Private, Icon::Settings),
+                    (settings::ProviderTab::Device, Icon::Link),
+                ].map(|(provider, glyph)| view! {
+                    <Show when=move || ai.relay_status.with(|s| provider.available(s.as_ref()))>
+                        <button type="button" id=provider.opener() class="ai-option" aria-haspopup="dialog"
+                            on:click=move |_| ai.settings.set(Some(provider.opener()))>
+                            {icon(glyph)}<span>{provider.label()}</span>{icon(Icon::ArrowUpRight)}
+                        </button>
+                    </Show>
+                })}
             }>
                 <h3>"What can I help plan?"</h3>
                 <p>"Ask about your tasks, or describe changes to make. Every edit or new task waits for your approval first."</p>

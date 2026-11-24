@@ -152,6 +152,50 @@ impl super::Ui {
     }
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(super) enum ProviderTab {
+    #[default]
+    Device,
+    Private,
+    ChatGpt,
+}
+
+impl ProviderTab {
+    pub(super) const ALL: [Self; 3] = [Self::Device, Self::Private, Self::ChatGpt];
+
+    pub(super) fn label(self) -> &'static str {
+        match self {
+            Self::Device => "This device",
+            Self::Private => "Your private models",
+            Self::ChatGpt => "ChatGPT",
+        }
+    }
+
+    pub(super) fn opener(self) -> &'static str {
+        match self {
+            Self::Device => "assistant-connect",
+            Self::Private => "assistant-connect-private",
+            Self::ChatGpt => "assistant-connect-chatgpt",
+        }
+    }
+
+    pub(super) fn available(self, status: Option<&relay::Status>) -> bool {
+        match self {
+            Self::Device => true,
+            Self::Private => status.is_some_and(|s| s.private_models),
+            Self::ChatGpt => status.is_some_and(|s| s.chatgpt),
+        }
+    }
+
+    fn from_profile(profile: &Profile) -> Self {
+        match profile.hosted {
+            None => Self::Device,
+            Some(super::Hosted::Private) => Self::Private,
+            Some(super::Hosted::ChatGpt(_)) => Self::ChatGpt,
+        }
+    }
+}
+
 #[component]
 pub(in super::super) fn Settings() -> impl IntoView {
     let c = ctx();
@@ -170,6 +214,66 @@ pub(in super::super) fn Settings() -> impl IntoView {
     let local_access = StoredValue::new(AccessRules::default());
     let reviewed_status = RwSignal::new(None::<relay::Status>);
     let saving = RwSignal::new(false);
+    let tab = RwSignal::new(ProviderTab::default());
+    let signed_in = RwSignal::new(None::<String>);
+    let recent_account = StoredValue::new(None);
+    let select_tab = move |provider| {
+        signed_in.set(None);
+        tab.set(provider);
+        if provider != ProviderTab::ChatGpt {
+            draft.with_untracked(|p| {
+                if let Some(super::Hosted::ChatGpt(id)) = p.hosted {
+                    recent_account.set_value(Some((id, p.hosted_model.clone())));
+                }
+            });
+        }
+        match provider {
+            ProviderTab::Device => draft.update(|p| {
+                if p.hosted.take().is_some() {
+                    p.hosted_model.clear();
+                    p.access = local_access.get_value();
+                }
+            }),
+            ProviderTab::Private
+                if provider.available(reviewed_status.get_untracked().as_ref()) =>
+            {
+                hosted::choose(draft, reviewed_status, local_access, super::Hosted::Private);
+            }
+            ProviderTab::ChatGpt => {
+                if let Some((id, model)) = recent_account.get_value()
+                    && reviewed_status.with_untracked(|s| {
+                        s.as_ref()
+                            .is_some_and(|s| s.accounts.iter().any(|a| a.id == id))
+                    })
+                    && draft.with_untracked(|p| p.hosted != Some(super::Hosted::ChatGpt(id)))
+                {
+                    hosted::choose(
+                        draft,
+                        reviewed_status,
+                        local_access,
+                        super::Hosted::ChatGpt(id),
+                    );
+                    draft.update(|p| p.hosted_model = model);
+                }
+            }
+            _ => {}
+        }
+    };
+    let route_ready = move || {
+        let tab = tab.get();
+        draft.with(|p| ProviderTab::from_profile(p) == tab)
+            && match tab {
+                ProviderTab::Device => true,
+                ProviderTab::Private => reviewed_status.with(|s| tab.available(s.as_ref())),
+                ProviderTab::ChatGpt => reviewed_status.with(|s| {
+                    s.as_ref().is_some_and(|s| {
+                        s.accounts
+                            .iter()
+                            .any(|a| draft.with(|p| p.hosted == Some(super::Hosted::ChatGpt(a.id))))
+                    })
+                }),
+            }
+    };
     let clear_input = move || {
         if let Some(input) = key_input.get_untracked() {
             input.set_value("");
@@ -188,6 +292,12 @@ pub(in super::super) fn Settings() -> impl IntoView {
             baseline.set_value(profile);
             local_access.set_value(draft.with_untracked(|p| p.access.clone()));
             reviewed_status.set(None);
+            recent_account.set_value(None);
+            let initial = ProviderTab::ALL
+                .into_iter()
+                .find(|tab| tab.opener() == from)
+                .unwrap_or_else(|| draft.with_untracked(ProviderTab::from_profile));
+            select_tab(initial);
             leptos::task::spawn_local(async move {
                 match ai.refresh_hosted().await {
                     Ok(status) if ai.settings.get_untracked().is_some() => {
@@ -195,6 +305,9 @@ pub(in super::super) fn Settings() -> impl IntoView {
                             draft.update(|p| p.access = status.access.clone());
                         }
                         reviewed_status.set(Some(status));
+                        if tab.get_untracked() == ProviderTab::Private {
+                            select_tab(ProviderTab::Private);
+                        }
                     }
                     Err(_)
                         if ai.settings.get_untracked().is_some()
@@ -225,7 +338,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
         }
     });
     let save = move |disconnect: bool| {
-        if saving.get_untracked() {
+        if saving.get_untracked() || (!disconnect && !untrack(route_ready)) {
             return;
         }
         let Some(scope) = ai
@@ -239,7 +352,8 @@ pub(in super::super) fn Settings() -> impl IntoView {
         };
         let mut next = draft.get_untracked();
         if next.hosted.is_some() || (disconnect && baseline.with_value(|p| p.hosted.is_some())) {
-            if Profile::load(&scope) != baseline.get_value() {
+            let previous = Profile::load(&scope);
+            if previous != baseline.get_value() {
                 error.set(Some(
                     "Settings changed in another tab. Reopen settings to review the changes."
                         .into(),
@@ -261,6 +375,9 @@ pub(in super::super) fn Settings() -> impl IntoView {
                 }
                 return;
             }
+            // A hosted save must not pick up unvalidated edits from the hidden device card.
+            next.address = previous.address;
+            next.model = previous.model;
             let Some(reviewed) = reviewed_status.get_untracked() else {
                 error.set(Some(
                     "Wait for the server’s assistant settings to load.".into(),
@@ -405,18 +522,22 @@ pub(in super::super) fn Settings() -> impl IntoView {
                     if let Some(el) = dialog.get_untracked() { el.close(); }
                 }>{icon(Icon::X)}</button>
             </header>
-            <form on:submit=move |ev| { ev.prevent_default(); save(false); }>
+            <form novalidate on:submit=move |ev| { ev.prevent_default(); save(false); }
+                on:click:capture=move |_| signed_in.set(None) on:input=move |_| signed_in.set(None)>
                 <div class="ai-settings-body" node_ref=body>
-                    <hosted::HostedCards draft status=reviewed_status error local_access/>
-                    <section class="ai-provider" aria-label="This device" data-selected=move || draft.with(|p| p.hosted.is_none()).to_string()>
+                    <div class="ai-provider-picker" role="group" aria-label="Model provider">
+                        {ProviderTab::ALL.map(|provider| view! {
+                            <button type="button" class="button" aria-pressed=move || (tab.get() == provider).to_string()
+                                on:click=move |_| select_tab(provider)>{provider.label()}</button>
+                        })}
+                    </div>
+                    <hosted::HostedCards draft status=reviewed_status error local_access tab signed_in/>
+                    <section class="ai-provider" aria-label="This device" data-selected="true" hidden=move || tab.get() != ProviderTab::Device>
                         <div class="ai-provider-heading">
                             {icon(Icon::Settings)}<h3>"This device"</h3>
                         </div>
                         <p>"Connect directly to a model on this device that allows this site in CORS."</p>
-                        <Show when=move || draft.with(|p| p.hosted.is_some())>
-                            <button type="button" class="button" on:click=move |_| draft.update(|p| { p.hosted = None; p.access = local_access.get_value(); })>"Use this device"</button>
-                        </Show>
-                        <div class="ai-provider-fields" hidden=move || draft.with(|p| p.hosted.is_some())>
+                        <div class="ai-provider-fields">
                         <label for="ai-base-url">"Base URL"</label>
                         <input id="ai-base-url" type="url" spellcheck="false" autocomplete="off" autofocus
                             placeholder="http://localhost:11434" prop:value=move || draft.with(|p| p.address.clone())
@@ -450,8 +571,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                     <section class="ai-access" aria-labelledby="ai-access-title">
                         <h3 id="ai-access-title">"Lists the assistant can see"</h3>
                         <p>"Hidden lists are never sent. Private only lists can go to a model on this device or through your server’s private relay. Lists inherit their collection’s rule unless overridden."</p>
-                        <Show when=move || draft.with(|p| p.hosted.is_none()) || reviewed_status.with(Option::is_some)
-                            fallback=move || view! { <p role="status">"Waiting for server list access…"</p> }>
+                        <Show when=route_ready>
                         {move || c.state.with(|state| {
                             let mut rows = Vec::new();
                             for group in model::collections(state) {
@@ -477,7 +597,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                         <button type="button" class="button" on:click=move |_| {
                             if let Some(el) = dialog.get_untracked() { el.close(); }
                         }>"Cancel"</button>
-                        <button type="submit" class="button primary" disabled=move || saving.get()>"Save"</button>
+                        <button type="submit" class="button primary" disabled=move || saving.get() || !route_ready()>"Save"</button>
                     </div>
                 </footer>
             </form>

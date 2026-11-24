@@ -115,7 +115,9 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "ai-chatgpt-signed-out"
         | "ai-chatgpt-device-code"
         | "ai-chatgpt-signed-in"
-        | "ai-chatgpt-consent" => {
+        | "ai-chatgpt-account"
+        | "ai-chatgpt-consent"
+        | "ai-private-relay" => {
             let mut f = my_day();
             f.ui.task = None;
             if let Some(task) = f

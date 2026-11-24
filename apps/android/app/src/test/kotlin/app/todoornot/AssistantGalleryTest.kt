@@ -75,7 +75,7 @@ class AssistantGalleryTest {
                 val added = AssistantHostedAccount("example-second-account", "second@example.com")
                 val hosted = AssistantHosted(true, true, true, emptyList(), null, false, "", null)
                 val states = listOf(
-                    "unconfigured" to base.copy(server = null, destination = null),
+                    "unconfigured" to base.copy(server = null, destination = null, hosted = hosted),
                     "empty" to base,
                     "streaming" to base.copy(streaming = true, turns = listOf(streaming)),
                     "proposal" to base.copy(turns = listOf(change.copy(proposal = change.proposal?.copy(
@@ -86,7 +86,11 @@ class AssistantGalleryTest {
                     "settings" to base.copy(connection = AssistantConnection.CONNECTED, support = "Streaming + task tools"),
                     "chatgpt_code" to base.copy(server = null, destination = null, hosted = hosted),
                     "chatgpt_account" to base.copy(server = null, destination = "ChatGPT (cloud)",
-                        hosted = hosted.copy(accounts = listOf(account, added), selectedAccount = account.id, model = "Example model")),
+                        hosted = hosted.copy(deviceCode = false, accounts = listOf(account), selectedAccount = account.id, model = "fixture-model")),
+                    "chatgpt_accounts" to base.copy(server = null, destination = "ChatGPT (cloud)",
+                        hosted = hosted.copy(accounts = listOf(account, added), selectedAccount = account.id, model = "fixture-model")),
+                    "private_relay" to base.copy(server = null, destination = "Private via your server",
+                        hosted = hosted.copy(privateSelected = true, model = "fixture-model")),
                     "chatgpt_consent" to base.copy(server = null, destination = "ChatGPT (cloud)",
                         hosted = hosted.copy(accounts = listOf(account), selectedAccount = account.id, model = "Example model")),
                 )
@@ -98,11 +102,16 @@ class AssistantGalleryTest {
                             CompositionLocalProvider(LocalSheetAtRest provides true) {
                                 val ui = AssistantUi(panel,
                                     code = AssistantDeviceCode("example-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device").takeIf { name == "chatgpt_code" },
-                                    signedIn = added.takeIf { name == "chatgpt_account" },
+                                    signedIn = added.takeIf { name == "chatgpt_accounts" },
                                     scopeReview = AssistantScopeReview(account.id, "example-version", 0uL, listOf("reading"), listOf("Reading")).takeIf { name == "chatgpt_consent" })
                                 MainScreen(room, Actions.None, dark, wide, assistant = ui, initialAssistantOpen = true,
                                     fold = if (wide) PaneFold(436.dp, 440.dp) else null,
-                                    initialAssistantOverlay = AssistantOverlay.SETTINGS.takeIf { name in setOf("settings", "chatgpt_code", "chatgpt_account") })
+                                    initialAssistantOverlay = when (name) {
+                                        "settings" -> AssistantOverlay.SETTINGS
+                                        "chatgpt_code", "chatgpt_account", "chatgpt_accounts" -> AssistantOverlay.CHATGPT
+                                        "private_relay" -> AssistantOverlay.PRIVATE
+                                        else -> null
+                                    })
                             }
                         }
                     }

@@ -12,8 +12,8 @@ test("Ask AI keyboard toggle, modal settings, and persistent keyboard/pointer sp
   await trigger(page).focus();
   await page.keyboard.press("Control+j");
   await expect(trigger(page)).toHaveAttribute("aria-pressed", "true");
-  await expect(page.getByRole("button", { name: "Your own server" })).toBeFocused();
-  await page.getByRole("button", { name: "Your own server" }).click();
+  await expect(page.getByRole("button", { name: "This device", exact: true })).toBeFocused();
+  await page.getByRole("button", { name: "This device", exact: true }).click();
   const settings = aiSettings(page);
   await expect(settings.getByLabel("Base URL")).toBeFocused();
   await expect(settings).toHaveCSS("width", "520px");
@@ -23,7 +23,7 @@ test("Ask AI keyboard toggle, modal settings, and persistent keyboard/pointer sp
   await expect(settings.getByRole("button", { name: "Save", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(settings).not.toBeVisible();
-  await expect(page.getByRole("button", { name: "Your own server" })).toBeFocused();
+  await expect(page.getByRole("button", { name: "This device", exact: true })).toBeFocused();
   await page.keyboard.press("Escape");
   await expect(trigger(page)).toBeFocused();
   await expect(panel(page)).not.toBeVisible();

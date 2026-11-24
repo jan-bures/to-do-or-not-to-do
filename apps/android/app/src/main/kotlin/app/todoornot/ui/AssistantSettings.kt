@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
+import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -50,6 +52,7 @@ import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
 import app.todoornot.design.style
 import app.todoornot.model.AssistantModel
+import app.todoornot.model.AssistantProvider
 import app.todoornot.model.AssistantUi
 
 private val S = Tokens.Space
@@ -58,7 +61,7 @@ private val P = Tokens.Metrics.Phone
 private val C = Tokens.Metrics.Component
 
 @Composable
-internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: () -> Unit) {
+internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, initialProvider: AssistantProvider?, close: () -> Unit) {
     val r = LocalDesign.current.room
     val state = ui.panel
     val usingRelay = state.hosted?.let { it.privateSelected || it.selectedAccount != null } == true
@@ -70,6 +73,8 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
     var removeKey by remember(server) { mutableStateOf(false) }
     val clearKeyDraft = { apiKey = ""; removeKey = false }
     var editing by remember { mutableStateOf<String?>(null) }
+    var provider by remember { mutableStateOf(initialProvider) }
+    val shownProvider = provider ?: AssistantProvider.selected(state.hosted)
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
     val draft = AssistantServer(address.trim(), name.trim(), false)
     val info = remember(draft.address) {
@@ -86,9 +91,15 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
         Column(Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState()).padding(horizontal = S.S4.dp, vertical = S.S2.dp),
             verticalArrangement = Arrangement.spacedBy(S.S3.dp)) {
             Label("AI settings", T.DETAIL_TITLE, r.ink, Modifier.semantics { heading() })
-            if (state.hosted != null || ui.code != null) HostedAssistantSettings(ui, model)
-            Column(Modifier.fillMaxWidth().clip(shape).background(r.raised)
-                .border(Tokens.Elevation.HAIRLINE.dp, if (usingRelay) r.lineStrong else r.accentStrong, shape)
+            ProviderPicker(shownProvider) {
+                provider = it
+                editing = null
+                model?.clearSignInStatus()
+                if (it != AssistantProvider.CHATGPT) model?.cancelChatgpt()
+            }
+            if (shownProvider != AssistantProvider.DEVICE) HostedAssistantSettings(shownProvider, ui, model)
+            else Column(Modifier.fillMaxWidth().clip(shape).background(r.raised)
+                .border(Tokens.Elevation.HAIRLINE.dp, r.accentStrong, shape)
                 .padding(S.S3.dp), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon("link", r.accentStrong)
@@ -135,7 +146,10 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
             if (state.access.isEmpty()) Label("No synced lists yet.", T.BODY, r.ink3)
             state.access.forEach { row ->
                 val active = editing == row.id
-                AccessRow(row, active) { editing = if (active) null else row.id }
+                AccessRow(row, active) {
+                    model?.clearSignInStatus()
+                    editing = if (active) null else row.id
+                }
                 if (active) {
                     AssistantAccess.entries.forEach { access ->
                         val picked = access == row.access
@@ -153,6 +167,25 @@ internal fun AssistantSettings(ui: AssistantUi, model: AssistantModel?, close: (
             if (server != null || usingRelay) AiButton("Disconnect model", { model?.save(null, saved = clearKeyDraft) }, enabled = !ui.busy, quiet = true)
             else Spacer(Modifier.weight(1f))
             AiButton("Done", overlay::close, quiet = true)
+        }
+    }
+}
+
+@Composable
+private fun ProviderPicker(selected: AssistantProvider, choose: (AssistantProvider) -> Unit) {
+    val r = LocalDesign.current.room
+    val shape = RoundedCornerShape(Tokens.Radius.MD.dp)
+    Row(Modifier.fillMaxWidth().selectableGroup(), horizontalArrangement = Arrangement.spacedBy(S.S1.dp)) {
+        AssistantProvider.entries.forEach { provider ->
+            val active = provider == selected
+            val fill = if (active) r.accentFill else r.raised
+            Box(Modifier.weight(if (provider == AssistantProvider.PRIVATE) 1.65f else 1f)
+                .heightIn(min = P.TOUCH.dp).clip(shape).background(fill)
+                .border(Tokens.Elevation.HAIRLINE.dp, if (active) fill else r.lineStrong, shape)
+                .selectable(active, role = Role.Tab, onClick = { choose(provider) }).padding(horizontal = S.S1.dp),
+                contentAlignment = Alignment.Center) {
+                Label(provider.label, T.BUTTON_SMALL, if (active) r.onAccent else r.ink2)
+            }
         }
     }
 }

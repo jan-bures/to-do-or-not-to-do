@@ -1,6 +1,7 @@
 //! Android's paired assistant operations. UniFFI only exposes account labels and opaque handles.
 use super::*;
-use todo_client::assistant::native_relay::VERIFY_URL;
+use todo_client::assistant::{browser_sign_in::Attempt, native_relay::VERIFY_URL};
+use tokio::task::{AbortHandle, JoinHandle};
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
 pub struct AssistantHostedAccount {
@@ -33,6 +34,46 @@ pub struct AssistantDeviceCode {
     pub verification_url: String,
 }
 
+#[derive(uniffi::Object)]
+pub struct AssistantBrowserSignIn {
+    authorize_url: Zeroizing<String>,
+    task: Mutex<
+        Option<JoinHandle<Result<relay::Account, todo_client::assistant::browser_sign_in::Error>>>,
+    >,
+    abort: AbortHandle,
+}
+
+impl Drop for AssistantBrowserSignIn {
+    fn drop(&mut self) {
+        self.abort.abort();
+    }
+}
+
+#[uniffi::export]
+impl AssistantBrowserSignIn {
+    pub fn authorization_url(&self) -> String {
+        self.authorize_url.to_string()
+    }
+
+    pub async fn finish(&self) -> Result<AssistantHostedAccount, FfiError> {
+        let task = locked(&self.task)
+            .take()
+            .ok_or_else(|| invalid("Start a new sign-in."))?;
+        let account = task
+            .await
+            .map_err(|_| invalid("ChatGPT sign-in didn’t finish. Start again."))?
+            .map_err(|error| invalid(error.to_string()))?;
+        Ok(account_view(account))
+    }
+}
+
+fn account_view(account: relay::Account) -> AssistantHostedAccount {
+    AssistantHostedAccount {
+        id: account.id.to_string(),
+        label: one_line(&account.label),
+    }
+}
+
 #[derive(Clone, uniffi::Record)]
 pub struct AssistantScopeReview {
     pub account: String,
@@ -42,7 +83,11 @@ pub struct AssistantScopeReview {
     pub names: Vec<String>,
 }
 
-opaque_debug!(AssistantDeviceCode, AssistantScopeReview);
+opaque_debug!(
+    AssistantBrowserSignIn,
+    AssistantDeviceCode,
+    AssistantScopeReview
+);
 
 fn request<T>(work: impl Future<Output = Result<T, ProviderError>>) -> Result<T, FfiError> {
     runtime()?.block_on(work).map_err(|err| {
@@ -212,6 +257,35 @@ impl AndroidAssistant {
     }
 }
 
+impl AndroidAssistant {
+    fn set_relay_choice(&self, route: Hosted, model: Option<String>) -> Result<(), FfiError> {
+        self.refresh_relay()?;
+        let mut session = locked(&self.session);
+        self.require_active(&mut session)?;
+        if !session
+            .relay_status
+            .as_ref()
+            .is_some_and(|status| available(status, route))
+        {
+            return Err(invalid("Choose an available account and model."));
+        }
+        let mut next = session.settings.clone();
+        if next.hosted == Some(route) && model.is_none() {
+            return Ok(());
+        }
+        next.hosted = Some(route);
+        next.hosted_model = model.unwrap_or_default();
+        save_settings(&self.path, &next)?;
+        stop_check(&mut session);
+        session.settings = next;
+        session.problem = None;
+        session.connection = AssistantConnection::Untested;
+        session.receipts.clear();
+        self.install(&session);
+        Ok(())
+    }
+}
+
 #[uniffi::export]
 impl AndroidAssistant {
     /// Refresh the paired server's assistant status on the IO dispatcher.
@@ -238,30 +312,30 @@ impl AndroidAssistant {
     }
 
     pub fn select_relay(&self, account: Option<String>, model: String) -> Result<(), FfiError> {
-        self.refresh_relay()?;
-        let route = route(account)?;
-        let model = model.trim().to_owned();
-        let mut session = locked(&self.session);
-        self.require_active(&mut session)?;
-        if !valid_model(&model)
-            || !session
-                .relay_status
-                .as_ref()
-                .is_some_and(|status| available(status, route))
-        {
+        let model = model.trim();
+        if !valid_model(model) {
             return Err(invalid("Choose an available account and model."));
         }
-        let mut next = session.settings.clone();
-        next.hosted = Some(route);
-        next.hosted_model = model;
-        save_settings(&self.path, &next)?;
-        stop_check(&mut session);
-        session.settings = next;
-        session.problem = None;
-        session.connection = AssistantConnection::Untested;
-        session.receipts.clear();
-        self.install(&session);
-        Ok(())
+        self.set_relay_choice(route(account)?, Some(model.into()))
+    }
+
+    pub fn select_chatgpt_account(&self, account: String) -> Result<(), FfiError> {
+        self.set_relay_choice(Hosted::ChatGpt(id(account)?), None)
+    }
+
+    /// The browser returns to a checked loopback listener; only the paired server exchanges credentials.
+    pub fn start_chatgpt_browser(&self) -> Result<Arc<AssistantBrowserSignIn>, FfiError> {
+        let relay = self.paired()?.clone();
+        let runtime = runtime()?;
+        let (attempt, authorize_url) = runtime
+            .block_on(Attempt::start(&relay))
+            .map_err(|error| invalid(error.to_string()))?;
+        let task = runtime.spawn(async move { attempt.finish(&relay).await });
+        Ok(Arc::new(AssistantBrowserSignIn {
+            authorize_url,
+            abort: task.abort_handle(),
+            task: Mutex::new(Some(task)),
+        }))
     }
 
     pub fn start_chatgpt(&self) -> Result<AssistantDeviceCode, FfiError> {
@@ -289,10 +363,7 @@ impl AndroidAssistant {
             relay::Poll::Pending => Ok(None),
             relay::Poll::SignedIn { account } => {
                 self.refresh_relay()?;
-                Ok(Some(AssistantHostedAccount {
-                    id: account.id.to_string(),
-                    label: one_line(&account.label),
-                }))
+                Ok(Some(account_view(account)))
             }
             relay::Poll::Expired => Err(invalid("The ChatGPT sign-in code expired. Start again.")),
             relay::Poll::Failed => Err(invalid("ChatGPT sign-in didn’t finish. Start again.")),

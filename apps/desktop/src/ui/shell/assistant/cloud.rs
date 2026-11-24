@@ -59,18 +59,22 @@ impl Cloud {
         self.fixture_enabled || self.status.as_ref().is_some_and(|s| s.chatgpt)
     }
     pub fn active(&self, profile: &Profile) -> Option<AccountView> {
-        self.fixture.clone().or_else(|| {
-            self.status
-                .as_ref()?
-                .accounts
-                .iter()
-                .find(|a| Some(a.id) == profile.chatgpt_account)
-                .map(|account| AccountView {
-                    id: account.id,
-                    label: account.label.clone(),
-                    consented_lists: account.approved.then(|| account.approved_lists.clone()),
-                })
-        })
+        self.fixture
+            .as_ref()
+            .filter(|a| Some(a.id) == profile.chatgpt_account)
+            .cloned()
+            .or_else(|| {
+                self.status
+                    .as_ref()?
+                    .accounts
+                    .iter()
+                    .find(|a| Some(a.id) == profile.chatgpt_account)
+                    .map(|account| AccountView {
+                        id: account.id,
+                        label: account.label.clone(),
+                        consented_lists: account.approved.then(|| account.approved_lists.clone()),
+                    })
+            })
     }
     pub fn saved(&self) -> Vec<relay::Account> {
         self.status
@@ -170,7 +174,9 @@ impl ShellView {
             matches!(route, Some(Hosted::ChatGpt(_))),
             route == Some(Hosted::Private),
         );
+        self.ai.cloud.signed_in = None;
         if setup.draft.cloud == cloud && setup.draft.private_relay == private {
+            cx.notify();
             return;
         }
         setup.invalidate();
@@ -349,13 +355,19 @@ impl ShellView {
     }
 
     pub(super) fn choose_chatgpt_account(&mut self, id: Uuid, cx: &mut Context<Self>) {
-        if let Some(setup) = &mut self.ai.settings {
+        self.ai.cloud.signed_in = None;
+        if let Some(setup) = &mut self.ai.settings
+            && setup.draft.chatgpt_account != Some(id)
+        {
+            setup.invalidate();
+            self.ai.cloud.code = None;
             setup.draft.chatgpt_account = Some(id);
             setup.draft.model.clear();
             setup.models.clear();
+            setup.pick_model = false;
             setup.draft.enabled = false;
-            self.list_chatgpt_models(cx);
         }
+        cx.notify();
     }
 
     pub(super) fn list_chatgpt_models(&mut self, cx: &mut Context<Self>) {
@@ -366,6 +378,7 @@ impl ShellView {
         ) else {
             return;
         };
+        self.ai.cloud.signed_in = None;
         let Some(route) = setup.draft.hosted() else {
             return;
         };
@@ -418,6 +431,7 @@ impl ShellView {
     }
 
     pub(super) fn pick_chatgpt_model(&mut self, model: String, cx: &mut Context<Self>) {
+        self.ai.cloud.signed_in = None;
         if let Some(setup) = &mut self.ai.settings {
             setup.draft.model = model;
             setup.pick_model = false;
@@ -437,6 +451,8 @@ impl ShellView {
         setup.models.clear();
         setup.pick_model = false;
         setup.check = Check::Running("Signing out of ChatGPT…");
+        self.ai.cloud.signed_in = None;
+        self.ai.cloud.code = None;
         let revision = setup.revision;
         let work = session::spawn(&session.assistant_runtime(), async move {
             let signed_out = relay.sign_out(id).await?;
@@ -448,8 +464,14 @@ impl ShellView {
                 Ok((done, status)) => {
                     this.cloud_job_finished(revision, Vec::new(), cx);
                     this.apply_ai_relay_status(status, cx);
-                    if this.ai.cloud.signed_in.as_ref().is_some_and(|(signed_in, _)| *signed_in == id) {
-                        this.ai.cloud.signed_in = None;
+                    if let Some(setup) = &mut this.ai.settings
+                        && setup.draft.chatgpt_account == Some(id)
+                    {
+                        setup.draft.chatgpt_account = None;
+                        if setup.draft.cloud {
+                            setup.draft.model.clear();
+                            setup.draft.enabled = false;
+                        }
                     }
                     if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.".into()); }
                 }

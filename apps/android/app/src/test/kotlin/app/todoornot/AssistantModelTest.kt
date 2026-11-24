@@ -15,6 +15,9 @@ import app.todoornot.core.FfiException
 import app.todoornot.core.LocalNow
 import app.todoornot.model.AssistantCore
 import app.todoornot.model.AssistantModel
+import app.todoornot.model.ChatGptBrowserSignIn
+import app.todoornot.model.ChatGptSignIn
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
@@ -43,6 +46,10 @@ class AssistantModelTest {
         var approvedScope: AssistantScopeReview? = null
         var pendingPolls = 0
         var connected: AssistantHostedAccount? = null
+        var browserStarts = 0
+        var deviceStarts = 0
+        var browserClosed = false
+        val browserResult = CompletableDeferred<AssistantHostedAccount>()
         override fun listen(onChange: () -> Unit) { changed = onChange }
         override fun panel(now: LocalNow): AssistantPanelState { shownNow = now; return state }
         override fun resume() { foreground = true }
@@ -64,7 +71,27 @@ class AssistantModelTest {
         override fun approve(proposal: AssistantProposal) { review = proposal }
         override fun undo(proposal: AssistantProposal) = Unit
         override fun close() { closed = true }
-        override fun startChatgpt() = AssistantDeviceCode("fixture-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device")
+        override fun startChatgpt(): AssistantDeviceCode {
+            deviceStarts++
+            return AssistantDeviceCode("fixture-attempt", "EXAMPLE-1", "https://auth.openai.com/codex/device")
+        }
+        override fun startChatgptBrowser(): ChatGptBrowserSignIn {
+            browserStarts++
+            return object : ChatGptBrowserSignIn {
+                override fun url() = "https://auth.openai.com/api/accounts/authorize"
+                override suspend fun finish() = browserResult.await()
+                override fun close() { browserClosed = true }
+            }
+        }
+        override fun useChatgptAccount(account: String) {
+            replace(state.copy(hosted = state.hosted?.copy(selectedAccount = account, model = "")))
+        }
+        override fun signOutChatgpt(account: String): Boolean {
+            replace(state.copy(hosted = state.hosted?.let {
+                it.copy(accounts = it.accounts.filterNot { saved -> saved.id == account })
+            }))
+            return true
+        }
         override fun pollChatgpt(attempt: String): AssistantHostedAccount? {
             pendingPolls++
             return connected
@@ -128,6 +155,7 @@ class AssistantModelTest {
 
     @Test fun theDeviceCodeSurvivesOpeningTheBrowserAndOnlyPollsInForeground() = runTest {
         val core = Core()
+        core.state = core.state.copy(hosted = AssistantHosted(true, true, false, emptyList(), null, false, "", null))
         val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }
         model.foreground(true)
         model.startChatgpt()
@@ -164,6 +192,53 @@ class AssistantModelTest {
         assertEquals(added, model.ui.value.signedIn)
         assertEquals(existing.id, model.ui.value.panel.hosted?.selectedAccount)
         assertEquals("sample-model", model.ui.value.panel.hosted?.model)
+    }
+
+    @Test fun browserSignInWorksWithoutDeviceCodeAndSelectionDoesNotReuseTheOldModel() = runTest {
+        val core = Core()
+        val first = AssistantHostedAccount("first", "first@example.com")
+        val second = AssistantHostedAccount("second", "second@example.com")
+        val disabled = AssistantHosted(false, false, false, emptyList(), null, false, "", null)
+        assertTrue(ChatGptSignIn.actions(disabled).isEmpty())
+        val browserOnly = disabled.copy(chatgpt = true)
+        assertEquals(listOf(ChatGptSignIn.BROWSER), ChatGptSignIn.actions(browserOnly))
+        assertEquals(listOf(ChatGptSignIn.ADD_ACCOUNT, ChatGptSignIn.CODE),
+            ChatGptSignIn.actions(browserOnly.copy(deviceCode = true, accounts = listOf(first))))
+        core.state = core.state.copy(hosted = browserOnly.copy(accounts = listOf(first), selectedAccount = first.id, model = "first-model"))
+        val model = AssistantModel(core, backgroundScope, StandardTestDispatcher(testScheduler)) { FIXTURE_NOW }
+        model.foreground(true)
+        var opened: String? = null
+        model.startChatgpt()
+        model.startChatgptBrowser { opened = it }
+        runCurrent()
+        assertEquals(0, core.deviceStarts)
+        assertEquals(1, core.browserStarts)
+        assertEquals("https://auth.openai.com/api/accounts/authorize", opened)
+        assertTrue(model.ui.value.browserSignIn)
+        model.foreground(false)
+        core.state = core.state.copy(hosted = core.state.hosted?.copy(accounts = listOf(first, second)))
+        core.browserResult.complete(second)
+        runCurrent()
+        assertEquals(null, model.ui.value.signedIn)
+        model.foreground(true)
+        runCurrent()
+        assertTrue(core.browserClosed)
+        assertFalse(model.ui.value.browserSignIn)
+        assertEquals(second, model.ui.value.signedIn)
+        assertEquals(first.id, model.ui.value.panel.hosted?.selectedAccount)
+        model.useChatgptAccount(first.id)
+        runCurrent()
+        assertEquals(null, model.ui.value.signedIn)
+        assertEquals("first-model", model.ui.value.panel.hosted?.model)
+        model.useChatgptAccount(second.id)
+        runCurrent()
+        assertEquals(second.id, model.ui.value.panel.hosted?.selectedAccount)
+        assertEquals("", model.ui.value.panel.hosted?.model)
+        model.signOutChatgpt(second.id)
+        runCurrent()
+        val remaining = checkNotNull(model.ui.value.panel.hosted)
+        assertEquals(listOf(first), remaining.accounts)
+        assertFalse(remaining.accounts.any { it.id == remaining.selectedAccount })
     }
 
     @Test fun cloudSendWaitsForAnExplicitListScopeApproval() = runTest {

@@ -1,5 +1,6 @@
 //! One callback on 127.0.0.1. It never receives the server's PKCE verifier or tokens.
 
+use super::{native_relay::Relay, relay};
 use socket2::{Domain, Protocol, Socket, Type};
 use std::{
     collections::BTreeMap,
@@ -9,7 +10,6 @@ use std::{
     time::Duration,
 };
 use subtle::ConstantTimeEq;
-use todo_client::assistant::{native_relay::Relay, relay};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -19,7 +19,19 @@ use url::Url;
 use uuid::Uuid;
 use zeroize::Zeroizing;
 
-use super::Error;
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum Error {
+    #[error("Couldn't reach your To-do server or ChatGPT.")]
+    Network,
+    #[error("Couldn't open or verify the local sign-in callback.")]
+    Callback,
+    #[error("Sign-in timed out. Start a new sign-in to try again.")]
+    TimedOut,
+    #[error("ChatGPT sign-in was canceled or declined.")]
+    Declined,
+    #[error("ChatGPT didn't return the authorization details. Start a new sign-in to try again.")]
+    MissingAuthorization,
+}
 
 const PATH: &str = "/auth/callback";
 const LIMIT: usize = 12 * 1024;
@@ -32,6 +44,12 @@ pub struct Attempt {
     port: u16,
     id: Uuid,
     state: Arc<Zeroizing<String>>,
+}
+
+impl std::fmt::Debug for Attempt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Attempt").finish_non_exhaustive()
+    }
 }
 
 impl Attempt {

@@ -7639,6 +7639,8 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2",
+ "subtle",
  "thiserror 2.0.21",
  "todo-core",
  "todo-design",
@@ -7649,6 +7651,7 @@ dependencies = [
  "unicode-general-category",
  "url",
  "uuid",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 
@@ -7696,8 +7699,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "socket2",
- "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "todo-client",

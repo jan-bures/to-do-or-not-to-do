@@ -4313,6 +4313,8 @@ dependencies = [
  "rustls",
  "serde",
  "serde_json",
+ "socket2",
+ "subtle",
  "tempfile",
  "thiserror 2.0.21",
  "todo-core",
@@ -4328,6 +4330,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

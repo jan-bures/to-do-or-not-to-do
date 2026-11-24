@@ -74,6 +74,7 @@ import app.todoornot.design.Tokens
 import app.todoornot.design.cubic
 import app.todoornot.design.style
 import app.todoornot.model.AssistantModel
+import app.todoornot.model.AssistantProvider
 import app.todoornot.model.AssistantUi
 import kotlin.math.roundToInt
 import kotlinx.coroutines.flow.collect
@@ -107,7 +108,9 @@ internal fun AskAiButton() {
     }
 }
 
-internal enum class AssistantOverlay { SETTINGS, HISTORY }
+internal enum class AssistantOverlay(val provider: AssistantProvider? = null) {
+    SETTINGS, HISTORY, DEVICE(AssistantProvider.DEVICE), PRIVATE(AssistantProvider.PRIVATE), CHATGPT(AssistantProvider.CHATGPT)
+}
 
 /** Handle drag follows the finger; below the minimum height it becomes a dismissal drag. */
 @Composable
@@ -234,7 +237,7 @@ internal fun AssistantPane(
         LazyColumn(Modifier.weight(1f).fillMaxWidth(), state = scroll, reverseLayout = true,
             contentPadding = PaddingValues(horizontal = if (inner) S.S5.dp else S.S4.dp, vertical = S.S4.dp),
             verticalArrangement = Arrangement.spacedBy(S.S4.dp, Alignment.Bottom)) {
-            if (turns.isEmpty()) item("empty") { AssistantEmpty(state.destination != null, settings, draft) }
+            if (turns.isEmpty()) item("empty") { AssistantEmpty(state, overlay, draft) }
             items(turns, key = { it.id }) { turn ->
                 ChatTurn(turn, active = state.streaming && turn.id == turns.firstOrNull()?.id,
                     left = left, enabled = !ui.busy && !state.streaming, model = model, onTask = onTask, onSettings = settings,
@@ -331,7 +334,8 @@ internal fun AssistantMark() {
 }
 
 @Composable
-private fun AssistantEmpty(configured: Boolean, settings: () -> Unit, draft: (String) -> Unit) {
+private fun AssistantEmpty(state: AssistantPanelState, overlay: (AssistantOverlay) -> Unit, draft: (String) -> Unit) {
+    val configured = state.destination != null
     val r = LocalDesign.current.room
     val shape = RoundedCornerShape(Tokens.Radius.LG.dp)
     Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
@@ -345,9 +349,21 @@ private fun AssistantEmpty(configured: Boolean, settings: () -> Unit, draft: (St
             AiButton("Plan overdue tasks", { draft("Help me plan my overdue tasks.") }, icon = "sun")
             AiButton("Turn a note into tasks…", { draft("Turn this note into tasks: ") }, icon = "plus")
         } else {
-            Label("Use an OpenAI-compatible model on your own private server. List access is off until you enable it.",
+            Label("Choose a model to start. Lists are hidden until you allow access.",
                 T.BODY, r.ink2, maxLines = Int.MAX_VALUE)
-            AiButton("AI settings", settings, primary = true, icon = "settings")
+            listOf(AssistantOverlay.CHATGPT to "sparkles", AssistantOverlay.PRIVATE to "settings", AssistantOverlay.DEVICE to "link")
+                .forEach { (target, icon) ->
+                    val provider = target.provider ?: return@forEach
+                    if (provider.available(state.hosted)) Row(Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
+                        .clip(RoundedCornerShape(Tokens.Radius.MD.dp)).background(r.raised)
+                        .border(Tokens.Elevation.HAIRLINE.dp, r.line, RoundedCornerShape(Tokens.Radius.MD.dp))
+                        .clickable(role = Role.Button) { overlay(target) }.padding(horizontal = S.S3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(S.S2.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(icon, r.accentStrong, size = C.ICON_SMALL.dp)
+                        Label(provider.label, T.BUTTON, r.ink, Modifier.weight(1f))
+                        Icon("arrow-up-right", r.ink3, size = C.ICON_SMALL.dp)
+                    }
+                }
         }
     }
 }

@@ -514,7 +514,7 @@ impl ShellView {
                 "Ask about your tasks, or describe changes to make. Every edit or new task waits for your approval first."
             } else if self.ai.profile.cloud {
                 "Sign in to ChatGPT and choose a model in AI settings. Your chat won't be sent until you approve cloud sharing."
-            } else { "Connect your own model server to ask about tasks and prepare changes. Nothing is sent until you choose to connect or send a message." }));
+            } else { "Choose a model to start. Lists are hidden until you allow access." }));
         if ready {
             result =
                 result.child(
@@ -556,38 +556,74 @@ impl ShellView {
                             },
                         )),
                 );
-        } else {
+        } else if blocked {
             result = result.child(
-                box_panel(&p)
-                    .p(px(space::S3))
-                    .gap(px(space::S2))
-                    .child(text(
-                        ty::NAV_COLLECTION,
-                        p.ink,
-                        if self.ai.profile.cloud {
-                            "ChatGPT account"
-                        } else {
-                            "Your own server"
-                        },
-                    ))
-                    .child(text(
-                        ty::META,
-                        p.ink_3,
-                        if self.ai.profile.cloud {
-                            "Cloud · ChatGPT plan"
-                        } else {
-                            "OpenAI-compatible · no cloud fallback"
-                        },
-                    ))
-                    .child(div().flex().child(self.ai_button(
-                        "assistant-connect",
-                        "Open AI settings",
-                        Tone::Primary,
-                        true,
-                        |this, w, cx| this.open_ai_settings(w, cx),
-                        cx,
-                    ))),
+                self.ai_button(
+                    "assistant-connect",
+                    "Open AI settings",
+                    Tone::Primary,
+                    true,
+                    |this, w, cx| this.open_ai_settings(w, cx),
+                    cx,
+                )
+                .self_start(),
             );
+        } else {
+            use todo_client::assistant::native_relay::Hosted;
+            let choices = [
+                (
+                    "assistant-connect-chatgpt",
+                    Icon::Sparkles,
+                    "ChatGPT",
+                    Some(Hosted::ChatGpt(Uuid::nil())),
+                    self.ai.cloud.available(),
+                ),
+                (
+                    "assistant-connect-private",
+                    Icon::Settings,
+                    "Your private models",
+                    Some(Hosted::Private),
+                    self.ai
+                        .cloud
+                        .status
+                        .as_ref()
+                        .is_some_and(|s| s.private_models),
+                ),
+                ("assistant-connect", Icon::Link, "This device", None, true),
+            ];
+            for (id, glyph, label, provider, available) in choices {
+                if available {
+                    result = result.child(
+                        self.ai_action(
+                            id,
+                            div()
+                                .w_full()
+                                .min_h(px(component::BUTTON))
+                                .px(px(space::S3))
+                                .flex()
+                                .items_center()
+                                .gap(px(space::S2))
+                                .border_1()
+                                .border_color(p.line)
+                                .rounded(px(radius::MD))
+                                .bg(p.raised)
+                                .child(kit::icon(glyph, component::ICON_SMALL, p.accent_strong))
+                                .child(one_line(text(ty::BODY, p.ink, label)).flex_1())
+                                .child(kit::icon(Icon::ArrowUpRight, space::S3, p.ink_3)),
+                            true,
+                            move |this, w, cx| {
+                                this.open_ai_settings(w, cx);
+                                this.choose_ai_provider(provider, cx);
+                                if provider.is_some() {
+                                    w.focus(&this.ai.dialog, cx);
+                                }
+                            },
+                            cx,
+                        )
+                        .aria_label(label),
+                    );
+                }
+            }
         }
         result
     }
@@ -2196,6 +2232,7 @@ impl ShellView {
                     true,
                     move |this, _, cx| {
                         let state = this.ai_access_state();
+                        this.ai.cloud.signed_in = None;
                         if let Some(setup) = this.ai.settings.as_mut() {
                             let policy = &mut setup.draft.access;
                             let current = match target {

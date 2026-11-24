@@ -13,7 +13,7 @@ default = []
 # In-memory assistant controller and owner approval action; combine with `native` for Chat Completions.
 assistant = []
 # tokio + reqwest (rustls with ring) implementations of the platform traits: desktop and tests.
-native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "dep:zeroize", "uuid/v4"]
+native = ["dep:tokio", "dep:reqwest", "dep:rustls", "dep:rustix", "dep:todo-fs", "dep:unicode-general-category", "dep:zeroize", "dep:socket2", "dep:subtle", "dep:windows-sys", "uuid/v4"]
 # A bundled-SQLite `Storage` (native only).
 sqlite = ["native", "dep:rusqlite"]
 # Browser implementations of the platform traits: fetch, IndexedDB, setTimeout, Web Crypto. The module
@@ -46,6 +46,8 @@ reqwest = { workspace = true, optional = true, features = ["rustls-no-provider"]
 unicode-general-category = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
+socket2 = { workspace = true, optional = true }
+subtle = { workspace = true, optional = true }
 # `sqlite`
 rusqlite = { workspace = true, optional = true }
 # `web`
@@ -61,6 +63,9 @@ web-sys = { workspace = true, optional = true, features = [
 
 [target.'cfg(unix)'.dependencies]
 rustix = { workspace = true, optional = true, features = ["fs"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, optional = true, features = ["Win32_Networking_WinSock"] }
 
 [dev-dependencies]
 todo-server.workspace = true

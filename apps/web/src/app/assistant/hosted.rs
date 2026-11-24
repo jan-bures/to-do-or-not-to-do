@@ -192,7 +192,7 @@ struct DeviceCode {
     user_code: String,
 }
 
-fn choose(
+pub(super) fn choose(
     draft: RwSignal<settings::Profile>,
     status: RwSignal<Option<relay::Status>>,
     local: StoredValue<AccessRules>,
@@ -219,13 +219,16 @@ pub(super) fn HostedCards(
     status: RwSignal<Option<relay::Status>>,
     error: RwSignal<Option<String>>,
     local_access: StoredValue<AccessRules>,
+    tab: RwSignal<settings::ProviderTab>,
+    signed_in: RwSignal<Option<String>>,
 ) -> impl IntoView {
+    use settings::ProviderTab;
+
     let ai = ctx().ai;
     let code = RwSignal::new(None::<DeviceCode>);
-    let signed_in = RwSignal::new(None::<String>);
     let busy = RwSignal::new(false);
     Effect::new(move |_| {
-        if ai.settings.get().is_none() {
+        if ai.settings.get().is_none() || tab.get() != ProviderTab::ChatGpt {
             code.set(None);
         }
     });
@@ -239,6 +242,15 @@ pub(super) fn HostedCards(
                 if !changed {
                     status.set(Some(next));
                 } else {
+                    // Account changes are live, but never substitute unreviewed list access.
+                    status.update(|reviewed| {
+                        if let Some(reviewed) = reviewed {
+                            let mut next = next;
+                            next.access.clone_from(&reviewed.access);
+                            next.access_version = reviewed.access_version;
+                            *reviewed = next;
+                        }
+                    });
                     error.set(Some(
                         "List access changed on another device. Reopen settings to review it."
                             .into(),
@@ -267,7 +279,8 @@ pub(super) fn HostedCards(
             }
             .await;
             busy.set(false);
-            if ai.settings.get_untracked().is_none() {
+            if ai.settings.get_untracked().is_none() || tab.get_untracked() != ProviderTab::ChatGpt
+            {
                 return;
             }
             let device = match result {
@@ -302,8 +315,12 @@ pub(super) fn HostedCards(
                     Ok(relay::Poll::Pending) => continue,
                     Ok(relay::Poll::SignedIn { account }) => {
                         code.set(None);
-                        signed_in.set(Some(account.label));
                         refresh().await;
+                        if ai.settings.get_untracked().is_some()
+                            && tab.get_untracked() == ProviderTab::ChatGpt
+                        {
+                            signed_in.set(Some(account.label));
+                        }
                     }
                     _ => {
                         code.set(None);
@@ -317,29 +334,45 @@ pub(super) fn HostedCards(
             }
         });
     };
+    let account_actions_disabled = move || busy.get() || code.with(Option::is_some);
     let available = move || status.with(|s| s.as_ref().is_some_and(|s| s.private_models));
     let private_selected = move || draft.with(|p| p.hosted == Some(Hosted::Private));
-    let cloud_selected = move || draft.with(|p| matches!(p.hosted, Some(Hosted::ChatGpt(_))));
+    let cloud_selected = move || {
+        let selected = draft.with(|p| p.hosted);
+        status.with(|s| {
+            s.as_ref().is_some_and(|s| {
+                s.accounts
+                    .iter()
+                    .any(|a| selected == Some(Hosted::ChatGpt(a.id)))
+            })
+        })
+    };
+    let cloud_available = move || status.with(|s| ProviderTab::ChatGpt.available(s.as_ref()));
     view! {
-        <section class="ai-provider" aria-label="ChatGPT" data-selected=move || cloud_selected().to_string()>
-            <div class="ai-provider-heading">{icon(Icon::Sparkles)}<h3>"ChatGPT"</h3><span>"Cloud"</span></div>
+        <section class="ai-provider" aria-label="ChatGPT" data-selected="true" hidden=move || tab.get() != ProviderTab::ChatGpt>
+            <div class="ai-provider-heading"><h3>"ChatGPT"</h3><span>"Cloud"</span></div>
             <p>"Sign in once to use your ChatGPT plan or available credits on paired devices."</p>
-            <a class="ai-link" href=USAGE_URL target="_blank" rel="noopener noreferrer">"Manage usage"</a>
-            {move || signed_in.get().map(|label| view! {
-                <p role="status">{format!("Connected {label}. Choose Use account to switch to it.")}</p>
-            })}
             {move || status.with(|s| s.as_ref().and_then(|s| s.disabled_reason.clone())).map(|reason| view! {
                 <p role="status">{reason}</p>
             })}
-            <For each=move || status.with(|s| s.as_ref().map_or_else(Vec::new, |s| s.accounts.clone())) key=|a| a.id
+            <div class="ai-accounts" role="group" aria-label="ChatGPT accounts">
+            <For each=move || status.with(|s| s.as_ref().map_or_else(Vec::new, |s| s.accounts.clone())) key=|a| (a.id, a.label.clone())
                 children=move |account| {
                     let id = account.id;
+                    let active = move || draft.with(|p| p.hosted == Some(Hosted::ChatGpt(id)));
+                    let label = account.label.split_whitespace().collect::<Vec<_>>().join(" ");
+                    let title = label.clone();
+                    let sign_out = format!("Sign out of {label}");
                     view! {
-                        <div class="ai-provider-actions ai-account">
-                            <span>{account.label}</span>
-                            <button type="button" class="button" aria-pressed=move || draft.with(|p| p.hosted == Some(Hosted::ChatGpt(id))).to_string()
-                                on:click=move |_| choose(draft, status, local_access, Hosted::ChatGpt(id))>"Use account"</button>
-                            <button type="button" class="ai-link" disabled=move || busy.get() on:click=move |_| {
+                        <div class="ai-account">
+                            <button type="button" class="ai-account-choice" aria-pressed=move || active().to_string()
+                                disabled=account_actions_disabled on:click=move |_| {
+                                    if !active() { choose(draft, status, local_access, Hosted::ChatGpt(id)); }
+                                }>
+                                <span class="ai-account-check" aria-hidden="true"><Show when=active>{icon(Icon::Check)}</Show></span>
+                                <span class="ai-truncate" title=title>{label}</span>
+                            </button>
+                            <button type="button" class="ai-link" aria-label=sign_out disabled=account_actions_disabled on:click=move |_| {
                                 busy.set(true);
                                 leptos::task::spawn_local(async move {
                                     let result: Result<relay::SignOut, _> = relay_json(Method::Delete, format!("{PATH}/chatgpt/accounts/{id}"), None).await;
@@ -360,13 +393,20 @@ pub(super) fn HostedCards(
                         </div>
                     }
                 }/>
-            <Show when=move || status.with(|s| s.as_ref().is_some_and(|s| s.chatgpt_device_code)) && code.with(Option::is_none)>
-                <button type="button" class="button" on:click=start disabled=move || busy.get()>
-                    {move || if busy.get() { "Starting sign-in…" } else if status.with(|s| s.as_ref().is_some_and(|s| !s.accounts.is_empty())) { "Add another ChatGPT account" } else { "Sign in with ChatGPT" }}
+            </div>
+            {move || signed_in.get().map(|label| view! {
+                <p class="ai-meta ai-truncate" role="status">{format!("Connected {label}.")}</p>
+            })}
+            <Show when=cloud_available>
+                <a class="ai-link ai-usage" href=USAGE_URL target="_blank" rel="noopener noreferrer">"Manage usage"{icon(Icon::ExternalLink)}</a>
+            </Show>
+            <Show when=move || cloud_available() && status.with(|s| s.as_ref().is_some_and(|s| s.chatgpt_device_code)) && code.with(Option::is_none)>
+                <button type="button" class="button primary" on:click=start disabled=move || busy.get()>
+                    {move || if status.with(|s| s.as_ref().is_some_and(|s| !s.accounts.is_empty())) { "Add another account" } else { "Sign in with ChatGPT" }}
                 </button>
             </Show>
-            <Show when=move || status.with(|s| s.as_ref().is_some_and(|s| !s.chatgpt_device_code && s.accounts.is_empty()))>
-                <p>{move || if status.with(|s| s.as_ref().is_some_and(|s| s.chatgpt)) { "Sign in on a paired desktop to connect an account." } else { "Not configured on your server." }}</p>
+            <Show when=move || status.with(|s| s.as_ref().is_some_and(|s| !s.chatgpt_device_code && s.disabled_reason.is_none()))>
+                <p class="ai-meta">{move || if cloud_available() { "Sign in from the desktop or Android app. The account then works here too." } else { "Not configured on your server." }}</p>
             </Show>
             {move || code.get().map(|code_value| view! {
                 <p>"Open ChatGPT and enter this one-time code. Continue only if you started this sign-in."</p>
@@ -377,15 +417,12 @@ pub(super) fn HostedCards(
                 </div>
                 <p role="status">"Waiting for ChatGPT…"</p>
             })}
-            <Show when=cloud_selected><HostedModels draft cloud=true/></Show>
+            <Show when=move || tab.get() == ProviderTab::ChatGpt && cloud_selected()><HostedModels draft cloud=true/></Show>
         </section>
-        <section class="ai-provider" aria-label="Your private models (via your server)" data-selected=move || private_selected().to_string()>
-            <div class="ai-provider-heading">{icon(Icon::Settings)}<h3>"Your private models (via your server)"</h3></div>
-            <p>{move || if available() { "Your To-do server connects to the private model. The key never reaches this browser." } else { "Not configured on your server." }}</p>
-            <Show when=move || available() && !private_selected()>
-                <button type="button" class="button" on:click=move |_| choose(draft, status, local_access, Hosted::Private)>"Use private models"</button>
-            </Show>
-            <Show when=move || available() && private_selected()><HostedModels draft cloud=false/></Show>
+        <section class="ai-provider" aria-label="Your private models" data-selected="true" hidden=move || tab.get() != ProviderTab::Private>
+            <div class="ai-provider-heading"><h3>"Your private models"</h3></div>
+            <p>{move || if available() { "Your To-do server connects to the private model. The key stays on your server." } else { "Not configured on your server." }}</p>
+            <Show when=move || tab.get() == ProviderTab::Private && available() && private_selected()><HostedModels draft cloud=false/></Show>
         </section>
     }
 }
@@ -395,6 +432,7 @@ fn HostedModels(draft: RwSignal<settings::Profile>, cloud: bool) -> impl IntoVie
     let route = Memo::new(move |_| draft.with(|p| p.hosted));
     let models = RwSignal::new(Vec::<relay::Model>::new());
     let note = RwSignal::new("Loading models…");
+    let picking = RwSignal::new(false);
     Effect::new(move |_| {
         let Some(hosted) = route.get() else {
             return;
@@ -403,6 +441,7 @@ fn HostedModels(draft: RwSignal<settings::Profile>, cloud: bool) -> impl IntoVie
             return;
         }
         models.set(Vec::new());
+        picking.set(false);
         note.set("Loading models…");
         leptos::task::spawn_local(async move {
             let result = hosted.models().await;
@@ -429,12 +468,20 @@ fn HostedModels(draft: RwSignal<settings::Profile>, cloud: bool) -> impl IntoVie
         "ai-private-model"
     };
     view! {
-        <Show when=move || !models.with(Vec::is_empty) fallback=move || view! { <p role="status">{move || note.get()}</p> }>
-            <label for=id>"Model"</label>
-            <select id=id prop:value=move || draft.with(|p| p.hosted_model.clone())
-                on:change=move |ev| draft.update(|p| p.hosted_model = event_target_value(&ev))>
-                {move || models.get().into_iter().map(|model| view! { <option value=model.id>{model.label}</option> }).collect_view()}
-            </select>
-        </Show>
+        <div class="ai-model-row">
+            <span class="ai-meta">"Model"</span>
+            <span class="ai-model-value ai-truncate">{move || draft.with(|p| {
+                if p.hosted_model.is_empty() { "No model selected".into() }
+                else { p.hosted_model.clone() }
+            })}</span>
+            <button type="button" class="button" aria-controls=id aria-expanded=move || picking.get().to_string()
+                disabled=move || models.with(Vec::is_empty) on:click=move |_| picking.update(|open| *open = !*open)>"Choose model"</button>
+        </div>
+        <Show when=move || models.with(Vec::is_empty)><p class="ai-meta" role="status">{move || note.get()}</p></Show>
+        <select id=id aria-label="Model" hidden=move || !picking.get()
+            prop:value=move || draft.with(|p| p.hosted_model.clone())
+            on:change=move |ev| { draft.update(|p| p.hosted_model = event_target_value(&ev)); picking.set(false); }>
+            {move || models.get().into_iter().map(|model| view! { <option value=model.id>{model.label}</option> }).collect_view()}
+        </select>
     }
 }

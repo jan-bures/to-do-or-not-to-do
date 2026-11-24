@@ -241,6 +241,19 @@ fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
         assert_eq!(setup.draft.chatgpt_account, before);
         assert_eq!(setup.draft.model, model);
         assert_eq!(shell.ai.cloud.signed_in, Some((account.id, account.label)));
+        if let Some(before) = before {
+            shell.choose_chatgpt_account(before, cx);
+            assert!(shell.ai.cloud.signed_in.is_none());
+            assert_eq!(
+                shell.ai.settings.as_ref().expect("settings").draft.model,
+                model
+            );
+        }
+        shell.choose_chatgpt_account(account.id, cx);
+        let draft = &shell.ai.settings.as_ref().expect("settings").draft;
+        assert_eq!(draft.chatgpt_account, Some(account.id));
+        assert!(draft.model.is_empty());
+        assert!(!draft.enabled);
     });
 }
 
