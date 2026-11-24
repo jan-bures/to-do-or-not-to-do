@@ -23,13 +23,16 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.unit.constrainWidth
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.offset
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
@@ -79,7 +82,7 @@ internal fun HostedAssistantSettings(provider: AssistantProvider, ui: AssistantU
                         }
                         Label(account.label, T.BODY, r.ink, Modifier.weight(1f))
                     }
-                    HostedLink("Sign out", "Sign out of ${account.label}", enabled = enabled) {
+                    HostedLink("Sign out", "Sign out of ${account.label}", enabled = enabled, alignEnd = true) {
                         picker = null
                         model?.signOutChatgpt(account.id)
                     }
@@ -145,10 +148,24 @@ private fun HostedCard(title: String, cloud: Boolean = false, content: @Composab
 }
 
 @Composable
-private fun HostedLink(text: String, description: String = text, icon: String? = null, enabled: Boolean = true, onClick: () -> Unit) {
+private fun HostedLink(
+    text: String,
+    description: String = text,
+    icon: String? = null,
+    enabled: Boolean = true,
+    alignEnd: Boolean = false,
+    onClick: () -> Unit,
+) {
     val r = LocalDesign.current.room
     val ink = if (enabled) r.accentStrong else r.ink3
-    Row(Modifier.heightIn(min = P.TOUCH.dp).clip(RoundedCornerShape(Tokens.Radius.MD.dp))
+    // Let the padded touch target overflow at the aligned edge without moving the label.
+    Row(Modifier.layout { measurable, constraints ->
+        val inset = S.S1.dp.roundToPx()
+        val placeable = measurable.measure(constraints.offset(horizontal = inset))
+        layout(constraints.constrainWidth(placeable.width - inset), placeable.height) {
+            placeable.placeRelative(if (alignEnd) 0 else -inset, 0)
+        }
+    }.heightIn(min = P.TOUCH.dp).clip(RoundedCornerShape(Tokens.Radius.MD.dp))
         .clickable(enabled = enabled, role = Role.Button, onClickLabel = description, onClick = onClick)
         .padding(horizontal = S.S1.dp), horizontalArrangement = Arrangement.spacedBy(S.S1.dp),
         verticalAlignment = Alignment.CenterVertically) {

@@ -88,11 +88,23 @@ test("device sign-in, shared account and consent, and sign-out across two browse
   await expect(settings.getByRole("button", { name: "Add another account" })).toBeVisible();
   const savedAccount = accountRow(settings, account().label);
   await expect(savedAccount).toHaveAttribute("aria-pressed", "false");
-  expect((await connected.boundingBox()).y).toBeGreaterThan((await savedAccount.boundingBox()).y);
+  const usage = settings.getByRole("link", { name: "Manage usage" });
+  const usageLeft = await usage.evaluate((link) => {
+    const label = document.createRange();
+    label.selectNodeContents(link.firstChild);
+    return label.getBoundingClientRect().left;
+  });
+  const accountBox = await savedAccount.boundingBox();
+  const connectedBox = await connected.boundingBox();
+  expect(connectedBox.y).toBeGreaterThan(accountBox.y);
+  expect(usageLeft).toBe(accountBox.x);
+  expect(usageLeft).toBe(connectedBox.x);
   await savedAccount.click();
   await expect(savedAccount).toHaveAttribute("aria-pressed", "true");
   await expect(connected).not.toBeVisible();
   await expect(settings.getByRole("button", { name: "Choose model" })).toBeEnabled();
+  const model = settings.getByRole("region", { name: "ChatGPT", exact: true }).getByText("Model", { exact: true });
+  expect(usageLeft).toBe((await model.boundingBox()).x);
   await settings.getByRole("combobox", { name: "Planning", exact: true }).selectOption("all");
   await settings.getByRole("combobox", { name: "Inbox", exact: true }).selectOption("private");
   await settings.getByRole("button", { name: "Save", exact: true }).click();

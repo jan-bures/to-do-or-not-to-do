@@ -1,6 +1,11 @@
 use super::*;
 use crate::chatgpt::USAGE;
 use todo_client::assistant::native_relay::{Hosted, VERIFY_URL};
+use todo_design::layout::elevation;
+
+// Hang the padded hit box and focus border into the card gutters, not the label.
+const USAGE_INSET: f32 = space::S1 + elevation::HAIRLINE;
+const QUIET_INSET: f32 = space::S2 + elevation::HAIRLINE;
 
 impl ShellView {
     pub(super) fn ai_provider_choices(
@@ -148,7 +153,7 @@ impl ShellView {
                     div()
                         .flex()
                         .items_center()
-                        .gap(px(space::S2))
+                        .gap(px(QUIET_INSET))
                         .child(
                             self.ai_action(
                                 format!("assistant-chatgpt-account-{index}"),
@@ -170,6 +175,7 @@ impl ShellView {
                                 move |this, _, cx| this.sign_out_chatgpt(id, cx),
                                 cx,
                             )
+                            .mr(px(-QUIET_INSET))
                             .aria_label(format!("Sign out of {label}")),
                         ),
                 );
@@ -181,11 +187,10 @@ impl ShellView {
                     format!("Connected {}.", model::labels::one_line(label)),
                 )));
             }
-            card = card.child(self.ai_manage_usage(
-                "assistant-chatgpt-settings-usage",
-                Tone::Quiet,
-                cx,
-            ));
+            card = card.child(
+                self.ai_manage_usage("assistant-chatgpt-settings-usage", Tone::Quiet, cx)
+                    .ml(px(-USAGE_INSET)),
+            );
             if let Some(code) = &self.ai.cloud.code {
                 return card.child(text(ty::META, p.ink_2, "Open ChatGPT and enter this one-time code. Continue only if you started this sign-in."))
                     .child(text(ty::COUNT, p.ink, code.clone()))
@@ -207,7 +212,7 @@ impl ShellView {
                 div()
                     .flex()
                     .flex_wrap()
-                    .gap(px(space::S2))
+                    .gap(px(QUIET_INSET))
                     .child(self.ai_button(
                         "assistant-chatgpt-continue",
                         if accounts.is_empty() {
@@ -229,6 +234,7 @@ impl ShellView {
                             |this, _, cx| this.sign_in_chatgpt(false, cx),
                             cx,
                         )
+                        .ml(px(-QUIET_INSET))
                     })),
             );
             if active.is_none() {
