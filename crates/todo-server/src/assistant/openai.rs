@@ -625,10 +625,6 @@ impl OpenAi {
     }
 
     pub async fn models(&self, credential: &Credential) -> Result<Vec<Model>, Error> {
-        #[derive(Deserialize)]
-        struct Catalog {
-            models: Vec<Value>,
-        }
         let req = self.request(credential, reqwest::Method::GET, "models");
         // Codex's catalog requires a client_version parameter. It is the API compatibility version,
         // not the login application's identity; this client uses only the original Responses fields.
@@ -637,18 +633,8 @@ impl OpenAi {
         } else {
             req
         };
-        let result: Catalog = read_json(req.send().await.map_err(network_error)?).await?;
-        Ok(result
-            .models
-            .into_iter()
-            .filter(|m| m["visibility"] == "list")
-            .filter_map(|m| {
-                let id = m["slug"].as_str()?.to_owned();
-                let label = m["display_name"].as_str()?.to_owned();
-                (valid_model(&id) && valid_model(&label)).then_some(Model { id, label })
-            })
-            .take(256)
-            .collect())
+        let result: Value = read_json(req.send().await.map_err(network_error)?).await?;
+        Ok(listed_models(&result))
     }
 
     pub async fn chat(
@@ -663,6 +649,48 @@ impl OpenAi {
             .await
             .map_err(network_error)
     }
+}
+
+/// Read either catalog shape: Codex's `{"models":[{"slug","display_name","visibility"}]}` or the
+/// public API's `{"data":[{"id"}]}`, where models that can't chat are left out.
+fn listed_models(catalog: &Value) -> Vec<Model> {
+    const NOT_CHAT: [&str; 10] = [
+        "embedding",
+        "tts",
+        "whisper",
+        "dall-e",
+        "image",
+        "audio",
+        "realtime",
+        "transcribe",
+        "moderation",
+        "search",
+    ];
+    let codex = catalog["models"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter(|m| m["visibility"] == "list")
+        .filter_map(|m| {
+            Some((
+                m["slug"].as_str()?.to_owned(),
+                m["display_name"].as_str()?.to_owned(),
+            ))
+        });
+    let public = catalog["data"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|m| {
+            let id = m["id"].as_str()?;
+            (!NOT_CHAT.iter().any(|kind| id.contains(kind))).then(|| (id.to_owned(), id.to_owned()))
+        });
+    codex
+        .chain(public)
+        .filter(|(id, label)| valid_model(id) && valid_model(label))
+        .map(|(id, label)| Model { id, label })
+        .take(256)
+        .collect()
 }
 
 #[cfg(test)]

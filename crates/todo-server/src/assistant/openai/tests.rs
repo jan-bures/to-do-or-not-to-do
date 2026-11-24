@@ -117,6 +117,31 @@ async fn device_login_refresh_model_list_stream_and_revoke_use_the_expected_cont
     mock.abort();
 }
 
+#[test]
+fn model_lists_accept_the_codex_catalog_and_the_public_api_list() {
+    let codex = listed_models(&json!({"models":[
+        {"slug":"fixture-model", "display_name":"Example", "visibility":"list"},
+        {"slug":"hidden-model", "display_name":"Hidden", "visibility":"hide"}
+    ]}));
+    assert_eq!(codex.len(), 1);
+    assert_eq!(
+        (codex[0].id.as_str(), codex[0].label.as_str()),
+        ("fixture-model", "Example")
+    );
+    let public = listed_models(&json!({"object":"list", "data":[
+        {"id":"fixture-chat", "object":"model"},
+        {"id":"fixture-embedding-small", "object":"model"},
+        {"id":"fixture-tts", "object":"model"},
+        {"object":"model"}
+    ]}));
+    assert_eq!(public.len(), 1);
+    assert_eq!(
+        (public[0].id.as_str(), public[0].label.as_str()),
+        ("fixture-chat", "fixture-chat")
+    );
+    assert!(listed_models(&json!({"unexpected": true})).is_empty());
+}
+
 #[tokio::test]
 async fn loopback_handoff_checks_state_and_uses_pkce_without_sending_the_verifier() {
     let openai = OpenAi::new(None).unwrap();
