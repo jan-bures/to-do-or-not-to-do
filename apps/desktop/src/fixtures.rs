@@ -295,6 +295,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             Some(f)
         }
         "detail-wide" | "detail-wide-1920" => Some(wide_detail()),
+        "notes-markdown" | "notes-code" => Some(notes_markdown(name == "notes-code")),
         "resize-handle-hover" | "email-drop" => Some(my_day()),
         "long-names" | "narrow-detail" => Some(long_names()),
         "long-names-narrow" => Some(long_names_narrow()),
@@ -1616,6 +1617,46 @@ fn long_names() -> Fixture {
         b,
         UiState {
             room: RoomKey::Smart(Smart::MyDay),
+            task: Some(l.q4),
+            ..UiState::default()
+        },
+        MORNING,
+    )
+}
+
+/// The same invented Markdown notes used by the web gallery.
+fn notes_markdown(long_code: bool) -> Fixture {
+    let (mut b, l) = sample();
+    // Keep all the note elements above the fold in the reference window.
+    let steps: Vec<_> = b
+        .state
+        .steps
+        .values()
+        .filter(|s| s.task == l.q4)
+        .map(|s| s.id)
+        .collect();
+    for step in steps {
+        b.run(&owner(), MORNING, Command::Delete { id: step.into() });
+    }
+    let notes = if long_code {
+        include_str!("../../../crates/todo-client/tests/fixtures/notes-code.md")
+    } else {
+        include_str!("../../../crates/todo-client/tests/fixtures/notes-markdown.md")
+    };
+    b.run(
+        &owner(),
+        MORNING,
+        Command::UpdateTask {
+            id: l.q4,
+            patch: TaskPatch {
+                notes: Some(notes.trim_end().into()),
+                ..TaskPatch::default()
+            },
+        },
+    );
+    fixture(
+        b,
+        UiState {
             task: Some(l.q4),
             ..UiState::default()
         },

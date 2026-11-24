@@ -329,6 +329,27 @@ pub fn set_notes(state: &State, id: TaskId, notes: &str) -> Option<Command> {
     })
 }
 
+/// Check or uncheck a Markdown task without altering any other byte of the saved note.
+/// The displayed source must still match, since marker offsets are relative to it.
+pub fn toggle_note_task(
+    state: &State,
+    id: TaskId,
+    source: &str,
+    marker: crate::notes_markdown::TaskMarker,
+) -> Option<Command> {
+    let task = state.tasks.get(&id)?;
+    if task.notes != source || !state.is_live(id.into()) {
+        return None;
+    }
+    Some(update_task(
+        id,
+        TaskPatch {
+            notes: Some(marker.toggle(source)?),
+            ..TaskPatch::default()
+        },
+    ))
+}
+
 /// Sets or clears the due date. Clearing it also clears a repeat rule, which needs a due date.
 pub fn set_due(state: &State, id: TaskId, due: Option<Date>) -> Option<Command> {
     let t = state.tasks.get(&id)?;

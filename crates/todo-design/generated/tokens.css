@@ -88,6 +88,10 @@
   --text-task-title-phone: 500 16px/24px var(--font-ui);
   --text-body: 400 14px/20px var(--font-ui);
   --text-notes: 400 14px/24px var(--font-ui);
+  --text-notes-h1: 600 18px/24px var(--font-ui);
+  --text-notes-h2: 600 16px/24px var(--font-ui);
+  --text-notes-h3: 600 14px/24px var(--font-ui);
+  --text-notes-code: 400 14px/24px var(--font-mono);
   --text-quick-add: 400 14.5px/20px var(--font-ui);
   --text-composer: 400 15.5px/24px var(--font-ui);
   --text-nav: 500 14px/20px var(--font-ui);
@@ -117,6 +121,7 @@
   --text-agent-letter: 600 10px/10px var(--font-mono);
   --text-pairing-code: 500 40px/48px var(--font-mono);
   --text-pairing-code-tracking: 0.06em;
+  --weight-notes-bold: 700;
   --space-1: 4px;
   --space-2: 8px;
   --space-3: 12px;

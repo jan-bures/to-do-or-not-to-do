@@ -1710,7 +1710,7 @@ test("a note being typed survives a rename from elsewhere, and then saves", asyn
 
   // Typing a note: not saved yet (it saves when the field loses focus).
   const notes = a.locator("textarea.notes");
-  await notes.click();
+  await a.locator(".note-preview").click();
   await notes.pressSequentially("Rozepsaná poznámka");
   await expect(notes).toBeFocused();
 
@@ -1736,6 +1736,7 @@ test("a note being typed survives a rename from elsewhere, and then saves", asyn
   await expect(notes).toBeFocused();
   await notes.pressSequentially(" a dopsaná");
   await notes.blur();
+  await expect(a.locator(".note-preview")).toContainText("Rozepsaná poznámka a dopsaná");
   await expect
     .poll(async () => (await serverLog(b)).body, { timeout: 15_000 })
     .toContain("Rozepsaná poznámka a dopsaná");

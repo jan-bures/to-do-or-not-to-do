@@ -9,8 +9,8 @@
 //! the internet.
 
 use gpui::{
-    AnyElement, AsyncApp, Context, Div, Entity, FontWeight, SharedString, Subscription, WeakEntity,
-    Window, div, prelude::*, px,
+    AnyElement, AsyncApp, Context, Div, Entity, FocusHandle, FontWeight, SharedString,
+    Subscription, WeakEntity, Window, div, prelude::*, px,
 };
 use todo_core::{
     ids::{AttachmentId, TaskId},
@@ -94,6 +94,7 @@ fn save_failure_only_logs_the_private_destination_at_debug() {
 pub(super) struct Editors {
     pub title: Entity<TextArea>,
     pub notes: Entity<TextArea>,
+    pub notes_focus: FocusHandle,
     pub step: Entity<TextInput>,
     /// The field that adds a web link (L).
     pub link: Entity<TextInput>,
@@ -103,6 +104,7 @@ pub(super) struct Editors {
     pub loaded: Option<TaskId>,
     pub title_draft: Draft,
     pub notes_draft: Draft,
+    pub notes_preview: super::notes::Preview,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -182,19 +184,22 @@ impl Editors {
         subs.push(cx.on_blur(&handle, window, |this, _, cx| {
             this.commit_title(cx);
         }));
-        let handle = notes.read(cx).focus_handle.clone();
-        subs.push(cx.on_blur(&handle, window, |this, _, cx| {
+        let notes_focus = notes.read(cx).focus_handle.clone();
+        subs.push(cx.on_focus(&notes_focus, window, |_, _, cx| cx.notify()));
+        subs.push(cx.on_blur(&notes_focus, window, |this, _, cx| {
             this.commit_notes(cx);
         }));
         Self {
             title,
             notes,
+            notes_focus,
             step,
             link,
             due: None,
             loaded: None,
             title_draft: Draft::default(),
             notes_draft: Draft::default(),
+            notes_preview: super::notes::Preview::default(),
             _subscriptions: subs,
         }
     }
@@ -223,6 +228,7 @@ impl ShellView {
                 .update(cx, |i, cx| i.set_text(String::new(), cx));
         }
         let (title, notes) = (d.title.clone(), d.notes.clone());
+        self.edit.notes_preview.update(&notes);
         if self.edit.title_draft.accepts_incoming() && self.edit.title.read(cx).content != title {
             self.edit.title.update(cx, |a, cx| a.set_text(title, cx));
         }
@@ -1285,8 +1291,17 @@ impl ShellView {
                                 .max_w(prose_width(window, ty::NOTES))
                                 .style(ty::NOTES)
                                 .text_color(p.ink_2)
-                                .when(live, |el| el.child(self.edit.notes.clone()))
-                                .when(!live, |el| el.child(d.notes.clone())),
+                                .when(live, |el| el.child(self.probe("notes-field")))
+                                .child(
+                                    if live
+                                        && (self.edit.notes_focus.is_focused(window)
+                                            || !self.edit.notes_draft.accepts_incoming())
+                                    {
+                                        self.edit.notes.clone().into_any_element()
+                                    } else {
+                                        self.notes_preview(d.task, &d.notes, live, cx)
+                                    },
+                                ),
                         ),
                     )
                     .child(

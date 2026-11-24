@@ -64,6 +64,8 @@ async fn start() {
             fixtures::workflow_state(query.contains("fixture=timeline"))
         } else if query.contains("fixture=detail-wide") {
             fixtures::wide_detail_state()
+        } else if query.contains("fixture=notes-markdown") || query.contains("fixture=notes-code") {
+            fixtures::notes_markdown_state(query.contains("fixture=notes-code"))
         } else {
             fixtures::state()
         };

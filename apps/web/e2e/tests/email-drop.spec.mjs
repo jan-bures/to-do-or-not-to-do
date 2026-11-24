@@ -60,14 +60,14 @@ test("dropping assorted files highlights the room and imports emails into the cu
   await expect(added(page)).toHaveCount(1);
   await added(page).click();
   const detail = page.locator(".detail");
-  await expect(detail.getByRole("textbox", { name: "Notes" })).toHaveValue(/Please confirm the workshop agenda/);
+  await expect(detail.locator(".note-preview")).toContainText("Please confirm the workshop agenda");
   await expect(detail.locator(".source-meta")).toContainText("alice@example.com");
   await expect(detail.locator("a.source")).toHaveCount(0);
   await expect(detail.locator(".file-row")).toHaveCount(0);
   await added(page, "Read the workshop invitation").click();
-  const notes = detail.getByRole("textbox", { name: "Notes" });
-  await expect(notes).toHaveValue(/Hello & welcome!/);
-  await expect(notes).not.toHaveValue(/INVISIBLE|<img/);
+  const notes = detail.locator(".note-preview");
+  await expect(notes).toContainText("Hello & welcome!");
+  await expect(notes).not.toContainText(/INVISIBLE|<img/);
   await toast.getByRole("button", { name: "Undo" }).click();
   await expect(added(page)).toHaveCount(0);
   await expect(added(page, "Read the workshop invitation")).toHaveCount(0);

@@ -11,6 +11,8 @@ mod detail_splitter;
 mod device_pairing;
 mod email_drop;
 mod links;
+mod notes;
+use notes::NotesEditor;
 mod navigation;
 mod pickers;
 mod quick_add;
@@ -2952,7 +2954,9 @@ fn DetailBody(
         Signal::derive(move || d.with(|d| d.as_ref().map(f).unwrap_or_default()))
     };
     let title = field(|d| d.title.clone());
-    let notes = field(|d| d.notes.clone());
+    // Don't rebuild the document or disturb its focused controls when another field changes.
+    let notes =
+        Memo::new(move |_| d.with(|d| d.as_ref().map(|d| d.notes.clone()).unwrap_or_default()));
     let done = move || d.with(|d| d.as_ref().is_some_and(|d| d.done));
     view! {
         <DetailTop id=id detail=d/>
@@ -2970,7 +2974,7 @@ fn DetailBody(
 
             <section class="d-section">
                 <h3 class="caps d-caps">"Notes"</h3>
-                <NotesEditor id=id notes=notes/>
+                <NotesEditor id=id notes=notes.into()/>
             </section>
 
             <section class="d-section" aria-label="Schedule and priority">
@@ -3433,28 +3437,6 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
                     .into_any()
             }
         }}
-    }
-}
-
-#[component]
-fn NotesEditor(id: TaskId, notes: Signal<String>) -> impl IntoView {
-    let c = ctx();
-    let draft = Draft::new(notes);
-    view! {
-        <textarea
-            class="notes"
-            aria-label="Notes"
-            readonly=move || c.read_only()
-            placeholder="Add a note"
-            rows="3"
-            prop:value=move || draft.text.get()
-            on:input=move |ev| draft.input(event_target_value(&ev))
-            on:change=move |_| {
-                let text = draft.text.get_untracked();
-                draft.dirty.set(false);
-                c.submit_intent(|state| intent::set_notes(state, id, &text));
-            }
-        ></textarea>
     }
 }
 

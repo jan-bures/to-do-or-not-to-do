@@ -52,6 +52,7 @@ pub mod failure;
 pub mod intent;
 pub mod mirror;
 pub mod navigation;
+pub mod notes_markdown;
 pub mod notify;
 pub mod outbox;
 pub mod pairing;

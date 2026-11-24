@@ -97,6 +97,8 @@ pub enum Stop {
     DetailMyDay,
     /// Important toggle in the detail toolbar.
     DetailImportant,
+    /// The raw notes editor, opened when it takes focus.
+    Notes,
     Status,
     Starts,
     /// The Due row, when a task is open.
@@ -132,7 +134,7 @@ pub const QUICK_ADD_STOPS: [Stop; 7] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 50] = [
+pub const TAB_ORDER: [Stop; 51] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -171,6 +173,7 @@ pub const TAB_ORDER: [Stop; 50] = [
     Stop::DetailSplitter,
     Stop::DetailMyDay,
     Stop::DetailImportant,
+    Stop::Notes,
     Stop::Status,
     Stop::Starts,
     Stop::Due,
@@ -199,6 +202,7 @@ pub enum ScrollPane {
 pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
     match stop {
         Stop::DetailMyDay | Stop::DetailImportant => Some((ScrollPane::Detail, "detail-toolbar")),
+        Stop::Notes => Some((ScrollPane::Detail, "notes-field")),
         Stop::Status => Some((ScrollPane::Detail, "status-row")),
         Stop::Starts => Some((ScrollPane::Detail, "starts-row")),
         Stop::Due => Some((ScrollPane::Detail, "due-row")),
@@ -691,6 +695,7 @@ mod tests {
                 DetailSplitter,
                 DetailMyDay,
                 DetailImportant,
+                Notes,
                 Status,
                 Starts,
                 Due,
@@ -723,6 +728,7 @@ mod tests {
                 Due,
                 Starts,
                 Status,
+                Notes,
                 DetailImportant,
                 DetailMyDay,
                 DetailSplitter,
@@ -776,6 +782,7 @@ mod tests {
                 s,
                 DetailMyDay
                     | DetailImportant
+                    | Notes
                     | AssistantSplitter
                     | Status
                     | Starts
@@ -963,12 +970,13 @@ mod tests {
     }
 
     #[test]
-    fn shift_tab_from_reminder_reveals_due_workflow_then_the_detail_toolbar() {
+    fn shift_tab_from_reminder_reveals_due_workflow_notes_and_the_detail_toolbar() {
         let mut from = Stop::Reminder;
         for (expected, probe) in [
             (Stop::Due, "due-row"),
             (Stop::Starts, "starts-row"),
             (Stop::Status, "status-row"),
+            (Stop::Notes, "notes-field"),
             (Stop::DetailImportant, "detail-toolbar"),
             (Stop::DetailMyDay, "detail-toolbar"),
         ] {
@@ -991,6 +999,7 @@ mod tests {
                         | AssistantSplitter
                         | DetailMyDay
                         | DetailImportant
+                        | Notes
                         | Status
                         | Starts
                         | View(_)

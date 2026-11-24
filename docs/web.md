@@ -570,7 +570,11 @@ stay left aligned at no more than the shared 72 ch reading measure.
 The detail pane stays mounted while the same task is shown, and a live update changes its fields in place.
 The title and notes editors keep a draft: while it is dirty (typed in and not yet saved) a live update doesn't
 touch it, and it saves when the field loses focus (notes) or on Enter (title); fields that aren't being
-edited follow the update. Click **Due** or press **D** to edit a date. The editor accepts the same relative
+edited follow the update. Notes render as Markdown until clicked or focused. Move focus away to save
+and return to the preview. Links and checklist boxes act without opening the editor. Only absolute
+HTTP, HTTPS, and mailto links are active; HTML and images appear as text. Checklist changes offer Undo.
+
+Click **Due** or press **D** to edit a date. The editor accepts the same relative
 syntax as the desktop and also accepts past dates. Enter saves; Escape or clicking away cancels. Saving a
 blank field clears both the date and any repeat rule. Choose any of the four levels in the **Priority**
 field (also reachable with **Shift+P**), or press **P** to cycle none → low → normal → high → none. The
@@ -698,6 +702,7 @@ The status bar shows shortcuts only when their actions are available.
   Workflow captures `board-{light,dark}.png`, `board-detail-{light,dark}.png`, `board-phone-{light,dark}.png`,
   `board-drag-{light,dark}.png`, `board-move-{light,dark}.png`, `list-status-{light,dark}.png` and
   `list-settings-{light,dark}.png` against the same renovation data as desktop.
+  Notes fixtures cover the supported Markdown elements and overflowing code at 200% in both themes.
   The PNGs land in `apps/web/e2e/gallery/`, including
   `sidebar-{light,dark}.png` and `sidebar-narrow-{light,dark}.png` crops;
   CI uploads them as `web-gallery-fixtures-1` and `web-gallery-fixtures-2`. Assistant shots (`ai-*.png`)

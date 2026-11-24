@@ -66,6 +66,8 @@ age = "0.12"
 rusty-s3 = "0.12"
 ureq = { version = "3.5", default-features = false, features = ["rustls"] }
 url = "2"
+pulldown-cmark = { version = "0.13", default-features = false }
+linkify = "0.11"
 qrcode = { version = "0.14", default-features = false }
 mail-parser = "1.0.1"
 zstd = "0.14"

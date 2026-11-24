@@ -121,6 +121,14 @@ pub const TASK_TITLE_PHONE: TextStyle = TextStyle::new(UI, 500, 16.0, 24.0);
 pub const BODY: TextStyle = TextStyle::new(UI, 400, 14.0, 20.0);
 /// Notes in the detail pane.
 pub const NOTES: TextStyle = TextStyle::new(UI, 400, 14.0, 24.0);
+/// The heading hierarchy inside notes stays below the task title.
+pub const NOTES_H1: TextStyle = TextStyle::new(UI, 600, 18.0, 24.0);
+pub const NOTES_H2: TextStyle = TextStyle::new(UI, 600, 16.0, 24.0);
+pub const NOTES_H3: TextStyle = NOTES.with_weight(600);
+/// Weight of strong text in notes, including within headings.
+pub const NOTES_BOLD: u16 = 700;
+/// Fixed-width text in code blocks and inline code.
+pub const NOTES_CODE: TextStyle = TextStyle::new(MONO, 400, 14.0, 24.0);
 /// Quick-add input text.
 pub const QUICK_ADD: TextStyle = TextStyle::new(UI, 400, 14.5, 20.0);
 /// Phone composer text.
@@ -175,7 +183,7 @@ pub const AGENT_LETTER: TextStyle = TextStyle::new(MONO, 600, 10.0, 10.0);
 pub const PAIRING_CODE: TextStyle = TextStyle::new(MONO, 500, 40.0, 48.0).tracking(0.06);
 
 /// Every named style, for the exports and for a type specimen.
-pub const ALL: [(&str, TextStyle); 41] = [
+pub const ALL: [(&str, TextStyle); 45] = [
     ("room-title", ROOM_TITLE),
     ("room-title-compact", ROOM_TITLE_COMPACT),
     ("room-title-phone", ROOM_TITLE_PHONE),
@@ -192,6 +200,10 @@ pub const ALL: [(&str, TextStyle); 41] = [
     ("task-title-phone", TASK_TITLE_PHONE),
     ("body", BODY),
     ("notes", NOTES),
+    ("notes-h1", NOTES_H1),
+    ("notes-h2", NOTES_H2),
+    ("notes-h3", NOTES_H3),
+    ("notes-code", NOTES_CODE),
     ("quick-add", QUICK_ADD),
     ("composer", COMPOSER),
     ("nav", NAV),

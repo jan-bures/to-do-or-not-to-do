@@ -12,6 +12,7 @@ mod device_pairing;
 mod email_drop;
 mod menu;
 mod navigation;
+mod notes;
 mod panes;
 mod popout;
 mod quick_pickers;
@@ -1189,6 +1190,7 @@ impl ShellView {
         if menu::keyboard_back_to_list(dropped, menu_focused, window.focused(cx).is_none())
             || (menu_focused && !menu_open)
             || [
+                hints::Stop::Notes,
                 hints::Stop::Status,
                 hints::Stop::Starts,
                 hints::Stop::View(0),
@@ -4523,6 +4525,7 @@ impl ShellView {
             Stop::ActivityFilter => &self.activity_filter_focus,
             Stop::ActivityRefresh => &self.activity_refresh_focus,
             Stop::ActivityMore => &self.activity_more_focus,
+            Stop::Notes => &self.edit.notes_focus,
             Stop::Due => &self.due_focus,
             Stop::Repeat => &self.repeat_focus,
             Stop::Reminder => &self.reminder_focus,
@@ -4601,7 +4604,8 @@ impl ShellView {
             Stop::ActivityFilter | Stop::ActivityRefresh | Stop::ActivityMore => {
                 self.has_activity_stop(stop)
             }
-            Stop::Due
+            Stop::Notes
+            | Stop::Due
             | Stop::Repeat
             | Stop::Reminder
             | Stop::DetailMyDay

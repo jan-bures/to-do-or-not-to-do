@@ -145,6 +145,10 @@ pub fn css() -> String {
             root.push((format!("text-{name}-transform"), "uppercase".into()));
         }
     }
+    root.push((
+        "weight-notes-bold".into(),
+        typography::NOTES_BOLD.to_string(),
+    ));
     for (k, v) in space::ALL {
         root.push((format!("space-{k}"), format!("{v}px")));
     }

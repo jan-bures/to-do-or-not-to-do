@@ -35,6 +35,7 @@ Options:
                     short-sidebar-new-list and short-sidebar-new-collection (960 x 600), long-names,
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, detail-wide, detail-wide-1920 (1920 × 1080),
+                    notes-markdown, notes-code,
                     resize-handle-hover, caption-hover,
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
@@ -161,6 +162,8 @@ pub const FIXTURES: &[&str] = &[
     "detail-narrow",
     "detail-wide",
     "detail-wide-1920",
+    "notes-markdown",
+    "notes-code",
     "resize-handle-hover",
     "caption-hover",
     "caption-close-hover",

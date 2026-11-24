@@ -32,6 +32,7 @@ pub(super) enum EditKind {
     Move,
     DeleteStep,
     DeleteTag,
+    NotesChecklist,
     Repeat,
     ClearDue,
     /// A reminder set or moved (the picker's preset or Set reminder).
@@ -118,6 +119,7 @@ impl EditKind {
             Self::ReorderRoom => "Reordered",
             Self::DeleteStep => "Deleted step",
             Self::DeleteTag => "Deleted tag",
+            Self::NotesChecklist => "Updated notes checklist for",
             Self::Repeat => "Changed schedule for",
             Self::ClearDue => "Cleared due date for",
             Self::SetReminder => "Set reminder for",
@@ -147,6 +149,7 @@ impl EditKind {
                 Self::Move | Self::MoveList | Self::ReorderRoom => "Moved back",
                 Self::DeleteStep => "Restored step",
                 Self::DeleteTag => "Restored tag",
+                Self::NotesChecklist => "Restored notes for",
                 Self::Repeat | Self::ClearDue => "Restored schedule for",
                 Self::SetReminder | Self::RemoveReminder => "Restored reminder for",
                 Self::AddLink => "Removed link",
@@ -175,6 +178,11 @@ impl EditKind {
     fn undo_changed_view(self, entity: EntityId, before: &State, after: &State) -> bool {
         match (self, entity) {
             (Self::Bulk, EntityId::Task(id)) => before.tasks.get(&id) != after.tasks.get(&id),
+            (Self::NotesChecklist, EntityId::Task(id)) => before
+                .tasks
+                .get(&id)
+                .zip(after.tasks.get(&id))
+                .is_some_and(|(old, new)| old.notes != new.notes),
             (Self::Status | Self::Start | Self::Schedule | Self::Reopen, EntityId::Task(id)) => {
                 before
                     .tasks

@@ -928,6 +928,21 @@ pub fn workflow_state(timeline: bool) -> State {
     b.state
 }
 
+/// The same invented Markdown notes used by the desktop gallery.
+#[cfg(all(target_arch = "wasm32", feature = "fixtures"))]
+pub fn notes_markdown_state(long_code: bool) -> State {
+    let notes = if long_code {
+        include_str!("../../../crates/todo-client/tests/fixtures/notes-code.md")
+    } else {
+        include_str!("../../../crates/todo-client/tests/fixtures/notes-markdown.md")
+    };
+    let mut s = state();
+    if let Some(task) = s.tasks.get_mut(&task(1)) {
+        task.notes = notes.trim_end().into();
+    }
+    s
+}
+
 /// Crowded row metadata and the same long prose as the desktop wide-detail fixture.
 #[must_use]
 #[cfg(any(test, all(target_arch = "wasm32", feature = "fixtures")))]
