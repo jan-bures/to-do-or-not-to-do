@@ -221,6 +221,20 @@ class GalleryTest {
     }
 
     @Test
+    fun notes_markdown() {
+        for (fixture in listOf("notes-markdown", "notes-code")) fixtureEngine(fixture).use { engine ->
+            val room = engine.list("Q4 planning")
+            val id = engine.taskId(room, "Prepare the November board update")
+            val detail = state(engine, room, select = id)
+            for ((posture, device) in listOf("cover" to FOLD7_COVER, "inner" to FOLD7_INNER)) {
+                for (dark in listOf(false, true)) {
+                    main("${fixture.replace('-', '_')}_${posture}_${if (dark) "dark" else "light"}", device, detail, dark)
+                }
+            }
+        }
+    }
+
+    @Test
     fun app_update_states() {
         val update = UpdateManifest(337, "0.1.0-build.337", 12_000_000, "a".repeat(64), "todo-android-0.1.0-build.337.apk", 29, setOf("b".repeat(64)))
         val checked = 10_000_000L

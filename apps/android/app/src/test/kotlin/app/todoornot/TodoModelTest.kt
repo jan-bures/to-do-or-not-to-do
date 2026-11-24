@@ -18,6 +18,8 @@ import app.todoornot.core.FieldEdit
 import app.todoornot.core.Home
 import app.todoornot.core.LocalNow
 import app.todoornot.core.NoHandle
+import app.todoornot.core.NoteBlock
+import app.todoornot.core.parseNote
 import app.todoornot.core.RoomKey
 import app.todoornot.core.RoomView
 import app.todoornot.core.RowPlacement
@@ -267,6 +269,32 @@ class TodoModelTest {
         assertNull(draft.problem)
         assertNull(draft.text)
         assertEquals("", m.ui.value.detail?.notes)
+    }
+
+    @Test
+    fun notes_checkbox_saves_only_the_marker_and_undoes_the_change() {
+        val s = Stepped(fixtureEngine()) { time }
+        val m = s.model
+        s.drain()
+        val id = m.ui.value.room.tasks.first().id
+        val original = "Příručka\n\n- [ ] Test the projector\n- [X] Confirm the room"
+        m.engine.setNotes(id, original)
+        m.select(id)
+        s.drain()
+        val list = parseNote(original).blocks[1] as NoteBlock.ListBlock
+        val marker = requireNotNull(list.items.first().checkbox)
+        m.toggleNoteCheckbox(id, original, marker)
+        s.drain()
+        val toggled = original.replaceFirst("[ ]", "[x]")
+        assertEquals(toggled, m.ui.value.detail?.notes)
+        assertNull(m.notesDraft(id).text)
+        val toast = requireNotNull(m.ui.value.toast)
+        m.toggleNoteCheckbox(id, original, requireNotNull(list.items.last().checkbox))
+        s.drain()
+        assertEquals(toggled, m.ui.value.detail?.notes) // A second tap from a stale preview does nothing.
+        m.undo(toast)
+        s.drain()
+        assertEquals(original, m.ui.value.detail?.notes)
     }
 
     @Test

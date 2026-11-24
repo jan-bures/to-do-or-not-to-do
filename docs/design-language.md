@@ -335,13 +335,14 @@ bar in the thumb zone: **Back**, **Complete**, **My Day**, **Important**, **Task
 actions**, **Close** at the bottom-right on the unfolded screen. The breadcrumb takes the full top width and
 ends in an ellipsis; the bottom actions never move, however long the list's name.
 
-**Task notes** read as a document on desktop and web. Notes use the shared 72-ch reading measure,
+**Task notes** read as a document on desktop, Android, and web. Notes use the shared 72-ch reading measure,
 with the `notes` type style and three restrained heading sizes below the task title. Lists, quotes, and
 code blocks use the same spacing scale; quotes and thematic breaks use `line-strong`. Code uses Geist
-Mono on `canvas` and wraps inside the pane, including long unbroken values. Links are underlined in
-`accent-strong`. Checklist items use the same circular checked and unchecked marks as task rows.
-Click the notes or focus the editor to edit their Markdown source; moving focus away restores the
-preview. Links and checkboxes act without opening the editor.
+Mono on `canvas`. On desktop and web it wraps inside the pane, including long unbroken values; on
+Android inline code wraps, and code blocks scroll horizontally to preserve line structure. Links are
+underlined in `accent-strong`. Checklist items use the same circular checked and unchecked marks as
+task rows. Tap or click the notes, or focus the editor, to edit their Markdown source; moving focus away
+restores the preview. Links and checkboxes act without opening the editor.
 
 **Task detail activity** sits below Attachments on each client. A quiet heading and hairline introduce a flat list:
 actor mark at the leading edge, actor and action beside it, and the relative time in mono at the trailing edge.

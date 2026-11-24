@@ -27,6 +27,7 @@ import app.todoornot.core.Holding
 import app.todoornot.core.Home
 import app.todoornot.core.ListDeletion
 import app.todoornot.core.LocalNow
+import app.todoornot.core.NoteCheckbox
 import app.todoornot.core.ReminderChange
 import app.todoornot.core.ReminderRef
 import app.todoornot.core.Reopening
@@ -1241,7 +1242,7 @@ class TodoModel(
     override fun setNotes(id: String, notes: String, onResult: (String?) -> Unit) {
         scope.launch {
             val error = writeEdit { engine.setNotes(id, notes) }
-            // Publish the saved text before switching back to the read-only label.
+            // Publish the saved source before switching back to the preview.
             refresh()
             onResult(error)
             if (id != selected) {
@@ -1251,6 +1252,13 @@ class TodoModel(
                     notice("Couldn't save notes: $error")
                 }
             }
+        }
+    }
+
+    override fun toggleNoteCheckbox(id: String, source: String, checkbox: NoteCheckbox) {
+        if (selected != id || _ui.value.signedOut || noteDrafts[id]?.text != null) return
+        act {
+            engine.toggleNoteCheckbox(id, source, checkbox)?.let { show(Toast(++serial, it.toastText(), organize = it)) }
         }
     }
 

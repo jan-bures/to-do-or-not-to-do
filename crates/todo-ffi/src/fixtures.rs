@@ -28,6 +28,8 @@ pub enum Fixture {
     Groceries { started: bool },
     /// Workflow project with all four board columns and date spans.
     Workflow,
+    /// The same Markdown source as the desktop and web notes galleries.
+    Notes { long_code: bool },
     /// Nothing at all: the first start after pairing.
     Blank,
 }
@@ -43,6 +45,8 @@ impl Fixture {
             "groceries" => Some(Self::Groceries { started: false }),
             "groceries-reach" => Some(Self::Groceries { started: true }),
             "workflow" => Some(Self::Workflow),
+            "notes-markdown" => Some(Self::Notes { long_code: false }),
+            "notes-code" => Some(Self::Notes { long_code: true }),
             "blank" => Some(Self::Blank),
             _ => None,
         }
@@ -481,6 +485,24 @@ pub fn build(fixture: Fixture, now: &Now) -> State {
     }
     if let Fixture::Groceries { started } = fixture {
         return groceries(b, started);
+    }
+    if let Fixture::Notes { long_code } = fixture {
+        let notes = if long_code {
+            include_str!("../../todo-client/tests/fixtures/notes-code.md")
+        } else {
+            include_str!("../../todo-client/tests/fixtures/notes-markdown.md")
+        };
+        let work = b.collection("Work", "lagoon");
+        let list = b.list(Some(work), "Q4 planning", "lagoon");
+        b.task(
+            list,
+            "Prepare the November board update",
+            Spec {
+                notes: notes.trim_end(),
+                ..Spec::default()
+            },
+        );
+        return b.state;
     }
     let finished = fixture == Fixture::Finished;
     let my = |done: bool| Spec {

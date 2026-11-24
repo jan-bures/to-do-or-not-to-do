@@ -9,6 +9,7 @@
 //! | [`view`] | the view model: navigation, rooms, rows, the detail pane |
 //! | [`labels`] | dates and due labels, in the owner's UTC offset |
 //! | [`lists`] | list swatches, glyphs and agent marks |
+//! | [`notes`] | the shared Markdown document for task notes |
 //! | [`landscape`] | the header landscape geometry, from `todo_design` |
 //! | [`fixtures`] | invented sample data for the screenshot gallery |
 //!
@@ -28,6 +29,7 @@ pub mod fixtures;
 pub mod labels;
 pub mod landscape;
 pub mod lists;
+pub mod notes;
 pub mod pairing;
 pub mod quick_add;
 pub mod recovery;

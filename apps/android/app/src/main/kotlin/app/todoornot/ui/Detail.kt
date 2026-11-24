@@ -1,9 +1,11 @@
 package app.todoornot.ui
 
 import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,6 +76,7 @@ import app.todoornot.core.SourceLink
 import app.todoornot.core.StepCount
 import app.todoornot.core.TaskActivityLine
 import app.todoornot.core.TaskDetail
+import app.todoornot.core.parseNote
 import app.todoornot.design.Icon
 import app.todoornot.design.LocalDesign
 import app.todoornot.design.Tokens
@@ -174,7 +177,7 @@ fun DetailPane(
             }
             key(detail.id) { Steps(detail, actions, editors) { id, trigger -> open(DetailPage.Step(id), trigger) } }
             AddStep(detail.id, actions)
-            key(detail.id) { TaskNotes(detail, actions) }
+            key(detail.id) { TaskNotes(detail, actions, editable = !state.signedOut) }
             if (detail.fields.isNotEmpty()) {
                 Spacer(Modifier.height(S.S4.dp))
                 Box(Modifier.fillMaxWidth().hairline(r.line, top = true))
@@ -590,23 +593,35 @@ private fun TitleField(detail: TaskDetail, actions: Actions, modifier: Modifier)
 }
 
 @Composable
-private fun TaskNotes(detail: TaskDetail, actions: Actions) {
+private fun TaskNotes(detail: TaskDetail, actions: Actions, editable: Boolean) {
     val r = LocalDesign.current.room
+    val context = LocalContext.current
     val draft = actions.notesDraft(detail.id)
-    Caps("Notes")
+    val source = detail.notes
     val text = draft.text
-    if (text == null) {
+    if (text != null) {
+        Caps("Notes")
+        NotesEditor(text, draft.saving, draft.problem, draft::edit, onCancel = { draft.edit(null) }, onSave = { draft.save(actions) })
+        return
+    }
+    val document = remember(source) { parseNote(source) }
+    val edit = { draft.begin(source) }
+    if (document.blocks.isEmpty()) {
+        Caps("Notes")
         Box(
-            Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Edit notes") {
-                draft.begin(detail.notes)
-            },
+            Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
+                .clickable(enabled = editable, onClickLabel = "Edit notes", onClick = edit),
             contentAlignment = Alignment.CenterStart,
         ) {
-            Label(detail.notes.ifEmpty { "Add notes" }, Tokens.Type.NOTES,
-                if (detail.notes.isEmpty()) r.ink3 else r.ink2, maxLines = Int.MAX_VALUE)
+            Label("Add notes", Tokens.Type.NOTES, r.ink3)
         }
     } else {
-        NotesEditor(text, draft.saving, draft.problem, draft::edit, onCancel = { draft.edit(null) }, onSave = { draft.save(actions) })
+        Label("Notes", Tokens.Type.CAPS_LABEL, r.ink3, Modifier.fillMaxWidth()
+            .clickable(enabled = editable, onClickLabel = "Edit notes", onClick = edit)
+            .padding(top = S.S4.dp, bottom = S.S2.dp).semantics { heading() })
+        MarkdownNotes(document, editable, onEdit = edit,
+            onToggle = { actions.toggleNoteCheckbox(detail.id, source, it) },
+            onLink = { openDetailLink(context, it) })
     }
 }
 
@@ -614,7 +629,19 @@ private fun TaskNotes(detail: TaskDetail, actions: Actions) {
 private fun NotesEditor(text: String, saving: Boolean, problem: String?, onEdit: (String) -> Unit, onCancel: () -> Unit, onSave: () -> Unit) {
     val r = LocalDesign.current.room
     val focus = remember { FocusRequester() }
+    val keyboard = WindowInsets.isImeVisible
+    var hadFocus by remember { mutableStateOf(false) }
+    var hadKeyboard by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { if (!saving) focus.requestFocus() }
+    BackHandler(enabled = !saving, onBack = onSave)
+    LaunchedEffect(keyboard) {
+        // The IME handles the first system Back itself. Treat its dismissal as leaving the editor.
+        if (keyboard) hadKeyboard = true
+        else if (hadKeyboard) {
+            hadKeyboard = false
+            if (!saving && problem == null) onSave()
+        }
+    }
     Column(verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
         BasicTextField(
             value = text,
@@ -622,7 +649,12 @@ private fun NotesEditor(text: String, saving: Boolean, problem: String?, onEdit:
             enabled = !saving,
             modifier = Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp)
                 .border(Tokens.Elevation.HAIRLINE.dp, r.control, RoundedCornerShape(Tokens.Radius.MD.dp))
-                .padding(S.S2.dp).focusRequester(focus).semantics { contentDescription = "Notes" },
+                .padding(S.S2.dp).focusRequester(focus)
+                .onFocusChanged {
+                    val left = hadFocus && !it.isFocused
+                    hadFocus = it.isFocused
+                    if (left && !saving && problem == null) onSave()
+                }.semantics { contentDescription = "Notes" },
             textStyle = Tokens.Type.NOTES.style(r.ink),
             cursorBrush = SolidColor(r.accent),
             keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
@@ -728,14 +760,7 @@ internal fun SourceCard(s: SourceLink, remove: () -> Unit) {
     // The engine returns a canonical HTTP(S) URL, or null for a text-only source.
     val link = s.url
     val open = if (link == null) Modifier else Modifier.clickable(onClickLabel = "Open link") {
-        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(link)).addCategory(Intent.CATEGORY_BROWSABLE)
-        try {
-            context.startActivity(intent)
-        } catch (_: ActivityNotFoundException) {
-            Toast.makeText(context, "No browser can open this link.", Toast.LENGTH_SHORT).show()
-        } catch (_: SecurityException) {
-            Toast.makeText(context, "This phone won't open that link.", Toast.LENGTH_SHORT).show()
-        }
+        openDetailLink(context, link)
     }
     Row(
         Modifier
@@ -762,6 +787,22 @@ internal fun SourceCard(s: SourceLink, remove: () -> Unit) {
         }
         if (link != null) Icon("arrow-up-right", r.ink3, size = C.ICON_SMALL.dp)
         IconButton("trash-2", "Remove link: ${s.title}", onClick = remove)
+    }
+}
+
+/** Launch only canonical destinations supplied by Rust's source-link or notes allowlist. */
+private fun openDetailLink(context: Context, link: String) {
+    val uri = Uri.parse(link)
+    val email = uri.scheme == "mailto"
+    val intent = if (email) Intent(Intent.ACTION_SENDTO, uri)
+        else Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        val message = if (email) "No email app can open this link." else "No browser can open this link."
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+    } catch (_: SecurityException) {
+        Toast.makeText(context, "This phone won't open that link.", Toast.LENGTH_SHORT).show()
     }
 }
 

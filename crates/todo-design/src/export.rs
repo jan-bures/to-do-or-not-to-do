@@ -409,7 +409,7 @@ pub fn json() -> String {
             "colors": colors_json(chrome::COLORS.to_vec()),
             "opacities": numbers_json(&chrome::OPACITIES),
         },
-        "fonts": { "faces": faces },
+        "fonts": { "faces": faces, "weights": { "notes-bold": typography::NOTES_BOLD } },
         "type": type_scale,
         "space": numbers_json(&space::ALL),
         "radius": radii,

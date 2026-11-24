@@ -208,12 +208,15 @@ What the first version does:
   step the core refuses (over 500 characters, say) keeps its draft, and the reason shows under it in the
   detail pane. A step draft lives in the app's model: it survives a rotation (even with the step on its way, which is then
   added once), but not the process being killed, when a half-typed step is gone.
-- **Notes and sources.** Tap the notes, or **Add notes** on an empty task. Enter inserts a new line;
-  **Save notes** keeps the plain text (clear the field to remove it). Back, opening another task, or
-  switching rooms also saves the edit. **Cancel** discards it. If saving fails after you leave, the app
-  tells you; reopen the task to correct the draft.
-  A source with a web address opens in the browser. Sources without an HTTP or HTTPS destination are
-  text only, with no arrow.
+- **Notes and sources.** Notes render the same Markdown as desktop and web, including headings, nested
+  lists, checkboxes, quotes, and code. Raw HTML and images remain text. Long code blocks scroll sideways
+  without moving the pane. Tap the notes, or **Add notes** on an empty task, to edit the Markdown source.
+  Enter inserts a new line. **Save notes**, leaving the field, or Back saves the source and returns to the
+  preview; clear the field to remove the note. Opening another task or switching rooms also saves the edit.
+  **Cancel** discards it. If saving fails after you leave, the app tells you; reopen the task to correct
+  the draft. Checkboxes edit the note and offer **Undo** without opening the editor. Web links in a note
+  open in the browser, and email links open in an email app. A source with a web address opens in the
+  browser. Sources without an HTTP or HTTPS destination are text only, with no arrow.
 - **Quick add.** The composer uses the [shared syntax](desktop.md#quick-add-syntax) while typing and on
   submit. Removable chips preview date (for example, **Sun 22 Nov**) and priority without changing the text. A trailing date can be
   `tomorrow`, `zítra`, `+3d`, a current or future ISO date, or a weekday (`Sunday`, `by fri`).
@@ -553,7 +556,8 @@ older fixtures also use the F2 sizes (412 × 920 and 900 × 1000 dp). It include
 collapsed header, filtered and mirrored switchers, both themes, a short window and 1.3× text. The
 `workflow_board` gallery covers List and its settings, Board, Detail, and the quick-add status and date
 chips. The `timeline` gallery covers Week, Month with the Unscheduled tray open, a resize preview, and
-Planned. Both use the two Fold7 postures and themes. `AssistantGalleryTest` covers unconfigured,
+Planned. Both use the two Fold7 postures and themes. The `notes_markdown` gallery uses the shared
+`notes-markdown` and `notes-code` fixtures in both Fold7 postures and themes. `AssistantGalleryTest` covers unconfigured,
 empty, streaming, create, edit (`proposal`), batch, and settings in both postures and themes. Look at the
 gallery after every UI change; images are in `app/src/test/snapshots/images/`.
 

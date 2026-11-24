@@ -8,6 +8,7 @@ import app.todoornot.core.WorkflowStage
 import app.todoornot.core.BulkEdit
 import app.todoornot.core.DestinationGroup
 import app.todoornot.core.MergeCandidate
+import app.todoornot.core.NoteCheckbox
 import app.todoornot.core.ReminderRef
 import app.todoornot.core.RoomKey
 import app.todoornot.core.TaskDrag
@@ -59,6 +60,7 @@ interface Actions {
     fun rename(id: String, title: String)
     fun notesDraft(task: String): NotesDraft
     fun setNotes(id: String, notes: String, onResult: (String?) -> Unit)
+    fun toggleNoteCheckbox(id: String, source: String, checkbox: NoteCheckbox) = Unit
     fun setMyDay(id: String, on: Boolean)
 
     /** The star: important is high priority, as on the desktop. */

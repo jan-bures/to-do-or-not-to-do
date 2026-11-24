@@ -175,6 +175,12 @@ abstract class GenerateDesignTokens : DefaultTask() {
         }
         out.appendLine("    }")
 
+        out.appendLine("    object Weight {")
+        root["fonts"].obj()["weights"].obj().forEach { (name, weight) ->
+            out.appendLine("        const val ${constName(name)} = ${(weight as Number).toInt()}")
+        }
+        out.appendLine("    }")
+        out.appendLine()
         out.appendLine("    val fontFaces: List<FontFaceToken> = listOf(")
         (root["fonts"].obj()["faces"] as List<*>).forEach {
             val face = it.obj()

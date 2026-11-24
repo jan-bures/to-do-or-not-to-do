@@ -1171,7 +1171,7 @@ impl TodoEngine {
         Ok(hidden_by_parent(&self.client.view(), deletion.entity))
     }
 
-    /// Edits multi-line plain-text notes; empty text clears them.
+    /// Edits the multi-line Markdown source of a note; empty text clears it.
     pub fn set_notes(&self, id: String, notes: String) -> Result<(), FfiError> {
         let id = task_id(&id)?;
         let state = self.client.view();
@@ -1186,6 +1186,36 @@ impl TodoEngine {
             self.client.submit(command)?;
         }
         Ok(())
+    }
+
+    /// Toggles a displayed Markdown checkbox through the regular tracked task edit. A stale
+    /// preview is a no-op: offsets belong to the exact note source the phone displayed.
+    pub fn toggle_note_checkbox(
+        &self,
+        id: String,
+        source: String,
+        checkbox: crate::notes::NoteCheckbox,
+    ) -> Result<Option<Arc<organize::OrganizeChange>>, FfiError> {
+        let id = task_id(&id)?;
+        let Some(command) =
+            intent::toggle_note_task(&self.client.view(), id, &source, checkbox.into())
+        else {
+            return Ok(None);
+        };
+        let tracked = self.client.submit_tracked_if(command, |state| {
+            state.is_live(id.into())
+                && state
+                    .tasks
+                    .get(&id)
+                    .is_some_and(|task| task.notes == source)
+        })?;
+        Ok(tracked.map(|tracked| {
+            Arc::new(organize::OrganizeChange::new(
+                tracked,
+                Undone::Change("Undo changing a checklist item", "checklist item"),
+                "Checklist updated".into(),
+            ))
+        }))
     }
 
     /// A fixture-only out-of-band deletion, as from another device. A tombstone:
