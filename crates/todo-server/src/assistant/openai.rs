@@ -230,6 +230,14 @@ impl OpenAi {
         })
     }
 
+    fn token_endpoint(&self, flow: Flow) -> String {
+        let path = match flow {
+            Flow::Device => "/oauth/token",
+            Flow::Loopback => "/api/accounts/oauth/token",
+        };
+        format!("{}{path}", self.issuer)
+    }
+
     async fn auth<T: DeserializeOwned>(&self, req: RequestBuilder) -> Result<T, Error> {
         read_json(
             req.timeout(AUTH_TIMEOUT)
@@ -362,11 +370,7 @@ impl OpenAi {
             form.push(("resource", self.resource.as_str()));
         }
         let mut tokens: Tokens = self
-            .auth(
-                self.http
-                    .post(format!("{}/oauth/token", self.issuer))
-                    .form(&form),
-            )
+            .auth(self.http.post(self.token_endpoint(flow)).form(&form))
             .await?;
         let claims = self
             .verify(
@@ -460,7 +464,7 @@ impl OpenAi {
 
     pub async fn refresh(&self, credential: &mut Credential) -> Result<(), Error> {
         use zeroize::Zeroize;
-        let req = self.http.post(format!("{}/oauth/token", self.issuer));
+        let req = self.http.post(self.token_endpoint(credential.flow));
         let req = match credential.flow {
             Flow::Device => req.json(&json!({"grant_type": "refresh_token", "client_id": credential.client_id, "refresh_token": credential.refresh})),
             Flow::Loopback => req.form(&[("grant_type", "refresh_token"), ("client_id", credential.client_id.as_str()), ("refresh_token", credential.refresh.as_str()), ("resource", self.resource.as_str())]),
