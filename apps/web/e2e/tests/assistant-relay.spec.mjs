@@ -9,8 +9,10 @@ const account = () => ({ id, label: "you@example.com", approved: false, approved
 const second = { ...account(), id: "44444444-4444-4444-8444-444444444444", label: "second@example.com" };
 const segment = (settings, name) => settings.getByRole("group", { name: "Model provider" }).getByRole("button", { name, exact: true });
 const accountRow = (settings, label) => settings.getByRole("button", { name: label, exact: true });
+const responses = (...events) => [...events, { type: "response.completed" }]
+  .map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
 
-async function relay(context) {
+async function relay(context, chatReply) {
   const data = { chatgpt: true, chatgpt_device_code: true, private_models: true, accounts: [], access: { lists: {}, collections: {} }, access_version: version };
   const chats = [];
   let completedAccount;
@@ -52,12 +54,12 @@ async function relay(context) {
       if (path.startsWith("chatgpt/")) {
         expect(body.destination).toBe("cloud");
         expect(body.request.store).toBe(false);
-        response = `data: ${JSON.stringify({ type: "response.output_text.delta", delta: "ChatGPT replied." })}\n\ndata: {"type":"response.completed"}\n\n`;
+        response = responses({ type: "response.output_text.delta", delta: "ChatGPT replied." });
       } else {
         expect(body.destination).toBe("local");
         response = words("The private model replied.");
       }
-      return route.fulfill({ contentType: "text/event-stream", body: response });
+      return route.fulfill(chatReply?.(body) ?? { contentType: "text/event-stream", body: response });
     } else throw new Error(`Unexpected assistant route: ${path}`);
     await route.fulfill({ json });
   });
@@ -167,6 +169,78 @@ test("private models use the paired server, not a client-held key", async ({ con
   await expect(settings.getByLabel("Base URL")).toHaveValue("");
   await w.check();
 });
+
+test("ChatGPT reads approved tasks across two relay rounds", async ({ context, page }) => {
+  const w = watch(page);
+  const tool = { type: "function_call", name: "query_tasks", call_id: "find-tasks", arguments: '{"query":"","limit":50}' };
+  const prose = "Planning includes the November board update.";
+  const mock = await relay(context, ({ request }) => ({
+    contentType: "text/event-stream",
+    body: request.input.some((item) => item.type === "function_call_output")
+      ? responses(
+        { type: "response.output_text.delta", delta: "Planning includes " },
+        { type: "response.output_text.delta", delta: "the November board update." },
+      )
+      : responses({ type: "response.output_item.done", item: { ...tool, namespace: "todo" } }),
+  }));
+  mock.data.accounts = [account()];
+  const settings = await settingsFor(page);
+  await segment(settings, "ChatGPT").click();
+  await accountRow(settings, account().label).click();
+  await chooseModel(settings);
+  await settings.getByRole("combobox", { name: "Planning", exact: true }).selectOption("all");
+  await settings.getByRole("combobox", { name: "Finance", exact: true }).selectOption("private");
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+  await send(page, "Summarize my tasks");
+  await expect(panel(page).getByText(/ChatGPT can read these lists: Planning\./)).toBeVisible();
+  expect(mock.chats).toHaveLength(0);
+  await panel(page).getByRole("button", { name: "Allow and send" }).click();
+  await expect(panel(page).getByText(prose, { exact: true })).toBeVisible();
+
+  expect(mock.chats).toHaveLength(2);
+  const [first, second] = mock.chats;
+  expect(first.request.input).toEqual([{ role: "user", content: "Summarize my tasks" }]);
+  expect(first.lists).toHaveLength(1);
+  expect(first.lists).toEqual(mock.data.accounts[0].approved_lists);
+  expect(second.lists).toEqual(first.lists);
+  const [call, output] = second.request.input.slice(1);
+  expect(second.request.input).toHaveLength(3);
+  expect(call).toMatchObject({ type: tool.type, name: tool.name, call_id: tool.call_id });
+  expect(JSON.parse(call.arguments)).toEqual(JSON.parse(tool.arguments));
+  expect(output).toMatchObject({ type: "function_call_output", call_id: tool.call_id });
+  const { items } = JSON.parse(output.output);
+  expect(items).toContainEqual(expect.objectContaining({ title: "Prepare the November board update" }));
+  expect(items.map(({ list }) => list)).toEqual(items.map(() => first.lists[0]));
+  const steps = panel(page).locator(".ai-steps summary");
+  await expect(steps).toHaveText(new RegExp(`^Checked 0 lists · Read ${items.length} tasks? · \\d+ hidden$`));
+  await steps.click();
+  await expect(panel(page).locator(".ai-steps li").filter({ hasText: "Searched visible tasks" })).toBeVisible();
+  await w.check();
+});
+
+for (const { name, auth, unavailable } of [
+  { name: "ChatGPT", auth: "ChatGPT didn’t authorize plan usage. Check your account or sign in again.", unavailable: "The assistant relay is unavailable. Nothing will be retried automatically." },
+  { name: "Your private models", auth: "Your To-do server’s private model rejected authentication.", unavailable: "Your To-do server couldn’t reach the private model." },
+]) {
+  test(`${name} relay reports authorization and availability failures`, async ({ context, page }) => {
+    let status = 424;
+    const mock = await relay(context, () => ({ status, body: "Relay request failed" }));
+    mock.data.accounts = [{ ...account(), approved: true }];
+    const settings = await settingsFor(page);
+    await segment(settings, name).click();
+    if (name === "ChatGPT") await accountRow(settings, account().label).click();
+    await chooseModel(settings);
+    await settings.getByRole("button", { name: "Save", exact: true }).click();
+    await send(page, "Check authorization");
+    await expect(panel(page).locator(".ai-error p")).toHaveText(auth);
+
+    status = 502;
+    await panel(page).getByRole("button", { name: "Retry", exact: true }).click();
+    await expect(panel(page).locator(".ai-error p").last()).toHaveText(unavailable);
+    expect(mock.chats).toHaveLength(2);
+    await panel(page).screenshot({ path: test.info().outputPath("relay-error.png"), animations: "disabled" });
+  });
+}
 
 test("sign-in prefers the new account only if the current choice is missing", async ({ context, page }) => {
   const mock = await relay(context);

@@ -75,6 +75,51 @@ pub enum ProviderError {
     Limit,
 }
 
+impl ProviderError {
+    pub fn chatgpt_message(self) -> &'static str {
+        match self {
+            Self::Unauthorized => {
+                "ChatGPT didn’t authorize plan usage. Check your account or sign in again."
+            }
+            Self::RateLimited { .. } => {
+                "ChatGPT usage limit reached. Review your plan or this app’s limit in ChatGPT settings."
+            }
+            Self::Unavailable | Self::Timeout => {
+                "The assistant relay is unavailable. Nothing will be retried automatically."
+            }
+            Self::ModelMissing => {
+                "This model isn’t available. Choose another model in AI settings."
+            }
+            Self::NotPrivate => {
+                "List access or sharing approval changed. Reopen AI settings to check it."
+            }
+            _ => "ChatGPT didn’t finish the request.",
+        }
+    }
+
+    pub fn private_relay_message(self) -> &'static str {
+        match self {
+            Self::Unavailable | Self::Tls | Self::TailnetDisconnected => {
+                "Your To-do server couldn’t reach the private model."
+            }
+            Self::Timeout => {
+                "The private model took too long to respond through your To-do server."
+            }
+            Self::Unauthorized => "Your To-do server’s private model rejected authentication.",
+            Self::RateLimited { .. } => {
+                "Your To-do server’s private model reached its usage limit."
+            }
+            Self::ModelMissing => {
+                "This private model isn’t available on your To-do server. Choose another model in AI settings."
+            }
+            Self::NotPrivate => {
+                "List access or private model availability changed. Reopen AI settings to check it."
+            }
+            _ => "Your To-do server’s private model didn’t finish the request.",
+        }
+    }
+}
+
 /// The host drops in-flight futures/streams on cancellation or timeout. An adapter must tie any
 /// separately running request to those lifetimes; it can also check this token before doing work.
 #[derive(Clone, Debug)]

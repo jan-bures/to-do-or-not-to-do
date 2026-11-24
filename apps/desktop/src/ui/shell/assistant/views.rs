@@ -895,10 +895,7 @@ impl ShellView {
                     AssistantError::Provider(ProviderError::RateLimited { .. })
                 );
             let message = match error {
-                AssistantError::Provider(error) if self.ai.profile.cloud => {
-                    super::cloud::cloud_problem(error)
-                }
-                AssistantError::Provider(error) => problem(error),
+                AssistantError::Provider(error) => route_problem(&self.ai.profile, error),
                 error => error.to_string(),
             };
             output = output.child(

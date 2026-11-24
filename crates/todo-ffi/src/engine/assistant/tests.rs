@@ -15,6 +15,31 @@ use todo_client::assistant::{
     provider::{StreamEvent, ToolCall},
 };
 
+#[test]
+fn provider_problems_follow_the_selected_route() {
+    let chatgpt = Some(Hosted::ChatGpt(Uuid::nil()));
+    let private = Some(Hosted::Private);
+    assert!(provider_problem(chatgpt, ProviderError::Unauthorized).contains("sign in again"));
+    assert!(provider_problem(chatgpt, ProviderError::NotPrivate).contains("sharing approval"));
+    assert!(
+        provider_problem(chatgpt, ProviderError::RateLimited { retry_after: None })
+            .contains("ChatGPT usage limit")
+    );
+    assert!(provider_problem(chatgpt, ProviderError::Timeout).contains("assistant relay"));
+    assert!(
+        provider_problem(chatgpt, ProviderError::ModelMissing).contains("Choose another model")
+    );
+    assert_eq!(
+        provider_problem(private, ProviderError::Unauthorized),
+        "Your To-do server’s private model rejected authentication."
+    );
+    assert_eq!(
+        provider_problem(private, ProviderError::Unavailable),
+        "Your To-do server couldn’t reach the private model."
+    );
+    assert!(provider_problem(None, ProviderError::Unauthorized).contains("API key"));
+}
+
 fn now() -> LocalNow {
     LocalNow {
         epoch_ms: 0,

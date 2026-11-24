@@ -9,8 +9,8 @@ use super::{Ctx, RoomId, backend, ctx, html, icon, mark, pickers, platform};
 use leptos::prelude::*;
 use std::{collections::BTreeMap, time::Duration};
 use todo_client::assistant::{
-    Approval, AssistantView, Composer, Controller, SendIntent, StepKind, StepStatus, TaskRef,
-    ToolKind, TurnView, provider::ProviderError, relay,
+    Approval, AssistantError, AssistantView, Composer, Controller, SendIntent, StepKind,
+    StepStatus, TaskRef, ToolKind, TurnView, provider::ProviderError, relay,
 };
 use todo_client::web::{BrowserClock, BrowserEntropy};
 use todo_core::ids::TaskId;
@@ -611,10 +611,7 @@ fn Turn(id: Uuid) -> impl IntoView {
             <review::Proposal turn=id/>
             {move || error.get().map(|error| view! {
                 <div class="ai-error" role="status"><p>{match error {
-                    todo_client::assistant::AssistantError::Provider(ProviderError::Unavailable) =>
-                        "Couldn’t reach your model. Check the address, connection, and the provider’s browser access (CORS).".to_owned(),
-                    todo_client::assistant::AssistantError::Provider(ProviderError::Unauthorized) =>
-                        "API key required or invalid. Check the key in AI settings.".to_owned(),
+                    AssistantError::Provider(error) => provider_problem(ai.profile.with_value(|p| p.hosted), error),
                     _ => format!("{}.", capitalize(error.to_string())),
                 }}</p>
                 <div class="ai-error-actions">
@@ -629,6 +626,18 @@ fn Turn(id: Uuid) -> impl IntoView {
                 </div></div>
             })}
         </article>
+    }
+}
+
+fn provider_problem(hosted: Option<Hosted>, error: ProviderError) -> String {
+    match (hosted, error) {
+        (Some(Hosted::ChatGpt(_)), error) => error.chatgpt_message().into(),
+        (Some(Hosted::Private), error) => error.private_relay_message().into(),
+        (None, ProviderError::Unavailable) =>
+            "Couldn’t reach your model. Check the address, connection, and the provider’s browser access (CORS).".into(),
+        (None, ProviderError::Unauthorized) =>
+            "API key required or invalid. Check the key in AI settings.".into(),
+        (None, error) => format!("{}.", capitalize(error.to_string())),
     }
 }
 

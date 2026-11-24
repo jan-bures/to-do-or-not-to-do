@@ -513,7 +513,9 @@ impl AndroidAssistant {
                             .collect(),
                         proposal,
                         problem: turn.error.map(|e| match e {
-                            AssistantError::Provider(error) => provider_problem(error),
+                            AssistantError::Provider(error) => {
+                                provider_problem(session.settings.hosted, error)
+                            }
                             e => e.to_string(),
                         }),
                         stale_snapshot: turn.stale_snapshot,
@@ -918,7 +920,7 @@ impl AndroidAssistant {
             }
             Err(error) => {
                 session.connection = AssistantConnection::Unreachable;
-                session.problem = Some(provider_problem(error));
+                session.problem = Some(provider_problem(None, error));
             }
         }
         this.changes.notify();
@@ -984,15 +986,17 @@ fn selection<P: Provider>(
     }
 }
 
-fn provider_problem(error: ProviderError) -> String {
-    match error {
-        ProviderError::TailnetDisconnected => {
+fn provider_problem(hosted: Option<Hosted>, error: ProviderError) -> String {
+    match (hosted, error) {
+        (Some(Hosted::ChatGpt(_)), error) => error.chatgpt_message().into(),
+        (Some(Hosted::Private), error) => error.private_relay_message().into(),
+        (None, ProviderError::TailnetDisconnected) => {
             "Connect to Tailscale on this phone and try again.".into()
         }
-        ProviderError::Unauthorized => {
+        (None, ProviderError::Unauthorized) => {
             "The server rejected the API key. Check it in AI settings.".into()
         }
-        error => error.to_string(),
+        (None, error) => error.to_string(),
     }
 }
 

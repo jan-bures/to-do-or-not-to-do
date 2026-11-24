@@ -1,6 +1,29 @@
 use super::*;
 use gpui::{TestApp, TestAppWindow};
 
+#[test]
+fn provider_problems_follow_the_selected_route() {
+    let cloud = Profile {
+        cloud: true,
+        ..Profile::default()
+    };
+    let private = Profile {
+        private_relay: true,
+        ..Profile::default()
+    };
+    assert!(route_problem(&cloud, ProviderError::Unauthorized).contains("sign in again"));
+    assert!(route_problem(&cloud, ProviderError::Unavailable).contains("assistant relay"));
+    assert_eq!(
+        route_problem(&private, ProviderError::Unauthorized),
+        "Your To-do server’s private model rejected authentication."
+    );
+    assert_eq!(
+        route_problem(&private, ProviderError::Unavailable),
+        "Your To-do server couldn’t reach the private model."
+    );
+    assert!(route_problem(&Profile::default(), ProviderError::Unauthorized).contains("API key"));
+}
+
 fn shell(app: &mut TestApp) -> TestAppWindow<ShellView> {
     app.update(|cx| {
         cx.bind_keys(crate::ui::input::key_bindings());

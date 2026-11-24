@@ -441,12 +441,20 @@ impl ShellView {
             Abortable::new(async move { relay.models(route).await }, cancel),
         );
         cx.spawn(async move |this, cx| {
-            let result = work.await;
+            let result = match work.await {
+                Ok(Ok(result)) => result,
+                Ok(Err(_)) => return,
+                Err(_) => Err(ProviderError::Unavailable),
+            };
             let _ = this.update(cx, |this, cx| match result {
-                Ok(Ok(Ok(models))) => this.cloud_job_finished(revision, models, cx),
-                Ok(Ok(Err(error))) => this.cloud_job_failed(revision, cloud_problem(error), cx),
-                Ok(Err(_)) => {}
-                Err(_) => this.cloud_job_failed(revision, chatgpt::Error::Network.to_string(), cx),
+                Ok(models) => this.cloud_job_finished(revision, models, cx),
+                Err(error) => {
+                    let message = match route {
+                        Hosted::ChatGpt(_) => cloud_problem(error),
+                        Hosted::Private => error.private_relay_message().into(),
+                    };
+                    this.cloud_job_failed(revision, message, cx);
+                }
             });
         })
         .detach();
@@ -675,23 +683,5 @@ enum SignIn {
 }
 
 pub(super) fn cloud_problem(error: ProviderError) -> String {
-    match error {
-        ProviderError::Unauthorized => {
-            "ChatGPT didn’t authorize plan usage. Check your account or sign in again."
-        }
-        ProviderError::RateLimited { .. } => {
-            "ChatGPT usage limit reached. Review your plan or this app’s limit in ChatGPT settings."
-        }
-        ProviderError::Unavailable | ProviderError::Timeout => {
-            "The assistant relay is unavailable. Nothing will be retried automatically."
-        }
-        ProviderError::ModelMissing => {
-            "This model isn’t available. Choose another model in AI settings."
-        }
-        ProviderError::NotPrivate => {
-            "List access or sharing approval changed. Reopen AI settings to check it."
-        }
-        _ => "ChatGPT didn’t finish the request.",
-    }
-    .into()
+    error.chatgpt_message().into()
 }

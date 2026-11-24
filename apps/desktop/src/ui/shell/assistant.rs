@@ -340,6 +340,16 @@ enum Field {
     Key,
 }
 
+fn route_problem(profile: &Profile, error: ProviderError) -> String {
+    if profile.cloud {
+        cloud::cloud_problem(error)
+    } else if profile.private_relay {
+        error.private_relay_message().into()
+    } else {
+        problem(error)
+    }
+}
+
 fn problem(error: ProviderError) -> String {
     match error {
         ProviderError::Unavailable | ProviderError::Timeout => {
@@ -600,7 +610,7 @@ impl ShellView {
                             if this.ai.controller.view().model.is_some() { this.send_ai_refreshed(text, cx); }
                             else { this.ai.notice = Some("This model or account is no longer connected. Check AI settings.".into()); }
                         }
-                        Err(err) => this.ai.notice = Some(cloud::cloud_problem(err)),
+                        Err(err) => this.ai.notice = Some(route_problem(&this.ai.profile, err)),
                     }
                     cx.notify();
                 });

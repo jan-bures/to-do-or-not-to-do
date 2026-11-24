@@ -76,7 +76,8 @@ impl Ui {
             let status = match result {
                 Ok(status) => status,
                 Err(err) => {
-                    self.error.set(Some(err.to_string()));
+                    self.error
+                        .set(Some(super::provider_problem(Some(hosted), err)));
                     return;
                 }
             };
