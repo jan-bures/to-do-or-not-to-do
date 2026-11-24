@@ -175,7 +175,11 @@ impl From<Error> for ApiError {
             Error::Unsupported | Error::BadRequest => {
                 (StatusCode::BAD_REQUEST, "assistant_request")
             }
-            Error::Identity | Error::Upstream => (StatusCode::BAD_GATEWAY, "assistant_provider"),
+            Error::Identity => {
+                tracing::warn!("assistant provider identity check failed");
+                (StatusCode::BAD_GATEWAY, "assistant_provider")
+            }
+            Error::Upstream => (StatusCode::BAD_GATEWAY, "assistant_provider"),
             Error::AccountMissing => (StatusCode::NOT_FOUND, "assistant_account_missing"),
             Error::AccountsFull => (StatusCode::CONFLICT, "assistant_accounts_full"),
             Error::AccessChanged => (StatusCode::CONFLICT, "assistant_access_changed"),

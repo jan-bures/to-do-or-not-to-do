@@ -298,6 +298,7 @@ pub(super) fn relay(
         MAX_STREAM
     };
     if res.content_length().is_some_and(|n| n > limit as u64) {
+        tracing::warn!(limit, "assistant upstream stream exceeded the size limit");
         return Err(Error::Upstream);
     }
     let media = res
@@ -309,7 +310,21 @@ pub(super) fn relay(
     let content_type = match media {
         Some(s) if s.eq_ignore_ascii_case("text/event-stream") => "text/event-stream",
         Some(s) if private && s.eq_ignore_ascii_case("application/json") => "application/json",
-        _ => return Err(Error::Upstream),
+        other => {
+            // The media type only, bounded; never the body.
+            let media: String = other
+                .unwrap_or("none")
+                .chars()
+                .filter(|c| c.is_ascii_graphic())
+                .take(64)
+                .collect();
+            tracing::warn!(
+                status = res.status().as_u16(),
+                media = %media,
+                "assistant upstream reply was not a stream"
+            );
+            return Err(Error::Upstream);
+        }
     };
     let body = Body::from_stream(stream::try_unfold(
         (res, permit, 0usize),
