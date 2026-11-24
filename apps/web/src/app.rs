@@ -1482,7 +1482,7 @@ fn SidebarPane() -> impl IntoView {
                     aria-controls=format!("collection-{id}")
                     aria-label=move || format!("{} {label}", if folded() { "Expand" } else { "Collapse" })
                     on:click=move |_| c.toggle_fold(id)
-                >{icon(Icon::ChevronRight)}</button>
+                >{icon(Icon::ChevronDown)}</button>
             }
         });
         let (lead, count) = match (&n.room, n.glyph) {
@@ -1564,8 +1564,8 @@ fn SidebarPane() -> impl IntoView {
                     class:sidebar-into=move || collection.is_some_and(|id| c.sidebar_target(Target::Into(id)))
                     class:sidebar-before=move || reorder.is_some_and(|row| c.sidebar_target(Target::Before(row)))
                     class:sidebar-after=move || reorder.filter(|_| collection.is_none()).is_some_and(|row| c.sidebar_target(Target::After(row)))>
-                    {disclosure}
                     {link}
+                    {disclosure}
                     <room_actions::MenuButton origin=room_actions::Origin(subject, room_actions::Anchor::Sidebar)
                         label=format!("Menu for {}", n.name)/>
                 </div>

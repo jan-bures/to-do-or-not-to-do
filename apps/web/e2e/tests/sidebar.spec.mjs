@@ -57,18 +57,36 @@ test("collection headers have their own glyphs, desktop spacing and a visible ze
   const chevron = await toggle.locator(".icon").boundingBox();
   const workGlyph = await work.locator(".glyph").boundingBox();
   const childGlyph = await planning.locator(".glyph").boundingBox();
+  const smartGlyph = await smart.locator(".icon").boundingBox();
+  const looseGlyph = await nav.getByRole("link", { name: /^Reading list / }).locator(".glyph").boundingBox();
   expect(chevron.width).toBe(component["icon-small"]);
-  expect(workGlyph.x - chevron.x - chevron.width).toBe(tokens.space[2]);
+  expect(workGlyph.x).toBe(smartGlyph.x);
+  expect(looseGlyph.x).toBe(smartGlyph.x);
   expect(childGlyph.x - workBox.x).toBe(tokens.space[6] + tokens.space[1] + tokens.elevation.hairline);
+  const workName = await work.locator(".nav-name").boundingBox();
+  const workCount = await work.locator(".count").boundingBox();
+  expect(workName.x + workName.width).toBeLessThan(chevron.x);
+  expect(chevron.x + chevron.width).toBeLessThan(workCount.x);
   const right = async (item) => {
     const { x, width } = await item.locator(".count").boundingBox();
     return x + width;
   };
   expect(await right(work)).toBe(await right(planning));
   expect(await right(work)).toBe(await right(smart));
+  await work.click();
+  await expect(work).toHaveAttribute("aria-current", "page");
+  await expect(nav.getByRole("button", { name: "Menu for Work" })).toHaveCSS("opacity", "1");
+  const toggleBox = await toggle.boundingBox();
+  expect((await toggle.locator(".icon").boundingBox()).x).toBe(chevron.x);
+  const menuBox = await nav.getByRole("button", { name: "Menu for Work" }).boundingBox();
+  expect(toggleBox.x + toggleBox.width).toBeLessThanOrEqual(menuBox.x);
   await toggle.click();
   await expect(planning).toBeHidden();
+  await expect(work).toHaveAttribute("aria-current", "page");
   expect((await home.boundingBox()).y - workBox.y).toBe(workBox.height);
+  await nav.getByRole("button", { name: "Expand Work" }).click();
+  await expect(planning).toBeVisible();
+  await expect(work).toHaveAttribute("aria-current", "page");
 
   const create = nav.getByRole("button", { name: "New", exact: true });
   await expect(create).toHaveCSS("height", `${desktop["nav-sub-row"]}px`);

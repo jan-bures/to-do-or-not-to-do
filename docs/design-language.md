@@ -256,7 +256,8 @@ whole logical pixels; the bar fades out over the same duration when neither hove
    local midnight. An agent without activity today has no row. There is no "Agents" or "Today" heading:
    each agent's status says it ("2 added today", "2 added, 1 edited today");
 3. **Trash**, a single row with the Trash icon in the `agent-activity` hue, after Activity and its agents;
-4. the collections, each with its lists;
+4. the collections, each with its lists. Collection glyphs align with the smart-list and top-level list
+   glyphs. The collapse chevron sits between the collection name and the count or overflow button;
 5. the lists outside any collection;
 6. One pinned footer row below a hairline: **+ New** on the left, the sync status in the middle, and the
    settings gear on the right. **+ New** opens a menu with **List** and **Collection**, their icons and any
@@ -874,7 +875,8 @@ with rounded ends and no dots. Inset it to the row's icon column (the collection
 slot). Highlight an eligible destination header with `selection-wash` and an `accent-strong` border. Hold over a
 collapsed destination for `SIDEBAR_EXPAND_DWELL` to reveal it. Scroll the rooms region at its edges while dragging.
 On Android, long-press to pick up a row; releasing without moving still opens its menu. On desktop and web,
-Escape cancels and Alt+Up/Down moves the focused sidebar row among its siblings. One drop creates one Undo.
+the preview retains the source row's width and pickup offset, with a translucent pane fill so drop cues show
+through. Escape cancels and Alt+Up/Down moves the focused sidebar row among its siblings. One drop creates one Undo.
 
 **Dropping email files (desktop and web).** Highlight only the visible task list below quick-add, not the
 header, composer or footer. Keep the rows legible under a `wash` at `DROP_WASH_ALPHA` with an inset

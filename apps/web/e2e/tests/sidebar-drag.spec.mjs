@@ -11,10 +11,16 @@ const names = (scope) => scope.locator(".nav-name");
 async function pickup(page, link) {
   await link.scrollIntoViewIfNeeded();
   const { x, y, width, height } = await link.boundingBox();
-  await page.mouse.move(x + width / 2, y + height / 2);
+  await page.mouse.move(x + width / 3, y + height / 2);
   await page.mouse.down();
-  await page.mouse.move(x + width / 2 + 8, y + height / 2);
-  await expect(page.locator(".sidebar-drag-lift")).toBeVisible();
+  await page.mouse.move(x + width / 3, y + height / 2 + 8);
+  const lift = page.locator(".sidebar-drag-lift");
+  await expect(lift).toBeVisible();
+  const bounds = await lift.boundingBox();
+  expect(bounds.x).toBeCloseTo(x, 1);
+  expect(bounds.y).toBeCloseTo(y + 8, 1);
+  expect(bounds.width).toBeCloseTo(width, 1);
+  expect(bounds.height).toBeCloseTo(height, 1);
 }
 
 test.beforeEach(async ({ page }) => {

@@ -14,8 +14,9 @@ pub(super) struct Gesture {
     pointer: i32,
     start: (i32, i32),
     at: (i32, i32),
+    grab: (f64, f64),
+    size: (f64, f64),
     active: bool,
-    touch: bool,
     target: Option<Target>,
     dwell: f64,
 }
@@ -75,6 +76,13 @@ impl Ctx {
         else {
             return;
         };
+        let Some(link) = ev
+            .current_target()
+            .and_then(|e| e.dyn_into::<Element>().ok())
+        else {
+            return;
+        };
+        let bounds = link.get_bounding_client_rect();
         let at = (ev.client_x(), ev.client_y());
         self.sidebar_drag.set(Some(Gesture {
             plan,
@@ -82,8 +90,9 @@ impl Ctx {
             pointer: ev.pointer_id(),
             start: at,
             at,
+            grab: (f64::from(at.0) - bounds.x(), f64::from(at.1) - bounds.y()),
+            size: (bounds.width(), bounds.height()),
             active: false,
-            touch: ev.pointer_type() == "touch",
             target: None,
             dwell: 0.,
         }));
@@ -289,14 +298,19 @@ pub(super) fn Lift() -> impl IntoView {
             && let Some(g) = c.sidebar_drag.get().filter(|g| g.active)
         {
             let style = HtmlElement::style(&el);
-            let _ = style.set_property("--task-drag-x", &format!("{}px", g.at.0));
-            let _ = style.set_property("--task-drag-y", &format!("{}px", g.at.1));
+            for (property, value) in [
+                ("--sidebar-drag-x", f64::from(g.at.0) - g.grab.0),
+                ("--sidebar-drag-y", f64::from(g.at.1) - g.grab.1),
+                ("--sidebar-drag-width", g.size.0),
+                ("--sidebar-drag-height", g.size.1),
+            ] {
+                let _ = style.set_property(property, &format!("{value}px"));
+            }
         }
     });
     let item = Memo::new(move |_| c.sidebar_drag.with(|g| g.as_ref().map(|g| g.item.clone())));
     view! {
         <div class="sidebar-drag-lift" node_ref=node aria-hidden="true" hidden=move || !c.sidebar_active()
-            class:task-drag-touch=move || c.sidebar_drag.with(|g| g.as_ref().is_some_and(|g| g.touch))
             data-list-hue=move || item.with(|n| n.as_ref().map(|n| n.hue))>
             {move || item.with(|n| n.as_ref().and_then(|n| n.glyph).map(glyph))}
             <span class="task-drag-title">{move || item.with(|n| n.as_ref().map(|n| n.name.clone()))}</span>

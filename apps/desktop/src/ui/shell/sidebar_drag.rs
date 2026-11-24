@@ -27,10 +27,34 @@ pub(super) struct Gesture {
     badge: Badge,
     start: Point<Pixels>,
     position: Point<Pixels>,
+    grab: Point<Pixels>,
+    row_width: Pixels,
     active: bool,
     target: Option<Target>,
     dwell: Duration,
     fixture: bool,
+}
+
+impl Gesture {
+    fn lift_bounds(&self, viewport: gpui::Size<Pixels>) -> Bounds<Pixels> {
+        let margin = px(space::S2);
+        let w = self
+            .row_width
+            .min((viewport.width - margin * 2.).max(px(0.)));
+        let h = px(desktop::NAV_SUB_ROW).min((viewport.height - margin * 2.).max(px(0.)));
+        let origin = self.position - self.grab;
+        Bounds::new(
+            point(
+                origin
+                    .x
+                    .clamp(margin, (viewport.width - w - margin).max(margin)),
+                origin
+                    .y
+                    .clamp(margin, (viewport.height - h - margin).max(margin)),
+            ),
+            gpui::size(w, h),
+        )
+    }
 }
 
 fn room(row: Row) -> RoomKey {
@@ -71,6 +95,13 @@ impl ShellView {
                     let Some(plan) = Drag::start(&this.store.view(), row) else {
                         return;
                     };
+                    let bounds = this.nav_bounds.borrow().get(&room(row)).copied();
+                    let row_width =
+                        bounds.map_or_else(|| this.sidebar_lift_width(), |b| b.size.width);
+                    let grab = bounds
+                        .map_or(point(row_width / 2., px(desktop::NAV_SUB_ROW / 2.)), |b| {
+                            e.position - b.origin
+                        });
                     this.sidebar_eat_release = false;
                     if let Some(focus) = this.sidebar_row_foci.get(&room(row)) {
                         window.focus(focus, cx);
@@ -80,6 +111,8 @@ impl ShellView {
                         badge: badge.clone(),
                         start: e.position,
                         position: e.position,
+                        grab,
+                        row_width,
                         active: false,
                         target: None,
                         dwell: Duration::ZERO,
@@ -274,28 +307,34 @@ impl ShellView {
         .size_0()
     }
 
+    fn sidebar_lift_width(&self) -> Pixels {
+        let width = self.sidebar_scroll.bounds().size.width;
+        if width > px(0.) {
+            width
+        } else {
+            px(desktop::SIDEBAR)
+        }
+    }
+
     pub(super) fn sidebar_lift(&self, window: &Window) -> Option<Div> {
         let g = self.sidebar_drag.as_ref().filter(|g| g.active)?;
         let p = self.palette;
-        let size = window.viewport_size();
-        let w = px(desktop::SIDEBAR);
-        let x = (g.position.x + px(space::S3))
-            .max(self.sidebar_scroll.bounds().right() + px(space::S2))
-            .min(size.width - w - px(space::S2));
-        let h = px(desktop::NAV_ROW);
-        let y = (g.position.y - h / 2.).clamp(px(space::S2), size.height - h - px(space::S2));
+        let bounds = g.lift_bounds(window.viewport_size());
         Some(
             div()
                 .absolute()
-                .left(x)
-                .top(y)
-                .w(w)
-                .h(h)
+                .left(bounds.left())
+                .top(bounds.top())
+                .w(bounds.size.width)
+                .h(bounds.size.height)
                 .flex()
                 .items_center()
                 .gap(px(desktop::NAV_GAP))
                 .px(px(space::S2))
-                .bg(p.pane)
+                .bg(crate::theme::with_alpha(
+                    p.pane,
+                    1. - elevation::DROP_WASH_ALPHA / 2.,
+                ))
                 .rounded(px(radius::BUTTON))
                 .border(px(elevation::HAIRLINE))
                 .border_color(if self.pace().reduced {
@@ -390,20 +429,30 @@ impl ShellView {
         let Some(plan) = Drag::start(&self.store.view(), source) else {
             return;
         };
-        let position = self
-            .nav_bounds
-            .borrow()
-            .get(&visual)
-            .map(Bounds::center)
-            .unwrap_or(point(
-                px(space::S10),
+        let bounds = self.nav_bounds.borrow();
+        let row_width = bounds
+            .get(&room(source))
+            .map_or_else(|| self.sidebar_lift_width(), |b| b.size.width);
+        let grab = point(row_width / 2., px(desktop::NAV_SUB_ROW / 2.));
+        let position = bounds.get(&visual).map_or(
+            point(
+                px(space::S2) + grab.x,
                 px(desktop::TITLEBAR + desktop::NAV_ROW * 11.),
-            ));
+            ),
+            |b| match target {
+                Target::Before(_) => point(b.center().x, b.top() + px(space::S1)),
+                Target::After(_) => point(b.center().x, b.bottom() - px(space::S1)),
+                Target::Into(_) => point(b.center().x, b.center().y),
+            },
+        );
+        drop(bounds);
         self.sidebar_drag = Some(Gesture {
             plan,
             badge,
             start: position,
             position,
+            grab,
+            row_width,
             active: true,
             target: Some(target),
             dwell: self.frame,
@@ -453,6 +502,21 @@ mod tests {
         });
         cx.simulate_mouse_move(source, None, mods);
         cx.simulate_mouse_down(source, MouseButton::Left, mods);
+        let delta = point(px(0.), px(space::S2));
+        cx.simulate_mouse_move(source + delta, MouseButton::Left, mods);
+        cx.update(|window, cx| {
+            let v = shell.read(cx);
+            let source_row = v.nav_bounds.borrow()[&RoomKey::List(list)];
+            let gesture = v
+                .sidebar_drag
+                .as_ref()
+                .filter(|g| g.active)
+                .expect("lifted");
+            let lift = gesture.lift_bounds(window.viewport_size());
+            assert_eq!(lift.origin, source_row.origin + delta);
+            assert_eq!(lift.size.width, source_row.size.width);
+            assert_eq!(lift.size.height, px(desktop::NAV_SUB_ROW));
+        });
         cx.simulate_mouse_move(target, MouseButton::Left, mods);
         cx.update(|_, cx| assert!(shell.read(cx).sidebar_target(Target::Into(collection))));
         cx.simulate_keystrokes("escape");
