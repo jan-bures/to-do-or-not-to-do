@@ -799,6 +799,7 @@ async fn the_app_needs_a_session_and_gets_its_csrf_token_and_a_strict_csp() {
     // The CSP allows wasm compilation but no inline script or style, and limits connections.
     assert!(APP_CSP.contains("script-src 'self' 'wasm-unsafe-eval'"));
     assert!(APP_CSP.contains("connect-src 'self' http://127.0.0.1:* http://localhost:*;"));
+    assert!(APP_CSP.contains("worker-src 'self'; manifest-src 'self';"));
     assert!(
         !APP_CSP
             .split_ascii_whitespace()
