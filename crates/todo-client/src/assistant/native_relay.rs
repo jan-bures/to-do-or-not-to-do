@@ -17,7 +17,7 @@ use super::{
     wire::RoundDecoder,
 };
 use crate::{
-    native::{HttpTransport, PRIVATE_TOTAL_TIMEOUT},
+    native::HttpTransport,
     platform::{Method, Request, Transport, TransportError},
 };
 
@@ -311,13 +311,9 @@ impl Provider for NativeProvider {
     }
     fn turn_timeouts(&self) -> TurnTimeouts {
         match self {
-            Self::Relay(_, Hosted::Private) => TurnTimeouts {
-                // The transport enforces idle time between raw reads. A quiet decoded event stream
-                // is not necessarily a dead connection (e.g. progress frames and SSE keepalives).
-                idle: PRIVATE_TOTAL_TIMEOUT,
-                total: PRIVATE_TOTAL_TIMEOUT,
-            },
-            _ => TurnTimeouts::default(),
+            Self::Relay(_, Hosted::Private) => TurnTimeouts::HOSTED_PRIVATE,
+            Self::Relay(_, Hosted::ChatGpt(_)) => TurnTimeouts::HOSTED_CHATGPT,
+            Self::Direct(_) => TurnTimeouts::default(),
         }
     }
     async fn stream_turn(
@@ -329,5 +325,33 @@ impl Provider for NativeProvider {
             Self::Direct(p) => p.stream_turn(request, cancel).await,
             Self::Relay(relay, route) => relay.chat(*route, request, cancel).await,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hosted_routes_use_longer_decoded_event_timeouts() -> Result<(), Box<dyn std::error::Error>> {
+        let relay = Relay::new(HttpTransport::new(
+            "https://todo.example.com",
+            "test-token",
+        )?);
+        assert_eq!(
+            relay.provider(Hosted::Private).turn_timeouts(),
+            TurnTimeouts {
+                idle: Duration::from_secs(600),
+                total: Duration::from_secs(600),
+            }
+        );
+        assert_eq!(
+            relay.provider(Hosted::ChatGpt(Uuid::nil())).turn_timeouts(),
+            TurnTimeouts {
+                idle: Duration::from_secs(75),
+                total: Duration::from_secs(240),
+            }
+        );
+        Ok(())
     }
 }

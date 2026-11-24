@@ -80,6 +80,14 @@ impl<A: JsonSchema + DeserializeOwned> Tool<A> {
                 "Smart-list query, e.g. `list:inbox and not done`, `due<=today sort:due`, or words in titles and steps. Notes are never searched. Empty matches all visible tasks. At most 1024 bytes, 64 nodes and 32 terms."
             );
         }
+        if let Some(limit) = schema
+            .get_mut("properties")
+            .and_then(|p| p.get_mut("limit"))
+        {
+            limit["description"] = json!(
+                "Maximum items to return (default 100, at most 500). A page may return fewer items to fit the response size budget. Pass next_cursor back as cursor to continue."
+            );
+        }
         if let Some(list) = schema
             .get_mut("properties")
             .and_then(|p| p.get_mut("list_id"))

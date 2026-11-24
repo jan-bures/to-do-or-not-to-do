@@ -222,6 +222,18 @@ pub struct TurnTimeouts {
     pub total: Duration,
 }
 
+impl TurnTimeouts {
+    // Hosted transports can keep receiving raw chunks while the decoded event stream is quiet.
+    pub const HOSTED_PRIVATE: Self = Self {
+        idle: Duration::from_secs(600),
+        total: Duration::from_secs(600),
+    };
+    pub const HOSTED_CHATGPT: Self = Self {
+        idle: Duration::from_secs(75),
+        total: Duration::from_secs(240),
+    };
+}
+
 impl Default for TurnTimeouts {
     fn default() -> Self {
         Self {

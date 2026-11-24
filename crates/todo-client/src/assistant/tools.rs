@@ -1,5 +1,5 @@
 use super::provider::{ToolCall, ToolDefinition};
-use super::{AssistantError, ListRef, TaskRef};
+use super::{AssistantError, LimitKind, ListRef, TaskRef};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, io};
@@ -91,6 +91,11 @@ fn argument(error: assistant::ArgumentError) -> AssistantError {
 fn read_error(error: ReadError) -> AssistantError {
     match error {
         ReadError::NotFound => AssistantError::NotFound,
+        ReadError::TooLarge {
+            required_bytes,
+            max_bytes,
+        } => LimitKind::ToolResult.exceeded(required_bytes, max_bytes),
+        ReadError::Encode(_) => AssistantError::InvalidDraft,
         _ => AssistantError::InvalidArguments,
     }
 }
@@ -143,7 +148,9 @@ pub(super) fn execute(
     let data = match kind {
         ToolKind::Lists => {
             let args = assistant::LIST_LISTS.decode(args).map_err(argument)?;
-            let page = projection.list_lists(&args).map_err(read_error)?;
+            let page = projection
+                .list_lists_within(&args, MAX_RESULT_BYTES)
+                .map_err(read_error)?;
             references
                 .lists
                 .extend(page.items.iter().map(|item| item.id));
@@ -152,14 +159,18 @@ pub(super) fn execute(
         }
         ToolKind::Search => {
             let args = assistant::QUERY_TASKS.decode(args).map_err(argument)?;
-            let page = projection.query_tasks(&args).map_err(read_error)?;
+            let page = projection
+                .query_tasks_within(&args, MAX_RESULT_BYTES)
+                .map_err(read_error)?;
             page.items.iter().for_each(&mut record_task);
             count = page.items.len();
             result_json(&page)?
         }
         ToolKind::Task => {
             let args = assistant::GET_TASK.decode(args).map_err(argument)?;
-            let detail = projection.get_task(&args).map_err(read_error)?;
+            let detail = projection
+                .get_task_within(&args, MAX_RESULT_BYTES)
+                .map_err(read_error)?;
             record_task(&detail.task);
             result_json(&detail)?
         }
@@ -218,34 +229,48 @@ fn result_json(value: &impl Serialize) -> Result<Value, AssistantError> {
     let mut writer = Limited {
         left: MAX_RESULT_BYTES,
         bytes: Some(Vec::new()),
+        overflow: None,
     };
-    serde_json::to_writer(&mut writer, value).map_err(|_| AssistantError::Limit)?;
+    serde_json::to_writer(&mut writer, value)
+        .map_err(|_| writer.error(LimitKind::ToolResult, MAX_RESULT_BYTES))?;
     serde_json::from_slice(&writer.bytes.unwrap_or_default())
         .map_err(|_| AssistantError::InvalidDraft)
 }
 
-pub(super) fn check_size(value: &impl Serialize, max: usize) -> Result<(), AssistantError> {
-    serde_json::to_writer(
-        Limited {
-            left: max,
-            bytes: None,
-        },
-        value,
-    )
-    .map_err(|_| AssistantError::Limit)
+pub(super) fn check_size(
+    value: &impl Serialize,
+    max: usize,
+    kind: LimitKind,
+) -> Result<(), AssistantError> {
+    let mut writer = Limited {
+        left: max,
+        bytes: None,
+        overflow: None,
+    };
+    serde_json::to_writer(&mut writer, value).map_err(|_| writer.error(kind, max))
 }
 
 struct Limited {
     left: usize,
     bytes: Option<Vec<u8>>,
+    overflow: Option<usize>,
+}
+
+impl Limited {
+    fn error(&self, kind: LimitKind, max: usize) -> AssistantError {
+        self.overflow.map_or(AssistantError::InvalidDraft, |extra| {
+            kind.exceeded(max.saturating_add(extra), max)
+        })
+    }
 }
 
 impl io::Write for Limited {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        self.left = self
-            .left
-            .checked_sub(buf.len())
-            .ok_or_else(|| io::Error::other("assistant size limit"))?;
+        let Some(left) = self.left.checked_sub(buf.len()) else {
+            self.overflow = Some(buf.len() - self.left);
+            return Err(io::Error::other("assistant size limit"));
+        };
+        self.left = left;
         if let Some(bytes) = &mut self.bytes {
             bytes.extend_from_slice(buf);
         }

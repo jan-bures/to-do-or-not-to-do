@@ -19,8 +19,8 @@ use todo_client::{
     Clock, Entropy,
     assistant::{
         AccessRules, AssistantError, Composer, ConfirmedSnapshot, Controller, Edit, Effect,
-        ListAccess, ProposalStatus, ReviewError, Revision, Selection, SendIntent, StepStatus,
-        StepSummary,
+        LimitKind, ListAccess, ProposalStatus, ReviewError, Revision, Selection, SendIntent,
+        StepStatus, StepSummary,
         fake::{CAPABILITIES, FakeProvider, FakeRound, MODEL},
         provider::{
             BillingClass, Capabilities, DataClass, Message, Provider, ProviderError, RoundMode,
@@ -34,6 +34,7 @@ use todo_core::{
     query::EvalContext,
     time::{Date, Timestamp},
 };
+use todo_tools::assistant::Projection;
 use uuid::Uuid;
 
 const NOW: Timestamp = Timestamp::UNIX_EPOCH;
@@ -42,6 +43,7 @@ const INBOX: ListId = ListId::from_uuid(Uuid::from_u128(10));
 const HIDDEN: ListId = ListId::from_uuid(Uuid::from_u128(11));
 const LIVE: TaskId = TaskId::from_uuid(Uuid::from_u128(12));
 const PRIVATE: TaskId = TaskId::from_uuid(Uuid::from_u128(13));
+const RESULT_BUDGET: usize = 24 * 1024;
 
 #[derive(Default)]
 struct Sequence(AtomicU64);
@@ -765,7 +767,7 @@ fn rejects_duplicate_tool_ids_and_parallel_calls_and_caps_rounds() {
     );
     assert_eq!(
         block_on(chat.start(intent(&chat, 1)).unwrap()),
-        Err(AssistantError::Limit)
+        Err(AssistantError::Limit(LimitKind::ToolSteps))
     );
     assert_eq!(provider.requests().len(), 13);
 }
@@ -847,7 +849,7 @@ fn a_hidden_lists_name_ids_and_counts_do_not_change_any_egress() {
     let calls = || {
         [
             round([call("lists", "list_lists", json!({"limit":1}))]),
-            round([call("query", "query_tasks", json!({"limit":1}))]),
+            round([call("query", "query_tasks", json!({}))]),
             round([call("task", "get_task", json!({"task_id":LIVE}))]),
             round([call(
                 "edit",
@@ -861,6 +863,7 @@ fn a_hidden_lists_name_ids_and_counts_do_not_change_any_egress() {
     let (a, pa) = fixture(CAPABILITIES, calls());
     let (b, pb) = fixture(CAPABILITIES, calls());
     let mut hidden = state();
+    add_tasks(&mut hidden, 150, realistic_title);
     for i in 0..17 {
         apply_command(
             &mut hidden,
@@ -891,6 +894,10 @@ fn a_hidden_lists_name_ids_and_counts_do_not_change_any_egress() {
         "including all tool results, counts and cursor bindings"
     );
     assert_eq!(a.view().turns[0].summary.private_lists, 1);
+    let rounds = pa.requests();
+    let page = tool_page(&rounds[2].history);
+    assert!(page["next_cursor"].is_string());
+    assert!(page["items"].as_array().unwrap().len() < 100);
     let bytes = serde_json::to_string(&requests).unwrap();
     for marker in [
         "Excluded marker".to_owned(),
@@ -923,18 +930,27 @@ fn controller_bounds_arguments_prose_round_events_and_history() {
         ProviderError::Limit
     );
     let cases = [
-        round([StreamEvent::Tool(oversized_call)]),
-        round([
-            StreamEvent::Text("x".repeat(24 * 1024)),
-            StreamEvent::Text("!".into()),
-        ]),
-        round((0..4096).map(|_| StreamEvent::Text(String::new()))),
+        (
+            round([StreamEvent::Tool(oversized_call)]),
+            LimitKind::ToolArguments,
+        ),
+        (
+            round([
+                StreamEvent::Text("x".repeat(24 * 1024)),
+                StreamEvent::Text("!".into()),
+            ]),
+            LimitKind::Reply,
+        ),
+        (
+            round((0..4096).map(|_| StreamEvent::Text(String::new()))),
+            LimitKind::ReplyEvents,
+        ),
     ];
-    for f in cases {
+    for (f, kind) in cases {
         let (chat, _) = fixture(CAPABILITIES, [f]);
         assert_eq!(
             block_on(chat.start(intent(&chat, 1)).unwrap()),
-            Err(AssistantError::Limit)
+            Err(AssistantError::Limit(kind))
         );
         assert!(chat.pending().is_none());
     }
@@ -952,38 +968,208 @@ fn controller_bounds_arguments_prose_round_events_and_history() {
     );
 }
 
+fn realistic_title(i: u128) -> String {
+    format!("Review the draft \"plan\" for shipment {i} and confirm the delivery window")
+}
+
+fn add_tasks(base: &mut State, count: u128, title: impl Fn(u128) -> String) {
+    for i in 0..count {
+        apply_command(
+            base,
+            json!({"cmd":"create_task","id":Uuid::from_u128(500+i),"list":INBOX,"title":title(i)}),
+        );
+    }
+}
+
+fn tool_page(history: &[Message]) -> &Value {
+    let Some(Message::Tool { untrusted_data, .. }) = history.last() else {
+        panic!("expected a tool result");
+    };
+    assert!(serde_json::to_vec(untrusted_data).unwrap().len() <= RESULT_BUDGET);
+    untrusted_data
+}
+
+#[test]
+fn default_query_pages_read_all_realistic_open_tasks() {
+    let mut base = state();
+    base.tasks.remove(&LIVE);
+    add_tasks(&mut base, 150, realistic_title);
+    let projection = Projection::new(&base, &BTreeSet::from([INBOX]), EvalContext::utc(NOW));
+    let args = serde_json::from_value(json!({"query":"not done"})).unwrap();
+    let unbounded = projection.query_tasks(&args).unwrap();
+    assert!(serde_json::to_vec(&unbounded).unwrap().len() > RESULT_BUDGET);
+    let first = projection.query_tasks_within(&args, RESULT_BUDGET).unwrap();
+    let cursor = first.next_cursor.as_deref().unwrap();
+    let (chat, provider) = fixture(
+        CAPABILITIES,
+        [
+            round([call("first", "query_tasks", json!({"query":"not done"}))]),
+            round([call(
+                "next",
+                "query_tasks",
+                json!({"query":"not done","cursor":cursor}),
+            )]),
+            round([]),
+        ],
+    );
+    chat.update_snapshot(Some(snapshot(8, base)));
+    block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
+    let requests = provider.requests();
+    let first = tool_page(&requests[1].history);
+    let last = tool_page(&requests[2].history);
+    assert_eq!(first["next_cursor"], cursor);
+    assert!(last["next_cursor"].is_null());
+    let ids: Vec<TaskId> = [first, last]
+        .into_iter()
+        .flat_map(|page| page["items"].as_array().unwrap())
+        .map(|item| serde_json::from_value(item["id"].clone()).unwrap())
+        .collect();
+    assert_eq!(ids.len(), 150);
+    assert_eq!(
+        ids.into_iter().collect::<BTreeSet<_>>(),
+        (500..650)
+            .map(|id| TaskId::from_uuid(Uuid::from_u128(id)))
+            .collect()
+    );
+    assert_eq!(chat.view().turns[0].summary.tasks_read, 150);
+}
+
 #[test]
 fn result_size_and_cumulative_context_have_independent_limits() {
     let mut base = state();
-    for i in 0..60 {
+    base.tasks.remove(&LIVE);
+    add_tasks(&mut base, 60, |_| "x".repeat(490));
+    let (chat, provider) = fixture(
+        CAPABILITIES,
+        (0..12).map(|i| round([call(&i.to_string(), "query_tasks", json!({"limit":100}))])),
+    );
+    chat.update_snapshot(Some(snapshot(8, base)));
+    assert_eq!(
+        block_on(chat.start(intent(&chat, 1)).unwrap()),
+        Err(AssistantError::Limit(LimitKind::Context))
+    );
+    assert!(chat.pending().is_none());
+    let requests = provider.requests();
+    assert!((8..12).contains(&requests.len()));
+    let first = tool_page(&requests[1].history);
+    assert!(first["next_cursor"].is_string());
+    let count = first["items"].as_array().unwrap().len();
+    assert!((1..60).contains(&count));
+    assert_eq!(
+        chat.view().turns[0].summary.tasks_read,
+        count * requests.len()
+    );
+}
+
+#[test]
+fn list_pages_account_for_the_exact_encoded_cursor_and_final_null() {
+    let mut base = state();
+    for i in 0..3 {
         apply_command(
             &mut base,
-            json!({"cmd":"create_task","id":Uuid::from_u128(500+i),"list":INBOX,"title":"x".repeat(490)}),
+            json!({"cmd":"create_list","id":Uuid::from_u128(500+i),"name":format!("List {i} \"{}\"","x".repeat(180))}),
         );
     }
-    // 60 large tasks do not fit a single result. A page of 25 does fit, but repeating the result
-    // accumulates more context than is allowed for one turn.
-    for limit in [100, 25] {
-        let (chat, provider) = fixture(
-            CAPABILITIES,
-            (0..12).map(|i| round([call(&i.to_string(), "query_tasks", json!({"limit":limit}))])),
-        );
-        chat.update_snapshot(Some(snapshot(8, base.clone())));
-        assert_eq!(
-            block_on(chat.start(intent(&chat, 1)).unwrap()),
-            Err(AssistantError::Limit)
-        );
-        assert!(chat.pending().is_none());
-        let n = provider.requests().len();
-        assert!(
-            if limit == 100 {
-                n == 1
-            } else {
-                (3..12).contains(&n)
-            },
-            "limit={limit}, {n} requests"
-        );
+    let projection = Projection::new(
+        &base,
+        &base.lists.keys().copied().collect(),
+        EvalContext::utc(NOW),
+    );
+    let mut args = serde_json::from_value(json!({"limit":2})).unwrap();
+    let first = projection.list_lists(&args).unwrap();
+    let exact = serde_json::to_vec(&first).unwrap();
+    let mut all = Vec::new();
+    args.limit = None;
+    assert_eq!(
+        serde_json::to_vec(&projection.list_lists_within(&args, exact.len()).unwrap()).unwrap(),
+        exact
+    );
+    assert_eq!(
+        projection
+            .list_lists_within(&args, exact.len() - 1)
+            .unwrap()
+            .items
+            .len(),
+        1
+    );
+    assert!(matches!(
+        projection.list_lists_within(&args, 64),
+        Err(todo_tools::assistant::ReadError::TooLarge { .. })
+    ));
+    loop {
+        let page = projection.list_lists_within(&args, exact.len()).unwrap();
+        assert!(serde_json::to_vec(&page).unwrap().len() <= exact.len());
+        all.extend(page.items.into_iter().map(|list| list.id));
+        args.cursor = page.next_cursor;
+        if args.cursor.is_none() {
+            break;
+        }
     }
+    assert_eq!(
+        all,
+        projection
+            .list_lists(&args)
+            .unwrap()
+            .items
+            .into_iter()
+            .map(|list| list.id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn task_details_keep_ordered_prefixes_within_the_result_budget() {
+    let mut base = state();
+    for i in 0..45 {
+        let step = Uuid::from_u128(500 + i);
+        let tag = Uuid::from_u128(600 + i);
+        apply_command(
+            &mut base,
+            json!({"cmd":"create_step","id":step,"task":LIVE,"title":format!("Step {i} {}", "é".repeat(230))}),
+        );
+        apply_command(
+            &mut base,
+            json!({"cmd":"create_tag","id":tag,"name":format!("Tag {i} {}", "a".repeat(180))}),
+        );
+        apply_command(&mut base, json!({"cmd":"add_tag","task":LIVE,"tag":tag}));
+    }
+    let projection = Projection::new(&base, &BTreeSet::from([INBOX]), EvalContext::utc(NOW));
+    let args = serde_json::from_value(json!({"task_id":LIVE})).unwrap();
+    let full = projection.get_task(&args).unwrap();
+    let detail = projection.get_task_within(&args, RESULT_BUDGET).unwrap();
+    assert!(!full.truncated);
+    assert!(detail.truncated);
+    assert!(!detail.steps.is_empty());
+    assert!(detail.steps.len() < full.steps.len());
+    assert!(!detail.tags.is_empty());
+    assert!(detail.tags.len() < full.tags.len());
+    assert!(
+        detail
+            .steps
+            .iter()
+            .zip(&full.steps)
+            .all(|(a, b)| a.id == b.id)
+    );
+    assert!(
+        detail
+            .tags
+            .iter()
+            .zip(&full.tags)
+            .all(|(a, b)| a.id == b.id)
+    );
+    let size = serde_json::to_vec(&detail).unwrap().len();
+    assert!(size <= RESULT_BUDGET);
+    assert!(
+        size + 1
+            + serde_json::to_vec(&full.tags[detail.tags.len()])
+                .unwrap()
+                .len()
+            > RESULT_BUDGET
+    );
+    assert!(matches!(
+        projection.get_task_within(&args, 64),
+        Err(todo_tools::assistant::ReadError::TooLarge { .. })
+    ));
 }
 
 #[test]

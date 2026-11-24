@@ -77,6 +77,13 @@ pub enum ReadError {
     NotFound,
     #[error("deleted lists and tasks are not available")]
     IncludeDeleted,
+    #[error("the read needs {required_bytes} bytes but the response budget is {max_bytes} bytes")]
+    TooLarge {
+        required_bytes: usize,
+        max_bytes: usize,
+    },
+    #[error("the read could not be encoded")]
+    Encode(#[from] serde_json::Error),
     #[error(transparent)]
     InvalidCursor(#[from] InvalidCursor),
     #[error(transparent)]
@@ -199,6 +206,14 @@ impl Projection {
     }
 
     pub fn list_lists(&self, args: &PageArgs) -> Result<Page<ListSummary<'_>>, ReadError> {
+        self.list_lists_within(args, usize::MAX)
+    }
+
+    pub fn list_lists_within(
+        &self,
+        args: &PageArgs,
+        max_bytes: usize,
+    ) -> Result<Page<ListSummary<'_>>, ReadError> {
         if args.include_deleted {
             return Err(ReadError::IncludeDeleted);
         }
@@ -223,16 +238,25 @@ impl Projection {
             || false,
         )
         .expect("local read without a cancellation check");
-        Ok(page(
+        page(
             selected,
             limit,
             &binding,
             |l| l.id,
             |l| self.list_summary(l),
-        ))
+            max_bytes,
+        )
     }
 
     pub fn query_tasks(&self, args: &QueryArgs) -> Result<Page<TaskSummary<'_>>, ReadError> {
+        self.query_tasks_within(args, usize::MAX)
+    }
+
+    pub fn query_tasks_within(
+        &self,
+        args: &QueryArgs,
+        max_bytes: usize,
+    ) -> Result<Page<TaskSummary<'_>>, ReadError> {
         let query = parse_query(args.query.as_deref().unwrap_or_default())?;
         let binding = Binding::new(&[
             "assistant_tasks",
@@ -261,13 +285,14 @@ impl Projection {
             || false,
         )
         .expect("local read without a cancellation check");
-        Ok(page(
+        page(
             selected,
             limit,
             &binding,
             |t| t.id,
             |t| self.task_summary(t),
-        ))
+            max_bytes,
+        )
     }
 
     pub fn get_task(&self, args: &GetTaskArgs) -> Result<TaskDetail<'_>, ReadError> {
@@ -309,6 +334,30 @@ impl Projection {
                 .collect(),
             truncated,
         })
+    }
+
+    pub fn get_task_within(
+        &self,
+        args: &GetTaskArgs,
+        max_bytes: usize,
+    ) -> Result<TaskDetail<'_>, ReadError> {
+        let mut detail = self.get_task(args)?;
+        if json_len(&detail)? <= max_bytes {
+            return Ok(detail);
+        }
+        let steps = std::mem::take(&mut detail.steps);
+        let tags = std::mem::take(&mut detail.tags);
+        detail.truncated = true;
+        let required_bytes = json_len(&detail)?;
+        let mut remaining = max_bytes
+            .checked_sub(required_bytes)
+            .ok_or(ReadError::TooLarge {
+                required_bytes,
+                max_bytes,
+            })?;
+        detail.steps = fit_children(steps, &mut remaining)?;
+        detail.tags = fit_children(tags, &mut remaining)?;
+        Ok(detail)
     }
 
     fn list_summary<'a>(&'a self, list: &'a List) -> ListSummary<'a> {
@@ -356,24 +405,89 @@ fn cursor_id<T: FromStr>(raw: Option<&str>, binding: &Binding) -> Result<Option<
         .transpose()
 }
 
-fn page<'a, T, U, Id: ToString>(
+fn page<'a, T, U: Serialize, Id: ToString>(
     selected: Vec<(OrderKey, &'a T)>,
     limit: usize,
     binding: &Binding,
     id: impl Fn(&T) -> Id,
     project: impl Fn(&'a T) -> U,
-) -> Page<U> {
-    let next_cursor = if selected.len() > limit {
-        let mut key = OrderKey::new();
-        key.push_str(id(selected[limit - 1].1).to_string(), false);
-        Some(encode_cursor(binding, &key))
-    } else {
-        None
+    max_bytes: usize,
+) -> Result<Page<U>, ReadError> {
+    let cursor_after = |taken: usize| {
+        (selected.len() > taken).then(|| {
+            let mut key = OrderKey::new();
+            key.push_str(id(selected[taken - 1].1).to_string(), false);
+            encode_cursor(binding, &key)
+        })
     };
-    let items = selected
-        .into_iter()
-        .take(limit)
-        .map(|(_, item)| project(item))
-        .collect();
-    Page { items, next_cursor }
+    let len = selected.len().min(limit);
+    if max_bytes == usize::MAX {
+        return Ok(Page {
+            items: selected
+                .iter()
+                .take(len)
+                .map(|(_, item)| project(item))
+                .collect(),
+            next_cursor: (len > 0).then(|| cursor_after(len)).flatten(),
+        });
+    }
+
+    let empty = Page::<()> {
+        items: Vec::new(),
+        next_cursor: None,
+    };
+    let envelope = json_len(&empty)?;
+    let mut items = Vec::new();
+    let mut next_cursor = None;
+    let mut fitted = 0;
+    let mut required_bytes = envelope;
+    let mut bytes = envelope;
+    for (index, (_, item)) in selected.iter().take(len).enumerate() {
+        let item = project(item);
+        bytes += json_len(&item)? + usize::from(index > 0);
+        let taken = index + 1;
+        let cursor = cursor_after(taken);
+        // Replace the envelope's null cursor with the actual JSON string when there is more data.
+        let size = bytes - "null".len() + json_len(&cursor)?;
+        if index == 0 {
+            required_bytes = size;
+        }
+        if size <= max_bytes {
+            fitted = taken;
+            next_cursor = cursor;
+        }
+        if bytes > max_bytes {
+            break;
+        }
+        items.push(item);
+    }
+    if (len > 0 && fitted == 0) || (len == 0 && envelope > max_bytes) {
+        return Err(ReadError::TooLarge {
+            required_bytes,
+            max_bytes,
+        });
+    }
+    items.truncate(fitted);
+    Ok(Page { items, next_cursor })
+}
+
+fn json_len(value: &impl Serialize) -> Result<usize, serde_json::Error> {
+    serde_json::to_vec(value).map(|bytes| bytes.len())
+}
+
+fn fit_children<T: Serialize>(
+    mut children: Vec<T>,
+    remaining: &mut usize,
+) -> Result<Vec<T>, serde_json::Error> {
+    let mut fitted = 0;
+    for (index, child) in children.iter().enumerate() {
+        let size = json_len(child)? + usize::from(index > 0);
+        let Some(left) = remaining.checked_sub(size) else {
+            break;
+        };
+        *remaining = left;
+        fitted += 1;
+    }
+    children.truncate(fitted);
+    Ok(children)
 }

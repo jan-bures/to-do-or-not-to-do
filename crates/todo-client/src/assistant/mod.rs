@@ -111,7 +111,7 @@ use tools::{References, check_size};
 use uuid::Uuid;
 
 const MAX_PROMPT_BYTES: usize = 8 * 1024;
-const MAX_CONTEXT_BYTES: usize = 96 * 1024;
+const MAX_CONTEXT_BYTES: usize = 192 * 1024;
 const MAX_SCHEMA_BYTES: usize = 12 * 1024;
 const MAX_PROSE_BYTES: usize = 24 * 1024;
 pub(super) const MAX_ARGUMENT_BYTES: usize = 8 * 1024;
@@ -151,8 +151,8 @@ pub enum AssistantError {
     Obsolete,
     #[error("enter a message before sending")]
     EmptyPrompt,
-    #[error("the conversation reached its size or step limit")]
-    Limit,
+    #[error(transparent)]
+    Limit(LimitKind),
     #[error("the model tried to use an unavailable tool or operation")]
     UnsupportedTool,
     #[error("the model used an unsupported tool field")]
@@ -169,10 +169,44 @@ pub enum AssistantError {
     Provider(#[from] ProviderError),
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, thiserror::Error)]
+pub enum LimitKind {
+    #[error("the message is too long")]
+    Prompt,
+    #[error("the conversation exceeded its context size limit")]
+    Context,
+    #[error("the reply exceeded its tool step limit")]
+    ToolSteps,
+    #[error("the reply exceeded its length limit")]
+    Reply,
+    #[error("the tool result exceeded its size limit")]
+    ToolResult,
+    #[error("the tool arguments exceeded their size limit")]
+    ToolArguments,
+    #[error("the tool definitions exceeded their size limit")]
+    ToolSchema,
+    #[error("the reply exceeded its event limit")]
+    ReplyEvents,
+    #[error("the model has no reply token budget")]
+    OutputTokens,
+    #[error("the proposed changes exceeded the draft limit")]
+    Draft,
+}
+
+impl LimitKind {
+    fn exceeded(self, observed: usize, max: usize) -> AssistantError {
+        tracing::debug!(kind = ?self, observed, max, "assistant limit reached");
+        AssistantError::Limit(self)
+    }
+}
+
 impl From<BatchError> for AssistantError {
     fn from(error: BatchError) -> Self {
         match error {
-            BatchError::Limit => Self::Limit,
+            BatchError::Limit => {
+                tracing::debug!(kind = ?LimitKind::Draft, "assistant limit reached");
+                Self::Limit(LimitKind::Draft)
+            }
             BatchError::UnsupportedTool => Self::UnsupportedTool,
             BatchError::NotFound => Self::NotFound,
             BatchError::InvalidDraft | BatchError::DigestMismatch => Self::InvalidDraft,
@@ -838,7 +872,7 @@ impl<P: Provider, C: Clock, E: Entropy> Controller<P, C, E> {
                 return Err(AssistantError::EmptyPrompt);
             }
             if intent.prompt.len() > MAX_PROMPT_BYTES {
-                return Err(AssistantError::Limit);
+                return Err(LimitKind::Prompt.exceeded(intent.prompt.len(), MAX_PROMPT_BYTES));
             }
             let (selection, caps) = chat
                 .selection
@@ -979,7 +1013,7 @@ fn start_history(turns: &VecDeque<MemoryTurn>, prompt: &str) -> Vec<Message> {
                 },
             ],
         );
-        if check_size(&history, MAX_CONTEXT_BYTES / 3).is_err() {
+        if check_size(&history, MAX_CONTEXT_BYTES / 3, LimitKind::Context).is_err() {
             history.drain(..2);
             break;
         }
@@ -1070,7 +1104,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
     } else {
         Vec::new()
     };
-    check_size(&tools, MAX_SCHEMA_BYTES)?;
+    check_size(&tools, MAX_SCHEMA_BYTES, LimitKind::ToolSchema)?;
     let mode = if job.caps.streaming && (tools.is_empty() || job.caps.streaming_tools) {
         RoundMode::Streaming
     } else {
@@ -1078,7 +1112,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
     };
     let max_output_tokens = job.caps.max_output_tokens.unwrap_or(2048).min(2048);
     if max_output_tokens == 0 {
-        return Err(AssistantError::Limit);
+        return Err(LimitKind::OutputTokens.exceeded(0, 0));
     }
     let mut seen = BTreeSet::new();
     for round in 0..MAX_ROUNDS {
@@ -1086,6 +1120,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
         check_size(
             &(&job.history, &job.previous_draft, &tools, INSTRUCTIONS),
             MAX_CONTEXT_BYTES,
+            LimitKind::Context,
         )?;
         let request = RoundRequest {
             turn: id,
@@ -1122,8 +1157,9 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             match item {
                 StreamEvent::Text(delta) => {
                     inner.publish(id, |turn| {
-                        if turn.view.prose.len().saturating_add(delta.len()) > MAX_PROSE_BYTES {
-                            return Err(AssistantError::Limit);
+                        let bytes = turn.view.prose.len().saturating_add(delta.len());
+                        if bytes > MAX_PROSE_BYTES {
+                            return Err(LimitKind::Reply.exceeded(bytes, MAX_PROSE_BYTES));
                         }
                         turn.view.prose.push_str(&delta);
                         text.push_str(&delta);
@@ -1134,15 +1170,20 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
                     if tools.is_empty() {
                         return Err(AssistantError::UnsupportedTool);
                     }
-                    if call.is_some()
-                        || item.id.is_empty()
-                        || item.id.len() > MAX_CALL_LABEL_BYTES
-                        || item.name.len() > MAX_CALL_LABEL_BYTES
-                        || !seen.insert(item.id.clone())
-                    {
+                    let label_bytes = item.id.len().max(item.name.len());
+                    if label_bytes > MAX_CALL_LABEL_BYTES {
+                        return Err(
+                            LimitKind::ToolArguments.exceeded(label_bytes, MAX_CALL_LABEL_BYTES)
+                        );
+                    }
+                    if call.is_some() || item.id.is_empty() || !seen.insert(item.id.clone()) {
                         return Err(ProviderError::InvalidResponse.into());
                     }
-                    check_size(&item.arguments, MAX_ARGUMENT_BYTES)?;
+                    check_size(
+                        &item.arguments,
+                        MAX_ARGUMENT_BYTES,
+                        LimitKind::ToolArguments,
+                    )?;
                     call = Some(item);
                 }
                 StreamEvent::Usage(usage) => {
@@ -1163,7 +1204,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             }
         }
         if !finished {
-            return Err(AssistantError::Limit);
+            return Err(LimitKind::ReplyEvents.exceeded(MAX_ROUND_EVENTS, MAX_ROUND_EVENTS));
         }
         drop(stream); // Late/duplicate frames on this stream can never enter another round.
         end_step(inner, id, step, 0)?;
@@ -1176,7 +1217,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             });
         };
         if round + 1 == MAX_ROUNDS {
-            return Err(AssistantError::Limit);
+            return Err(LimitKind::ToolSteps.exceeded(round + 1, MAX_ROUNDS - 1));
         }
         let (Some(snapshot), Some(projection), Some(batch)) = (scoped, &projection, &mut batch)
         else {
@@ -1243,7 +1284,7 @@ async fn run<P: Provider, C: Clock, E: Entropy>(
             untrusted_data: result.data,
         });
     }
-    Err(AssistantError::Limit)
+    Err(LimitKind::ToolSteps.exceeded(MAX_ROUNDS, MAX_ROUNDS - 1))
 }
 
 fn begin_step<P, C: Clock, E>(

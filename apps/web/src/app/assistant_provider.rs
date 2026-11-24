@@ -10,7 +10,7 @@ use todo_client::{
         openai::{self, BrowserEndpointError},
         provider::{
             BillingClass, Cancel, Capabilities, DataClass, Model, Provider, ProviderError,
-            RoundRequest, StreamEvent,
+            RoundRequest, StreamEvent, TurnTimeouts,
         },
         relay, responses,
         wire::RoundDecoder,
@@ -216,6 +216,14 @@ impl Provider for BrowserProvider {
             } else {
                 BillingClass::NoPerTokenCharge
             },
+        }
+    }
+
+    fn turn_timeouts(&self) -> TurnTimeouts {
+        match self.route {
+            Route::Hosted(Hosted::Private) => TurnTimeouts::HOSTED_PRIVATE,
+            Route::Hosted(Hosted::ChatGpt(_)) => TurnTimeouts::HOSTED_CHATGPT,
+            Route::Direct(_) => TurnTimeouts::default(),
         }
     }
 
