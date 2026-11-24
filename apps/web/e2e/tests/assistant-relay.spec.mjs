@@ -13,7 +13,7 @@ const accountRow = (settings, label) => settings.getByRole("button", { name: lab
 async function relay(context) {
   const data = { chatgpt: true, chatgpt_device_code: true, private_models: true, accounts: [], access: { lists: {}, collections: {} }, access_version: version };
   const chats = [];
-  let complete = false;
+  let completedAccount;
   await context.route("**/api/v1/assistant/**", async (route) => {
     const req = route.request();
     const headers = await req.allHeaders();
@@ -24,11 +24,12 @@ async function relay(context) {
     if (path === "status") json = data;
     else if (path === "chatgpt/start") {
       expect(req.postDataJSON()).toEqual({ flow: "device" });
+      completedAccount = undefined;
       json = { flow: "device", attempt, user_code: "EXAMPLE-1", verification_url: "https://auth.openai.com/codex/device" };
     } else if (path === `chatgpt/poll/${attempt}`) {
-      if (complete) {
-        data.accounts = [account()];
-        json = { state: "signed_in", account: data.accounts[0] };
+      if (completedAccount) {
+        data.accounts = [...data.accounts.filter((item) => item.id !== completedAccount.id), completedAccount];
+        json = { state: "signed_in", account: completedAccount };
       } else json = { state: "pending" };
     } else if (path.startsWith("chatgpt/accounts/") && req.method() === "DELETE") {
       data.accounts = data.accounts.filter((item) => item.id !== path.split("/").at(-1));
@@ -60,7 +61,7 @@ async function relay(context) {
     } else throw new Error(`Unexpected assistant route: ${path}`);
     await route.fulfill({ json });
   });
-  return { data, chats, approveSignIn: () => { complete = true; } };
+  return { data, chats, approveSignIn: (item = account()) => { completedAccount = item; } };
 }
 
 async function settingsFor(page) {
@@ -70,12 +71,15 @@ async function settingsFor(page) {
   return aiSettings(page);
 }
 
+async function chooseModel(settings) {
+  await settings.getByRole("button", { name: "Choose model" }).click();
+  await settings.getByRole("combobox", { name: "Model", exact: true }).selectOption("fixture-model");
+}
+
 test("device sign-in, shared account and consent, and sign-out across two browsers", async ({ browser, context, page }) => {
   const w = watch(page);
   const mock = await relay(context);
   const settings = await settingsFor(page);
-  await segment(settings, "Your private models").click();
-  await expect(settings.getByRole("region", { name: "Your private models" })).toBeVisible();
   await segment(settings, "ChatGPT").click();
   await settings.getByRole("button", { name: "Sign in with ChatGPT" }).click();
   await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
@@ -87,7 +91,7 @@ test("device sign-in, shared account and consent, and sign-out across two browse
   await expect(connected).toBeVisible();
   await expect(settings.getByRole("button", { name: "Add another account" })).toBeVisible();
   const savedAccount = accountRow(settings, account().label);
-  await expect(savedAccount).toHaveAttribute("aria-pressed", "false");
+  await expect(savedAccount).toHaveAttribute("aria-pressed", "true");
   const usage = settings.getByRole("link", { name: "Manage usage" });
   const usageLeft = await usage.evaluate((link) => {
     const label = document.createRange();
@@ -99,12 +103,12 @@ test("device sign-in, shared account and consent, and sign-out across two browse
   expect(connectedBox.y).toBeGreaterThan(accountBox.y);
   expect(usageLeft).toBe(accountBox.x);
   expect(usageLeft).toBe(connectedBox.x);
-  await savedAccount.click();
-  await expect(savedAccount).toHaveAttribute("aria-pressed", "true");
-  await expect(connected).not.toBeVisible();
   await expect(settings.getByRole("button", { name: "Choose model" })).toBeEnabled();
+  await expect(settings.getByText("No model selected", { exact: true })).toBeVisible();
+  await expect(settings.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   const model = settings.getByRole("region", { name: "ChatGPT", exact: true }).getByText("Model", { exact: true });
   expect(usageLeft).toBe((await model.boundingBox()).x);
+  await chooseModel(settings);
   await settings.getByRole("combobox", { name: "Planning", exact: true }).selectOption("all");
   await settings.getByRole("combobox", { name: "Inbox", exact: true }).selectOption("private");
   await settings.getByRole("button", { name: "Save", exact: true }).click();
@@ -151,8 +155,7 @@ test("private models use the paired server, not a client-held key", async ({ con
   await segment(settings, "Your private models").click();
   await expect(settings.getByLabel("API key", { exact: true })).not.toBeVisible();
   await expect(settings.getByRole("button", { name: "Choose model" })).toBeEnabled();
-  await settings.getByRole("button", { name: "Choose model" }).click();
-  await expect(settings.getByRole("combobox", { name: "Model", exact: true })).toBeVisible();
+  await chooseModel(settings);
   await settings.getByRole("button", { name: "Save", exact: true }).click();
   await expect(settings).not.toBeVisible();
   await expect(page.locator("#assistant-settings")).toBeFocused();
@@ -163,6 +166,47 @@ test("private models use the paired server, not a client-held key", async ({ con
   await segment(settings, "This device").click();
   await expect(settings.getByLabel("Base URL")).toHaveValue("");
   await w.check();
+});
+
+test("sign-in prefers the new account only if the current choice is missing", async ({ context, page }) => {
+  const mock = await relay(context);
+  mock.data.accounts = [account()];
+  const settings = await settingsFor(page);
+  await segment(settings, "ChatGPT").click();
+  await settings.getByRole("button", { name: "Add another account" }).click();
+  await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
+  mock.approveSignIn(second);
+  await expect(accountRow(settings, second.label)).toHaveAttribute("aria-pressed", "true");
+  await expect(accountRow(settings, account().label)).toHaveAttribute("aria-pressed", "false");
+  await chooseModel(settings);
+  await settings.getByRole("button", { name: "Add another account" }).click();
+  await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
+  mock.approveSignIn(account());
+  await expect(settings.getByRole("status").filter({ hasText: "Connected you@example.com." })).toBeVisible();
+  await expect(accountRow(settings, second.label)).toHaveAttribute("aria-pressed", "true");
+  await expect(settings.getByText("fixture-model", { exact: true })).toBeVisible();
+
+  await settings.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings).not.toBeVisible();
+  mock.data.accounts = [account()];
+  await page.locator("#assistant-settings").click();
+  await expect(accountRow(settings, account().label)).toHaveAttribute("aria-pressed", "true");
+  await expect(settings.getByText("No model selected", { exact: true })).toBeVisible();
+});
+
+test("sign-in preserves a private model selection", async ({ context, page }) => {
+  const mock = await relay(context);
+  const settings = await settingsFor(page);
+  await segment(settings, "Your private models").click();
+  await chooseModel(settings);
+  await segment(settings, "ChatGPT").click();
+  await settings.getByRole("button", { name: "Sign in with ChatGPT" }).click();
+  await expect(settings.getByText("EXAMPLE-1", { exact: true })).toBeVisible();
+  mock.approveSignIn();
+  await expect(settings.getByRole("status").filter({ hasText: "Connected you@example.com." })).toBeVisible();
+  await expect(accountRow(settings, account().label)).toHaveAttribute("aria-pressed", "false");
+  await segment(settings, "Your private models").click();
+  await expect(settings.getByText("fixture-model", { exact: true })).toBeVisible();
 });
 
 test("provider choices, active account, and capability-specific sign-in fit a narrow screen", async ({ context, page }) => {
@@ -198,7 +242,8 @@ test("provider choices, active account, and capability-specific sign-in fit a na
   expect(await truncated.evaluate((el) => el.scrollWidth > el.clientWidth)).toBe(true);
   await settings.getByRole("button", { name: `Sign out of ${long}` }).click();
   await expect(other).toHaveCount(0);
-  await expect(first).toHaveAttribute("aria-pressed", "false");
+  await expect(first).toHaveAttribute("aria-pressed", "true");
+  await expect(settings.getByText("No model selected", { exact: true })).toBeVisible();
   await expect(settings.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   expect(mock.data.accounts).toEqual([account()]);
   await w.check();
@@ -222,9 +267,9 @@ for (const colorScheme of ["light", "dark"]) {
     mock.approveSignIn();
     await expect(settings.getByRole("status").filter({ hasText: "Connected you@example.com" })).toBeVisible();
     await page.screenshot({ path: `gallery/ai-chatgpt-confirmed-${colorScheme}.png`, animations: "disabled" });
-    await accountRow(settings, account().label).click();
     await expect(settings.getByRole("button", { name: "Choose model" })).toBeEnabled();
     await page.screenshot({ path: `gallery/ai-chatgpt-account-${colorScheme}.png`, animations: "disabled" });
+    await chooseModel(settings);
     await settings.getByRole("button", { name: "Save", exact: true }).click();
     await expect(settings).not.toBeVisible();
     mock.data.accounts.push(second);

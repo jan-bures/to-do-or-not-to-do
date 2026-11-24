@@ -49,6 +49,7 @@ class AssistantModelTest {
         var browserStarts = 0
         var deviceStarts = 0
         var browserClosed = false
+        var finishedBrowserAccount: AssistantHostedAccount? = null
         val browserResult = CompletableDeferred<AssistantHostedAccount>()
         override fun listen(onChange: () -> Unit) { changed = onChange }
         override fun panel(now: LocalNow): AssistantPanelState { shownNow = now; return state }
@@ -86,9 +87,16 @@ class AssistantModelTest {
         override fun useChatgptAccount(account: String) {
             replace(state.copy(hosted = state.hosted?.copy(selectedAccount = account, model = "")))
         }
+        override fun finishChatgptBrowser(account: AssistantHostedAccount) {
+            assertTrue(foreground)
+            finishedBrowserAccount = account
+        }
         override fun signOutChatgpt(account: String): Boolean {
             replace(state.copy(hosted = state.hosted?.let {
-                it.copy(accounts = it.accounts.filterNot { saved -> saved.id == account })
+                val remaining = it.accounts.filterNot { saved -> saved.id == account }
+                if (it.selectedAccount == account && remaining.isNotEmpty()) {
+                    it.copy(accounts = remaining, selectedAccount = remaining.first().id, model = "")
+                } else it.copy(accounts = remaining)
             }))
             return true
         }
@@ -220,11 +228,13 @@ class AssistantModelTest {
         core.browserResult.complete(second)
         runCurrent()
         assertEquals(null, model.ui.value.signedIn)
+        assertEquals(null, core.finishedBrowserAccount)
         model.foreground(true)
         runCurrent()
         assertTrue(core.browserClosed)
         assertFalse(model.ui.value.browserSignIn)
         assertEquals(second, model.ui.value.signedIn)
+        assertEquals(second, core.finishedBrowserAccount)
         assertEquals(first.id, model.ui.value.panel.hosted?.selectedAccount)
         model.useChatgptAccount(first.id)
         runCurrent()
@@ -238,7 +248,8 @@ class AssistantModelTest {
         runCurrent()
         val remaining = checkNotNull(model.ui.value.panel.hosted)
         assertEquals(listOf(first), remaining.accounts)
-        assertFalse(remaining.accounts.any { it.id == remaining.selectedAccount })
+        assertEquals(first.id, remaining.selectedAccount)
+        assertEquals("", remaining.model)
     }
 
     @Test fun cloudSendWaitsForAnExplicitListScopeApproval() = runTest {

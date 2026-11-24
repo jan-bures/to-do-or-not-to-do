@@ -1,6 +1,8 @@
 //! Android's paired assistant operations. UniFFI only exposes account labels and opaque handles.
 use super::*;
-use todo_client::assistant::{browser_sign_in::Attempt, native_relay::VERIFY_URL};
+use todo_client::assistant::{
+    browser_sign_in::Attempt, default_chatgpt_account, native_relay::VERIFY_URL,
+};
 use tokio::task::{AbortHandle, JoinHandle};
 
 #[derive(Clone, Debug, PartialEq, Eq, uniffi::Record)]
@@ -129,10 +131,33 @@ impl AndroidAssistant {
             .ok_or_else(|| invalid("Pair this phone to use the server assistant."))
     }
 
-    fn apply_hosted_status(&self, status: relay::Status) -> Result<(), FfiError> {
+    fn apply_hosted_status(
+        &self,
+        status: relay::Status,
+        signed_in: Option<Uuid>,
+    ) -> Result<(), FfiError> {
         let mut session = locked(&self.session);
         self.require_active(&mut session)?;
         let route = session.settings.hosted;
+        let account = match route {
+            Some(Hosted::ChatGpt(id)) => {
+                default_chatgpt_account(&status.accounts, Some(id), signed_in)
+            }
+            None if signed_in.is_some() => {
+                default_chatgpt_account(&status.accounts, None, signed_in)
+            }
+            _ => None,
+        };
+        if let Some(account) = account
+            .map(Hosted::ChatGpt)
+            .filter(|choice| Some(*choice) != route)
+        {
+            self.save_relay_choice(&mut session, account, None)?;
+            session.relay_status = Some(status);
+            self.install(&session);
+            self.changes.notify();
+            return Ok(());
+        }
         let (ready, approval_changed) = match route {
             Some(Hosted::ChatGpt(id)) => {
                 let old = session
@@ -248,7 +273,7 @@ impl AndroidAssistant {
             access_version: status.access_version,
         }));
         match result {
-            Ok(status) => self.apply_hosted_status(status),
+            Ok(status) => self.apply_hosted_status(status, None),
             Err(error) => {
                 let _ = self.refresh_relay();
                 Err(error)
@@ -269,20 +294,35 @@ impl AndroidAssistant {
         {
             return Err(invalid("Choose an available account and model."));
         }
-        let mut next = session.settings.clone();
-        if next.hosted == Some(route) && model.is_none() {
+        if session.settings.hosted == Some(route) && model.is_none() {
             return Ok(());
         }
+        self.save_relay_choice(&mut session, route, model)?;
+        self.install(&session);
+        self.changes.notify();
+        Ok(())
+    }
+
+    fn save_relay_choice(
+        &self,
+        session: &mut Session,
+        route: Hosted,
+        model: Option<String>,
+    ) -> Result<(), FfiError> {
+        let mut next = session.settings.clone();
         next.hosted = Some(route);
         next.hosted_model = model.unwrap_or_default();
         save_settings(&self.path, &next)?;
-        stop_check(&mut session);
+        stop_check(session);
         session.settings = next;
         session.problem = None;
         session.connection = AssistantConnection::Untested;
         session.receipts.clear();
-        self.install(&session);
         Ok(())
+    }
+
+    fn apply_chatgpt_sign_in(&self, account: Uuid) -> Result<(), FfiError> {
+        self.apply_hosted_status(request(self.paired()?.status())?, Some(account))
     }
 }
 
@@ -294,7 +334,7 @@ impl AndroidAssistant {
             return Ok(());
         }
         let relay = self.paired()?;
-        self.apply_hosted_status(request(relay.status())?)
+        self.apply_hosted_status(request(relay.status())?, None)
     }
 
     pub fn relay_models(
@@ -354,6 +394,11 @@ impl AndroidAssistant {
         }
     }
 
+    /// Apply a completed browser sign-in once the app is back in the foreground.
+    pub fn finish_chatgpt_browser(&self, account: String) -> Result<(), FfiError> {
+        self.apply_chatgpt_sign_in(id(account)?)
+    }
+
     /// One bounded poll; None means the owner has not approved the code yet.
     pub fn poll_chatgpt(
         &self,
@@ -362,7 +407,7 @@ impl AndroidAssistant {
         match request(self.paired()?.poll(id(attempt)?))? {
             relay::Poll::Pending => Ok(None),
             relay::Poll::SignedIn { account } => {
-                self.refresh_relay()?;
+                self.apply_chatgpt_sign_in(account.id)?;
                 Ok(Some(account_view(account)))
             }
             relay::Poll::Expired => Err(invalid("The ChatGPT sign-in code expired. Start again.")),

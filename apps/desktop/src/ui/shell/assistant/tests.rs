@@ -299,6 +299,7 @@ fn signing_in_without_a_valid_selection_selects_the_new_account() {
         );
         let setup = shell.ai.settings.as_ref().expect("settings");
         assert_eq!(setup.draft.chatgpt_account, Some(account.id));
+        assert!(setup.draft.model.is_empty());
         assert_eq!(shell.ai.cloud.signed_in, Some((account.id, account.label)));
 
         // A status that drops the selected account falls back to a remaining one.
@@ -312,6 +313,7 @@ fn signing_in_without_a_valid_selection_selects_the_new_account() {
         );
         let setup = shell.ai.settings.as_ref().expect("settings");
         assert_eq!(setup.draft.chatgpt_account, Some(other.id));
+        assert!(setup.draft.model.is_empty());
     });
 }
 

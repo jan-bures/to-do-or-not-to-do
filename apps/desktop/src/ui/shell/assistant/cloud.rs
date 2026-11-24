@@ -382,13 +382,17 @@ impl ShellView {
             return;
         }
         let saved = self.ai.cloud.saved();
-        let keep = prefer.is_none() && self.chatgpt_selection_valid();
-        if keep {
+        let current = self
+            .ai
+            .settings
+            .as_ref()
+            .and_then(|setup| setup.draft.chatgpt_account);
+        // Sign-in passes a preference only when the selection before the refresh was invalid.
+        let keep = current.filter(|_| prefer.is_none());
+        let pick = todo_client::assistant::default_chatgpt_account(&saved, keep, prefer);
+        if pick == current {
             return;
         }
-        let pick = prefer
-            .filter(|id| saved.iter().any(|account| account.id == *id))
-            .or_else(|| saved.first().map(|account| account.id));
         if let Some(id) = pick {
             let signed_in = self.ai.cloud.signed_in.take();
             self.choose_chatgpt_account(id, cx);

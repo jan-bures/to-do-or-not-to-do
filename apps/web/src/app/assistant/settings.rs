@@ -257,6 +257,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                     );
                     draft.update(|p| p.hosted_model = model);
                 }
+                hosted::select_chatgpt_account(draft, reviewed_status, local_access, None);
             }
             _ => {}
         }
@@ -310,6 +311,13 @@ pub(in super::super) fn Settings() -> impl IntoView {
                         reviewed_status.set(Some(status));
                         if tab.get_untracked() == ProviderTab::Private {
                             select_tab(ProviderTab::Private);
+                        } else if tab.get_untracked() == ProviderTab::ChatGpt {
+                            hosted::select_chatgpt_account(
+                                draft,
+                                reviewed_status,
+                                local_access,
+                                None,
+                            );
                         }
                     }
                     Err(_)
@@ -603,7 +611,9 @@ pub(in super::super) fn Settings() -> impl IntoView {
                         <button type="button" class="button" on:click=move |_| {
                             if let Some(el) = dialog.get_untracked() { el.close(); }
                         }>"Cancel"</button>
-                        <button type="submit" class="button primary" disabled=move || saving.get() || !route_ready()>"Save"</button>
+                        <button type="submit" class="button primary" disabled=move || {
+                            saving.get() || !route_ready() || draft.with(|p| p.hosted.is_some() && !valid_model(&p.hosted_model))
+                        }>"Save"</button>
                     </div>
                 </footer>
             </form>

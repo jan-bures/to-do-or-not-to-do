@@ -79,6 +79,104 @@ fn snapshot(state: Arc<State>, cursor: u64) -> ConfirmedSnapshot {
     }
 }
 
+#[tokio::test]
+async fn hosted_sign_in_and_refresh_publish_the_account_without_choosing_a_model() {
+    let account = |label: &str| relay::Account {
+        id: Uuid::new_v4(),
+        label: label.into(),
+        approved: false,
+        approved_lists: Default::default(),
+    };
+    let first = account("First account");
+    let new = account("New account");
+    let remaining = account("Remaining account");
+    let status = Arc::new(Mutex::new(relay::Status {
+        chatgpt: true,
+        private_models: true,
+        accounts: vec![first.clone(), new.clone()],
+        ..Default::default()
+    }));
+    let router = Router::new()
+        .route(
+            "/api/v1/assistant/status",
+            get({
+                let status = status.clone();
+                move || async move { Json(locked(&status).clone()) }
+            }),
+        )
+        .route(
+            "/api/v1/assistant/chatgpt/poll/{attempt}",
+            post({
+                let new = new.clone();
+                move || async move { Json(relay::Poll::SignedIn { account: new }) }
+            }),
+        );
+    let tcp = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TodoEngine::open(crate::engine::EngineConfig {
+        server_url: format!("http://{}", tcp.local_addr().unwrap()),
+        token: "fixture-token".into(),
+        device_id: "fixture-device".into(),
+        database_path: dir.path().join("cache.db").to_string_lossy().into(),
+        allow_loopback_http: true,
+    })
+    .unwrap();
+    let server = tokio::spawn(async move { axum::serve(tcp, router).await.unwrap() });
+    let first_id = first.id.to_string();
+    let new_id = new.id.to_string();
+    let ai = AndroidAssistant::open(
+        engine,
+        dir.path().join("assistant.json").to_string_lossy().into(),
+        Arc::new(FixturePlatform::default()),
+    );
+    tokio::task::spawn_blocking(move || {
+        ai.resume();
+        let view = || ai.panel(now()).hosted.unwrap();
+        ai.refresh_relay().unwrap();
+        assert!(view().selected_account.is_none());
+        let before = ai.changes.generation();
+        ai.finish_chatgpt_browser(new_id.clone()).unwrap();
+        assert!(ai.changes.generation() > before);
+        assert_eq!(view().selected_account.as_ref(), Some(&new_id));
+        assert!(view().model.is_empty());
+        assert_eq!(
+            read_settings(&ai.path).unwrap().hosted,
+            Some(Hosted::ChatGpt(new.id))
+        );
+
+        ai.select_relay(Some(first_id.clone()), MODEL.into())
+            .unwrap();
+        let poll = || {
+            ai.poll_chatgpt(Uuid::new_v4().to_string())
+                .unwrap()
+                .unwrap()
+        };
+        assert_eq!(poll().id, new_id);
+        assert_eq!(view().selected_account.as_ref(), Some(&first_id));
+        assert_eq!(view().model, MODEL);
+
+        let remaining_id = remaining.id.to_string();
+        locked(&status).accounts = vec![remaining, new];
+        assert_eq!(poll().id, new_id);
+        assert_eq!(view().selected_account.as_ref(), Some(&new_id));
+        assert!(view().model.is_empty());
+
+        ai.select_relay(Some(new_id), MODEL.into()).unwrap();
+        locked(&status).accounts.pop();
+        ai.refresh_relay().unwrap();
+        assert_eq!(view().selected_account.as_ref(), Some(&remaining_id));
+        assert!(view().model.is_empty());
+
+        ai.select_relay(None, MODEL.into()).unwrap();
+        ai.finish_chatgpt_browser(remaining_id).unwrap();
+        assert!(view().private_selected);
+        assert_eq!(view().model, MODEL);
+    })
+    .await
+    .unwrap();
+    server.abort();
+}
+
 #[test]
 fn proposal_dates_follow_the_phone_preference_and_local_year() {
     use todo_client::assistant::{ListRef, TaskRef};

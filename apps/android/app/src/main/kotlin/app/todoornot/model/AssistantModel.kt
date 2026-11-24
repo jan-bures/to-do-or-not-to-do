@@ -50,6 +50,7 @@ internal interface AssistantCore : Closeable {
     fun useHosted(account: String?, model: String) {}
     fun useChatgptAccount(account: String) {}
     fun startChatgptBrowser(): ChatGptBrowserSignIn? = null
+    fun finishChatgptBrowser(account: AssistantHostedAccount) = refreshRelay()
     fun startChatgpt(): AssistantDeviceCode? = null
     fun pollChatgpt(attempt: String): AssistantHostedAccount? = null
     fun signOutChatgpt(account: String): Boolean = false
@@ -125,6 +126,7 @@ internal class NativeAssistant(private val native: AndroidAssistant) : Assistant
         }
     }
     override fun startChatgpt() = native.startChatgpt()
+    override fun finishChatgptBrowser(account: AssistantHostedAccount) = native.finishChatgptBrowser(account.id)
     override fun pollChatgpt(attempt: String) = native.pollChatgpt(attempt)
     override fun signOutChatgpt(account: String) = native.signOutChatgpt(account)
     override fun scopeReview() = native.relayScopeReview()
@@ -326,7 +328,7 @@ internal class AssistantModel(
                 withContext(io) { serial.withLock {
                     if (foreground && !closed) {
                         followLifecycle()
-                        core.refreshRelay()
+                        core.finishChatgptBrowser(account)
                         publish()
                         _ui.update { current -> current.copy(signedIn = account) }
                     }

@@ -5,7 +5,7 @@ use crate::app::assistant_provider::{PATH, encoded, relay_json};
 use leptos::prelude::*;
 use std::{collections::BTreeSet, time::Duration};
 use todo_client::{
-    assistant::{AccessRules, Controller, provider::ProviderError},
+    assistant::{AccessRules, Controller, default_chatgpt_account, provider::ProviderError},
     platform::Method,
     web::sleep,
 };
@@ -213,6 +213,27 @@ pub(super) fn choose(
     });
 }
 
+pub(super) fn select_chatgpt_account(
+    draft: RwSignal<settings::Profile>,
+    status: RwSignal<Option<relay::Status>>,
+    local_access: StoredValue<AccessRules>,
+    signed_in: Option<Uuid>,
+) {
+    let current = draft.with_untracked(|p| p.hosted);
+    let selected = match current {
+        Some(Hosted::ChatGpt(id)) => Some(id),
+        None if signed_in.is_some() => None,
+        _ => return,
+    };
+    let account = status.with_untracked(|s| {
+        s.as_ref()
+            .and_then(|s| default_chatgpt_account(&s.accounts, selected, signed_in))
+    });
+    if let Some(id) = account.filter(|id| Some(*id) != selected) {
+        choose(draft, status, local_access, Hosted::ChatGpt(id));
+    }
+}
+
 #[component]
 pub(super) fn HostedCards(
     draft: RwSignal<settings::Profile>,
@@ -232,12 +253,12 @@ pub(super) fn HostedCards(
             code.set(None);
         }
     });
-    let refresh = move || async move {
+    let refresh = move |signed_in| async move {
         match ai.refresh_hosted().await {
             Ok(next) if ai.settings.get_untracked().is_some() => {
                 let changed = status.with_untracked(|old| {
                     old.as_ref()
-                        .is_none_or(|old| old.access_version != next.access_version)
+                        .is_some_and(|old| old.access_version != next.access_version)
                 });
                 if !changed {
                     status.set(Some(next));
@@ -255,6 +276,9 @@ pub(super) fn HostedCards(
                         "List access changed on another device. Reopen settings to review it."
                             .into(),
                     ));
+                }
+                if tab.get_untracked() == ProviderTab::ChatGpt {
+                    select_chatgpt_account(draft, status, local_access, signed_in);
                 }
             }
             Ok(_) => {}
@@ -315,7 +339,7 @@ pub(super) fn HostedCards(
                     Ok(relay::Poll::Pending) => continue,
                     Ok(relay::Poll::SignedIn { account }) => {
                         code.set(None);
-                        refresh().await;
+                        refresh(Some(account.id)).await;
                         if ai.settings.get_untracked().is_some()
                             && tab.get_untracked() == ProviderTab::ChatGpt
                         {
@@ -383,7 +407,7 @@ pub(super) fn HostedCards(
                                             if draft.with_untracked(|p| p.hosted == Some(Hosted::ChatGpt(id))) {
                                                 draft.update(|p| p.hosted_model.clear());
                                             }
-                                            refresh().await;
+                                            refresh(None).await;
                                             if !signed_out.revoked { error.set(Some("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.".into())); }
                                         }
                                         Err(err) => error.set(Some(err.to_string())),
@@ -452,7 +476,7 @@ fn HostedModels(draft: RwSignal<settings::Profile>, cloud: bool) -> impl IntoVie
                 Ok(items) if !items.is_empty() => {
                     draft.update(|p| {
                         if !items.iter().any(|item| item.id == p.hosted_model) {
-                            p.hosted_model.clone_from(&items[0].id);
+                            p.hosted_model.clear();
                         }
                     });
                     models.set(items);
@@ -481,6 +505,7 @@ fn HostedModels(draft: RwSignal<settings::Profile>, cloud: bool) -> impl IntoVie
         <select id=id aria-label="Model" hidden=move || !picking.get()
             prop:value=move || draft.with(|p| p.hosted_model.clone())
             on:change=move |ev| { draft.update(|p| p.hosted_model = event_target_value(&ev)); picking.set(false); }>
+            <option value="" disabled=true>"Choose a model"</option>
             {move || models.get().into_iter().map(|model| view! { <option value=model.id>{model.label}</option> }).collect_view()}
         </select>
     }

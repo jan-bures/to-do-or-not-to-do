@@ -34,6 +34,49 @@ pub use todo_tools::assistant::approval::{
 pub use todo_tools::assistant::relay;
 pub use tools::ToolKind;
 
+/// Keep an available account, then prefer the account just signed in, then use relay order.
+pub fn default_chatgpt_account(
+    accounts: &[relay::Account],
+    current: Option<Uuid>,
+    preferred: Option<Uuid>,
+) -> Option<Uuid> {
+    [current, preferred]
+        .into_iter()
+        .flatten()
+        .find(|id| accounts.iter().any(|account| account.id == *id))
+        .or_else(|| accounts.first().map(|account| account.id))
+}
+
+#[cfg(test)]
+#[test]
+fn chatgpt_account_selection_prefers_valid_choices() {
+    let first = Uuid::from_u128(1);
+    let second = Uuid::from_u128(2);
+    let missing = Uuid::from_u128(3);
+    let accounts = [first, second].map(|id| relay::Account {
+        id,
+        label: String::new(),
+        approved: false,
+        approved_lists: Default::default(),
+    });
+    for (current, preferred, expected) in [
+        (None, Some(second), second),
+        (Some(missing), Some(second), second),
+        (Some(second), Some(first), second),
+        (Some(missing), None, first),
+        (None, Some(missing), first),
+    ] {
+        assert_eq!(
+            default_chatgpt_account(&accounts, current, preferred),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        default_chatgpt_account(&[], Some(first), Some(second)),
+        None
+    );
+}
+
 use crate::{
     CommandId, Epoch, Rejection, SubmitError, SyncClient, TrackedCommand,
     notify::{Changed, Notify, timeout},
