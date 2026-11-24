@@ -250,7 +250,7 @@ internal class AssistantModel(
     fun signOutChatgpt(account: String) = act {
         val revoked = core.signOutChatgpt(account)
         _ui.update { if (it.signedIn?.id == account) it.copy(signedIn = null) else it }
-        if (!revoked) throw FfiException.Invalid("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.")
+        if (!revoked) throw FfiException.Invalid("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.")
     }
     fun startChatgpt() {
         if (!foreground || closed || signIn?.isCompleted == false) return

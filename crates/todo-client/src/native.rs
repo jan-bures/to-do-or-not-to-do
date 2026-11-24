@@ -36,6 +36,11 @@ pub enum BuildError {
 /// Event streams have no total limit; the sync engine drops a stream that goes quiet instead.
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 
+#[cfg(feature = "assistant")]
+const PRIVATE_READ_TIMEOUT: Duration = Duration::from_secs(60);
+#[cfg(feature = "assistant")]
+pub(crate) const PRIVATE_TOTAL_TIMEOUT: Duration = Duration::from_secs(600);
+
 /// Whether a transport may speak plain `http`.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Cleartext {
@@ -109,6 +114,8 @@ pub fn admin_url(base_url: &str, cleartext: Cleartext) -> Option<String> {
 #[derive(Clone)]
 pub struct HttpTransport {
     client: reqwest::Client,
+    #[cfg(feature = "assistant")]
+    private_assistant: reqwest::Client,
     base: String,
     /// `None` for an anonymous transport (pairing).
     auth: Option<HeaderValue>,
@@ -178,16 +185,23 @@ impl HttpTransport {
         let base = server_origin_with(base_url, cleartext)?;
         // Ignore the error: another part of the process may have installed a provider already.
         let _ = rustls::crypto::ring::default_provider().install_default();
-        let client = reqwest::Client::builder()
-            .tls_backend_rustls()
-            .connect_timeout(Duration::from_secs(10))
-            // Never follow a redirect: it would carry the token, or a pairing secret in a 307/308 body,
-            // to wherever the server points. A 3xx is an error instead (see `refuse_redirect`).
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .map_err(|e| BuildError::Client(e.to_string()))?;
+        let client = || {
+            reqwest::Client::builder()
+                .tls_backend_rustls()
+                .connect_timeout(Duration::from_secs(10))
+                // Never follow a redirect: it would carry the token, or a pairing secret in a 307/308 body,
+                // to wherever the server points. A 3xx is an error instead (see `refuse_redirect`).
+                .redirect(reqwest::redirect::Policy::none())
+        };
+        let build_error = |e: reqwest::Error| BuildError::Client(e.to_string());
         Ok(Self {
-            client,
+            client: client().build().map_err(build_error)?,
+            #[cfg(feature = "assistant")]
+            private_assistant: client()
+                .read_timeout(PRIVATE_READ_TIMEOUT)
+                .timeout(PRIVATE_TOTAL_TIMEOUT)
+                .build()
+                .map_err(build_error)?,
             base,
             auth,
             revocation: None,
@@ -265,12 +279,21 @@ impl HttpTransport {
         method: Method,
         path: &str,
     ) -> Result<reqwest::RequestBuilder, TransportError> {
+        self.authenticated_with(&self.client, method, path)
+    }
+
+    fn authenticated_with(
+        &self,
+        client: &reqwest::Client,
+        method: Method,
+        path: &str,
+    ) -> Result<reqwest::RequestBuilder, TransportError> {
         let url = self.url_for(path)?;
         let mut b = match method {
-            Method::Get => self.client.get(url),
-            Method::Post => self.client.post(url),
-            Method::Put => self.client.put(url),
-            Method::Delete => self.client.delete(url),
+            Method::Get => client.get(url),
+            Method::Post => client.post(url),
+            Method::Put => client.put(url),
+            Method::Delete => client.delete(url),
         };
         if let Some(auth) = &self.auth {
             b = b.header(AUTHORIZATION, auth.clone());
@@ -284,10 +307,16 @@ impl HttpTransport {
         &self,
         request: Request,
     ) -> Result<reqwest::Response, TransportError> {
-        let res = self
-            .builder(&request)?
+        let builder = if request.path == "/api/v1/assistant/private/chat" {
+            Self::with_body(
+                self.authenticated_with(&self.private_assistant, request.method, &request.path)?,
+                &request,
+            )
+        } else {
+            self.builder(&request)?.timeout(Duration::from_secs(85))
+        };
+        let res = builder
             .header(ACCEPT, "text/event-stream, application/json")
-            .timeout(Duration::from_secs(85))
             .send()
             .await
             .map_err(network)?;
@@ -297,13 +326,19 @@ impl HttpTransport {
     }
 
     fn builder(&self, request: &Request) -> Result<reqwest::RequestBuilder, TransportError> {
-        let mut b = self.authenticated(request.method, &request.path)?;
-        if let Some(body) = &request.body {
-            b = b
+        Ok(Self::with_body(
+            self.authenticated(request.method, &request.path)?,
+            request,
+        ))
+    }
+
+    fn with_body(builder: reqwest::RequestBuilder, request: &Request) -> reqwest::RequestBuilder {
+        match &request.body {
+            Some(body) => builder
                 .header(CONTENT_TYPE, "application/json")
-                .body(body.clone());
+                .body(body.clone()),
+            None => builder,
         }
-        Ok(b)
     }
 }
 
@@ -479,6 +514,89 @@ impl Entropy for OsEntropy {
 #[cfg(test)]
 mod tests {
     use super::{Cleartext, admin_url};
+
+    #[cfg(feature = "assistant")]
+    #[tokio::test(start_paused = true)]
+    async fn private_assistant_keeps_reading_past_cloud_deadline_but_bounds_idle_and_total() {
+        use super::*;
+        use tokio::{
+            io::{AsyncReadExt, AsyncWriteExt},
+            net::TcpListener,
+            sync::mpsc,
+            time::advance,
+        };
+
+        async fn response(path: &str) -> (reqwest::Response, mpsc::Sender<()>) {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let url = format!("http://{}", listener.local_addr().unwrap());
+            let (send, mut chunks) = mpsc::channel(1);
+            tokio::spawn(async move {
+                let (mut wire, _) = listener.accept().await.unwrap();
+                let mut headers = Vec::new();
+                while !headers.ends_with(b"\r\n\r\n") {
+                    headers.push(wire.read_u8().await.unwrap());
+                }
+                assert!(
+                    String::from_utf8_lossy(&headers)
+                        .contains("authorization: Bearer fixture-pairing-token")
+                );
+                wire.write_all(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n").await.unwrap();
+                while chunks.recv().await.is_some() {
+                    wire.write_all(b"1\r\nx\r\n").await.unwrap();
+                }
+            });
+            let transport = HttpTransport::new(&url, "fixture-pairing-token").unwrap();
+            let res = transport
+                .assistant_body(Request {
+                    method: Method::Post,
+                    path: path.into(),
+                    body: None,
+                })
+                .await
+                .unwrap();
+            (res, send)
+        }
+
+        // Don't let the paused clock automatically jump while Windows polls the local network.
+        let hold_clock = tokio::spawn(async {
+            loop {
+                tokio::task::yield_now().await;
+            }
+        });
+        let (mut private, chunks) = response("/api/v1/assistant/private/chat").await;
+        for _ in 0..11 {
+            let chunk = private.chunk();
+            tokio::pin!(chunk);
+            assert!(futures_util::poll!(&mut chunk).is_pending());
+            advance(Duration::from_secs(50)).await;
+            chunks.send(()).await.unwrap();
+            assert_eq!(chunk.await.unwrap().unwrap().as_ref(), b"x");
+        }
+        let chunk = private.chunk();
+        tokio::pin!(chunk);
+        assert!(futures_util::poll!(&mut chunk).is_pending());
+        advance(Duration::from_secs(51)).await;
+        assert!(
+            chunk.await.unwrap_err().is_timeout(),
+            "600 s total, despite recent data"
+        );
+
+        let (mut idle, _chunks) = response("/api/v1/assistant/private/chat").await;
+        let chunk = idle.chunk();
+        tokio::pin!(chunk);
+        assert!(futures_util::poll!(&mut chunk).is_pending());
+        advance(Duration::from_secs(61)).await;
+        assert!(
+            chunk.await.unwrap_err().is_timeout(),
+            "60 s idle, before the total deadline"
+        );
+
+        let (mut cloud, _chunks) =
+            response("/api/v1/assistant/chatgpt/accounts/fixture/chat").await;
+        advance(Duration::from_secs(86)).await;
+        assert!(cloud.chunk().await.unwrap_err().is_timeout());
+        hold_clock.abort();
+    }
 
     #[test]
     fn admin_pages_use_the_paired_base_and_transport_policy() {

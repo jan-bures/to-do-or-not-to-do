@@ -451,7 +451,7 @@ impl ShellView {
                     if this.ai.cloud.signed_in.as_ref().is_some_and(|(signed_in, _)| *signed_in == id) {
                         this.ai.cloud.signed_in = None;
                     }
-                    if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. The server will retry revocation. You can also disconnect the app in ChatGPT settings.".into()); }
+                    if !done.revoked { this.ai.cloud.error = Some("Signed out on your server. Revocation wasn’t confirmed. You can disconnect the app in ChatGPT settings.".into()); }
                 }
                 Err(error) => this.cloud_job_failed(revision, cloud_problem(error), cx),
             });

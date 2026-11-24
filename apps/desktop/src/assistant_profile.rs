@@ -113,7 +113,7 @@ impl Profile {
 
     pub fn load(data: &DataDir) -> anyhow::Result<Self> {
         data.check()?;
-        Self::remove_legacy_files(data)?;
+        Self::remove_legacy_files(data);
         let sealed = match todo_fs::read_private_file(&data.path().join(FILE), MAX_PROFILE) {
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Self::default()),
             other => other?,
@@ -142,23 +142,35 @@ impl Profile {
         Ok(profile)
     }
 
-    fn remove_legacy_files(data: &DataDir) -> anyhow::Result<()> {
-        for entry in std::fs::read_dir(data.path())? {
-            let entry = entry?;
-            let name = entry.file_name();
-            let remove = name.to_str().is_some_and(|name| {
-                matches!(name, "assistant-chatgpt.bin" | "assistant-chatgpt.lock")
-                    || is_temporary(&entry.file_name())
-                    || (name.starts_with("assistant-chatgpt-") && name.ends_with(".tmp"))
-            });
-            if remove {
-                match std::fs::remove_file(entry.path()) {
-                    Err(e) if e.kind() == ErrorKind::NotFound => {}
-                    result => result?,
+    fn remove_legacy_files(data: &DataDir) {
+        let entries = match std::fs::read_dir(data.path()) {
+            Ok(entries) => entries,
+            Err(error) => {
+                tracing::debug!(%error, "could not scan for legacy assistant credentials");
+                return;
+            }
+        };
+        for entry in entries {
+            let entry = match entry {
+                Ok(entry) => entry,
+                Err(error) => {
+                    tracing::debug!(%error, "could not read a legacy assistant directory entry");
+                    continue;
                 }
+            };
+            let name = entry.file_name();
+            let remove = is_temporary(&name)
+                || name.to_str().is_some_and(|name| {
+                    matches!(name, "assistant-chatgpt.bin" | "assistant-chatgpt.lock")
+                        || (name.starts_with("assistant-chatgpt-") && name.ends_with(".tmp"))
+                });
+            if remove
+                && let Err(error) = std::fs::remove_file(entry.path())
+                && error.kind() != ErrorKind::NotFound
+            {
+                tracing::debug!(%error, "could not remove a legacy assistant credential or draft");
             }
         }
-        Ok(())
     }
 
     pub fn save(&self, data: &DataDir) -> anyhow::Result<()> {
@@ -332,6 +344,29 @@ mod tests {
         );
         let reloaded = Profile::load(&data).expect("reload migrated settings");
         assert!(reloaded.key.is_empty());
+    }
+
+    #[test]
+    fn migration_still_loads_settings_when_a_legacy_file_cannot_be_removed() {
+        let dir = tempfile::tempdir_in("target").expect("fixture directory");
+        let data = Paths::in_dir(dir.path().to_owned()).data(&PairingId::random());
+        let locked = data.path().join("assistant-chatgpt.bin");
+        let removable = data.path().join("assistant-chatgpt.lock");
+        std::fs::create_dir_all(&locked).expect("non-file at the legacy path");
+        std::fs::write(&removable, b"fixture").expect("removable record");
+        Profile {
+            url: "http://127.0.0.1:8030/v1".into(),
+            model: "example-model".into(),
+            ..Default::default()
+        }
+        .save(&data)
+        .expect("save fixture profile");
+        assert_eq!(
+            Profile::load(&data).expect("load fixture profile").model,
+            "example-model"
+        );
+        assert!(locked.is_dir());
+        assert!(!removable.exists());
     }
 
     #[test]

@@ -449,7 +449,8 @@ reverses the whole approved group. Chat drafts and API keys never enter the To-d
 Choose **ChatGPT** in AI settings. If device sign-in is configured, choose **Sign in with ChatGPT**,
 open the verification page, and enter the one-time code. Only approve a sign-in you started. Alternatively,
 choose **Continue in browser** to sign in with the installed app’s loopback handoff. The server creates the
-PKCE verifier and exchanges the code; the app receives no OpenAI token. An account connected by another
+PKCE verifier and exchanges the code; the app receives no OpenAI token. The loopback callback expires
+in ten minutes. An account connected by another
 client is available without signing in again. This does not sign the owner into To-do or expose past
 ChatGPT conversations.
 
@@ -462,9 +463,10 @@ The To-do server relays the chat to OpenAI with `store: false`, which is not a z
 Eligible requests can use plan allowance or available credits. Use **Manage usage** to review limits;
 a usage failure stops the reply without automatically retrying it.
 
-**Sign out** removes that account and consent from the server. If remote revocation fails, the server
-retries it; you can also disconnect the app in ChatGPT settings. Upgrading deletes the old
-local ChatGPT credential files and any old non-loopback model keys. Sign in again once with the
+**Sign out** removes that account and consent from the server. The server retries temporary revocation
+failures; you can also disconnect the app in ChatGPT settings. Upgrading attempts to remove the old
+local ChatGPT credential files and clears old non-loopback model keys. The app never reads the old
+ChatGPT files, even if removal fails. Sign in again once with the
 server relay instead of transferring the old tokens.
 
 ### Workflow lists, Board and Timeline

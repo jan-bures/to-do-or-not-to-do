@@ -39,7 +39,7 @@ serde_json = "1"
 tempfile = "3"
 uuid = "1"
 # The sync engine's runtime (network I/O runs here, never on the UI thread).
-tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util"] }
+tokio = { version = "1", features = ["rt-multi-thread", "sync", "time", "net", "io-util", "macros"] }
 anyhow = "1"
 subtle = "2"
 futures = "0.3"
@@ -53,6 +53,7 @@ zeroize = "1"
 url = "2"
 
 [target.'cfg(windows)'.dependencies]
+socket2 = "0.6"
 gpui_windows = { git = "https://github.com/zed-industries/zed", rev = "2f808b3c2de049ecfdbad0fdb26763cebfcaa3b4" }
 global-hotkey = "0.7"
 raw-window-handle = "0.6"

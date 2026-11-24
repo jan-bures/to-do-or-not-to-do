@@ -64,7 +64,7 @@ rustix = { workspace = true, optional = true, features = ["fs"] }
 
 [dev-dependencies]
 todo-server.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "time", "test-util"] }
 tempfile.workspace = true
 proptest.workspace = true
 rusqlite.workspace = true

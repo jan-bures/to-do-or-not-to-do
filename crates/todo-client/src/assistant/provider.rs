@@ -214,12 +214,32 @@ pub trait TailnetInterface: MaybeSend + MaybeSync {
     fn connected(&self) -> bool;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TurnTimeouts {
+    /// Maximum wait for the next decoded event or for response headers.
+    pub idle: Duration,
+    /// Maximum duration of a turn, including all tool rounds.
+    pub total: Duration,
+}
+
+impl Default for TurnTimeouts {
+    fn default() -> Self {
+        Self {
+            idle: Duration::from_secs(20),
+            total: Duration::from_secs(90),
+        }
+    }
+}
+
 pub trait Provider: MaybeSend + MaybeSync + 'static {
     type Stream: Stream<Item = Result<StreamEvent, ProviderError>> + Unpin + MaybeSend;
 
     fn list_models(&self) -> impl Future<Output = Result<Vec<Model>, ProviderError>> + MaybeSend;
     fn capabilities(&self, model: &str) -> Capabilities;
     fn check_connection(&self) -> impl Future<Output = Result<(), ProviderError>> + MaybeSend;
+    fn turn_timeouts(&self) -> TurnTimeouts {
+        TurnTimeouts::default()
+    }
 
     fn stream_turn(
         &self,

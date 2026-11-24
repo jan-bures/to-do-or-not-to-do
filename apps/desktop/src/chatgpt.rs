@@ -14,8 +14,10 @@ pub enum Error {
     Callback,
     #[error("Sign-in timed out. Start a new sign-in to try again.")]
     TimedOut,
-    #[error("ChatGPT sign-in was canceled.")]
+    #[error("ChatGPT sign-in was canceled or declined.")]
     Declined,
+    #[error("ChatGPT didn't return the authorization details. Start a new sign-in to try again.")]
+    MissingAuthorization,
 }
 
 #[derive(Clone)]

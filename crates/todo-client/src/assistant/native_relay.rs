@@ -11,13 +11,13 @@ use super::{
     openai,
     provider::{
         BillingClass, Cancel, Capabilities, DataClass, Model, Provider, ProviderError,
-        RoundRequest, StreamEvent,
+        RoundRequest, StreamEvent, TurnTimeouts,
     },
     relay, responses,
     wire::RoundDecoder,
 };
 use crate::{
-    native::HttpTransport,
+    native::{HttpTransport, PRIVATE_TOTAL_TIMEOUT},
     platform::{Method, Request, Transport, TransportError},
 };
 
@@ -307,6 +307,17 @@ impl Provider for NativeProvider {
                     BillingClass::NoPerTokenCharge
                 },
             },
+        }
+    }
+    fn turn_timeouts(&self) -> TurnTimeouts {
+        match self {
+            Self::Relay(_, Hosted::Private) => TurnTimeouts {
+                // The transport enforces idle time between raw reads. A quiet decoded event stream
+                // is not necessarily a dead connection (e.g. progress frames and SSE keepalives).
+                idle: PRIVATE_TOTAL_TIMEOUT,
+                total: PRIVATE_TOTAL_TIMEOUT,
+            },
+            _ => TurnTimeouts::default(),
         }
     }
     async fn stream_turn(
