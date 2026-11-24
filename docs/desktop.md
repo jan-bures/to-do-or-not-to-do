@@ -182,11 +182,13 @@ using your server's HTTPS address (for example `https://todo.example.com`). An e
 the unpackaged app is reused. If you use **Start with Windows**, enable it from the installed app's tray menu
 to point Windows at the installed copy. Uninstall removes the app's Start with Windows entry.
 
-An installed app checks for updates on launch, then every six hours plus up to thirty minutes of
-jitter, on a Windows background-priority thread even when it is not paired. Returning to the main
+An installed app first checks for updates about 45 seconds after launch, then every six hours plus
+up to thirty minutes of jitter, on a Windows background-priority thread even when it is not paired. Returning to the main
 window after thirty minutes away also checks, unless the last attempt was less than thirty minutes
 ago or an automatic retry is already scheduled. After consecutive network failures it retries after
-five minutes, thirty minutes, then six hours plus jitter. Downloads do not interrupt normal use.
+five minutes, thirty minutes, then six hours plus jitter. Background check failures appear in Settings
+and only reach the sidebar after three consecutive failures. The sidebar shows the checking message
+only for a manual check. Downloads do not interrupt normal use.
 
 The build reads the root `Cargo.toml` repository URL by default. Forks can set the build-time
 `TODO_DESKTOP_UPDATE_FEED` to their public HTTPS repository base, or to an empty value to disable updates.
@@ -202,8 +204,10 @@ The v2 proof signs `todo-desktop-update-v2`, the tag, the lowercase installer SH
 installer size, each followed by a newline, then the exact bytes of `releases.win.json`. This binds the
 installer as well as the versions, hashes, and sizes of every listed full and delta package.
 The app verifies the proof against its pinned keys and only accepts a newer version. It checks the size
-and SHA-256 before staging, then checks the saved proof and package again before asking Velopack to apply
-it. Current clients download the signed full package: Velopack's native delta reconstruction does not
+and SHA-256 before staging. On startup it re-verifies the saved proof and package before applying. For a
+package staged while the app runs, verification happens off the UI thread before the app offers restart
+or quit to update. Those actions check that the file's size and modification time still match the verified
+file. Current clients download the signed full package: Velopack's native delta reconstruction does not
 produce a byte-identical full nupkg. The publisher still produces and signs the delta metadata.
 A signature, release identity, or checksum failure stages nothing and shows **Update couldn’t be verified**.
 A missing or invalid signature or a release identity mismatch always stops the update before download.
@@ -224,14 +228,21 @@ immediately when no check, download or staged update is pending. It does not mov
 check or change its backoff. Development builds do not check for updates. Errors are shown without the
 feed address or credentials.
 
-The sidebar footer and tray show download progress and offer **Retry** after a failure. A verified,
-staged package is ready at startup without another download. Select **Restart to update** in the
-sidebar, Settings, or the tray to exit normally and have Velopack apply the package and reopen the app.
-The sidebar shows the target build on hover. **Quit** from the tray applies a ready package without
-reopening the app (closing the window usually just hides it). Both paths keep local data and pairing.
-If a restart leaves the same newer package pending, the app reports the failure and skips that version.
-A later release can still be staged. Once staged, an update belongs to the installation, not to a
-particular pairing.
+The sidebar footer and tray show download progress and offer **Retry** after a failure. On the next
+primary launch, including **Start with Windows**, the app re-verifies a staged update before opening
+any window and asks Velopack to apply it and restart. A second instance never applies updates. If
+verification fails, the app discards the staged update, reports the failure, and opens the current version.
+
+Select **Restart to update** in the sidebar, Settings, or tray to apply a ready update immediately and
+reopen the app. The sidebar shows the target build on hover. **Quit** from the tray applies it without
+reopening the app (closing the window usually just hides it). If Quit cannot launch the updater, the
+app leaves the verified update for the next startup rather than trying again on Quit. These paths keep
+local data and pairing.
+
+A Velopack relaunch never tries to apply the pending update again: if the same newer package is
+still pending, the app reports **Skipped build N after a failed restart · Retry**. A later release can
+still be staged. The skip expires after 24 hours, or a manual **Check for updates** or **Retry** clears
+it once for that signed offer. Once staged, an update belongs to the installation, not to a particular pairing.
 
 ## Vendored `gpui_windows`
 
@@ -956,7 +967,8 @@ composer, the settings page, the full board, and the board with the collapsed Do
 menu and the detail pane's priority picker. `updates-up-to-date`, `updates-checking`, `updates-downloading`,
 `updates-ready`, `updates-failed`, `updates-unverified` and `updates-disabled` show the Updates page without checking a real feed.
 `updates-indicator` and `updates-footer-current`, `updates-footer-checking`, `updates-footer-downloading`,
-and `updates-footer-failed` show the minimum-width sidebar with Settings closed and pending sync changes below the update row.
+`updates-footer-failed` and `updates-footer-skipped` show the minimum-width sidebar with Settings closed
+and pending sync changes below the update row.
 `quick-add-chips`, `quick-add-calendar` and `quick-add-priority`
 show the two composer chips and both pickers from the same draft. `detail-due-calendar` shows the shared
 calendar and repeat warning anchored to the repeating task's Due row. `task-context-menu` is a task's menu on the row below the selected

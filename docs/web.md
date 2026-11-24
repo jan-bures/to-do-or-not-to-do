@@ -64,8 +64,8 @@ browsers that accept gzip.
 The build also writes a content fingerprint into `index.html` and `/app/version.txt`. An open tab
 checks the deployed fingerprint on startup, every ten minutes, and on focus. If it changes, the
 sidebar offers **Reload to update**. Reload first saves queued changes to IndexedDB for delivery
-by the next page, even if offline. If there is an open editor or unsent draft, the user can cancel
-without losing it.
+by the next page, even if offline. A failed save blocks the reload. An unsent editor draft or changes
+held only in memory prompt for confirmation before reloading.
 
 ## Layout of the code
 

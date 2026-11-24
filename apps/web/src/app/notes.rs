@@ -13,8 +13,8 @@ use todo_design::Icon;
 #[component]
 pub(super) fn NotesEditor(id: TaskId, notes: Signal<String>) -> impl IntoView {
     let c = ctx();
-    let draft = Draft::new(notes);
     let editing = RwSignal::new(false);
+    let draft = Draft::new(notes, editing);
     let input = NodeRef::<html::Textarea>::new();
     let edit = move || {
         if !c.read_only() {

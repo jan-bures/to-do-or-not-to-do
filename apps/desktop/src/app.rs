@@ -121,7 +121,13 @@ pub fn run(opts: RunOptions, bench: Option<BenchOptions>, restarted: bool) -> an
         }
     };
     let standalone = primary.is_none();
-    let updates = crate::updates::Controller::new(!standalone && bench.is_none(), restarted);
+    let Some(updates) = crate::updates::Controller::startup(
+        !standalone && bench.is_none(),
+        restarted,
+        opts.background,
+    ) else {
+        return Ok(());
+    };
     let _update_worker = updates.start();
     let mut metrics = Metrics::default();
     if bench.is_some() {
@@ -423,6 +429,9 @@ fn handle_event(
             let quit = main
                 .update(cx, |root, window, cx| {
                     if action == TrayAction::Update {
+                        if root.is_signing_out() {
+                            return false;
+                        }
                         if !root.update_ready() {
                             root.check_updates();
                             return false;

@@ -202,6 +202,7 @@ fn CustomTime(seen: Option<Seen>, apply: Callback<Timestamp>, back: Callback<()>
     };
     let result = Memo::new(move |_| draft.with(|d| resolve(d, c.now.get())));
     let submit_error = RwSignal::new(None);
+    let dirty = c.drafts.flag();
     view! {
         <form class="picker-page" on:submit=move |ev| {
             ev.prevent_default();
@@ -214,6 +215,7 @@ fn CustomTime(seen: Option<Seen>, apply: Callback<Timestamp>, back: Callback<()>
             <label class="picker-field" for=DATE>"Date"
                 <input id=DATE class="room-name-input" type="date" required prop:value=initial_date
                     aria-describedby="reminder-time-note" on:input=move |ev| {
+                        dirty.set(true);
                         submit_error.set(None);
                         draft.update(|d| d.date = event_target_value(&ev));
                     }/>
@@ -221,6 +223,7 @@ fn CustomTime(seen: Option<Seen>, apply: Callback<Timestamp>, back: Callback<()>
             <label class="picker-field" for="reminder-time">"Time"
                 <input id="reminder-time" class="room-name-input" type="time" required prop:value=initial_time
                     aria-describedby="reminder-time-note" on:input=move |ev| {
+                        dirty.set(true);
                         submit_error.set(None);
                         draft.update(|d| d.time = event_target_value(&ev));
                     }/>

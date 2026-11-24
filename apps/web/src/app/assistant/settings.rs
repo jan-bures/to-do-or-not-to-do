@@ -217,6 +217,8 @@ pub(in super::super) fn Settings() -> impl IntoView {
     let tab = RwSignal::new(ProviderTab::default());
     let signed_in = RwSignal::new(None::<String>);
     let recent_account = StoredValue::new(None);
+    let dirty = c.drafts.flag();
+    c.drafts.watch(move || saving.get_untracked());
     let select_tab = move |provider| {
         signed_in.set(None);
         tab.set(provider);
@@ -284,6 +286,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
             return;
         };
         if let Some(from) = from.filter(|_| !el.open()) {
+            dirty.set(false);
             return_focus.set_value(from);
             ai.reload_profile();
             let profile = ai.profile.get_value();
@@ -511,6 +514,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
         <dialog id="assistant-settings-dialog" class="room-dialog ai-settings" aria-labelledby="ai-settings-title" node_ref=dialog
             on:keydown=move |ev| platform::contain_tab("assistant-settings-dialog", &ev)
             on:close=move |_| {
+                dirty.set(false);
                 clear_input();
                 ai.settings.set(None);
                 let focus = return_focus.get_value();
@@ -523,12 +527,14 @@ pub(in super::super) fn Settings() -> impl IntoView {
                 }>{icon(Icon::X)}</button>
             </header>
             <form novalidate on:submit=move |ev| { ev.prevent_default(); save(false); }
-                on:click:capture=move |_| signed_in.set(None) on:input=move |_| signed_in.set(None)>
+                on:click:capture=move |_| signed_in.set(None)
+                on:input=move |_| { dirty.set(true); signed_in.set(None); }
+                on:change=move |_| dirty.set(true)>
                 <div class="ai-settings-body" node_ref=body>
                     <div class="ai-provider-picker" role="group" aria-label="Model provider">
                         {ProviderTab::ALL.map(|provider| view! {
                             <button type="button" class="button" aria-pressed=move || (tab.get() == provider).to_string()
-                                on:click=move |_| select_tab(provider)>{provider.label()}</button>
+                                on:click=move |_| { dirty.set(true); select_tab(provider); }>{provider.label()}</button>
                         })}
                     </div>
                     <hosted::HostedCards draft status=reviewed_status error local_access tab signed_in/>
@@ -562,7 +568,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                             </label>
                             <Show when=move || has_key.get()>
                                 <button type="button" class="ai-link" on:click=move |_| {
-                                    clear_input(); has_key.set(false); remember_key.set(false);
+                                    dirty.set(true); clear_input(); has_key.set(false); remember_key.set(false);
                                 }>"Remove key"</button>
                             </Show>
                         </div>

@@ -313,13 +313,14 @@ fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateS
         "updates-up-to-date" | "updates-footer-current" => UpdateState::UpToDate {
             checked_at: earlier(5),
         },
-        "updates-checking" | "updates-footer-checking" => UpdateState::Checking,
+        "updates-checking" | "updates-footer-checking" => UpdateState::Checking { manual: true },
         "updates-downloading" | "updates-footer-downloading" => {
             UpdateState::Downloading { progress: Some(42) }
         }
         "updates-ready" | "updates-indicator" => UpdateState::Ready {
             version: "0.1.0-build.147".into(),
         },
+        "updates-footer-skipped" => UpdateState::Skipped { build: 147 },
         "updates-unverified" => UpdateState::Failed {
             kind: updates::Failure::Verify,
             at: earlier(2),

@@ -263,6 +263,8 @@ pub(super) fn DueDialog() -> impl IntoView {
     let c = ctx();
     let invalid = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
+    c.drafts
+        .watch(move || draft.with_untracked(|text| !text.is_empty()));
     let save = move |clear: bool| {
         let now = if c.live {
             platform::now()

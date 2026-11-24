@@ -1,14 +1,18 @@
 //! The deployed bundle can change while this tab has a local outbox and unsent editors.
 
-use super::{Ctx, backend, ctx, icon};
+use super::{backend, ctx, icon};
 use leptos::prelude::*;
-use std::{cell::Cell, rc::Rc, time::Duration};
+use std::{
+    cell::Cell,
+    rc::Rc,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 use todo_design::Icon;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{
-    AbortSignal, HtmlInputElement, Request, RequestCache, RequestInit, RequestMode,
-    RequestRedirect, Response, Window,
+    AbortSignal, Request, RequestCache, RequestInit, RequestMode, RequestRedirect, Response,
 };
 
 fn is_version(value: &str) -> bool {
@@ -49,35 +53,39 @@ async fn deployed_version() -> Option<String> {
     is_version(version).then(|| version.to_owned())
 }
 
-fn has_draft(window: &Window, c: Ctx) -> bool {
-    if c.editing.get_untracked() || c.new_room.get_untracked().is_some() || c.ai.has_draft() {
-        return true;
+type Dirty = dyn Fn() -> bool + Send + Sync;
+
+/// The app-wide dirty flag combines editor-owned draft state. An editor unregisters when its
+/// reactive owner is cleaned up, so a closed editor can't leave a stale reload warning behind.
+#[derive(Clone, Copy)]
+pub(super) struct Drafts(StoredValue<Vec<Weak<Dirty>>>);
+
+impl Drafts {
+    pub fn new() -> Self {
+        Self(StoredValue::new(Vec::new()))
     }
-    let Some(doc) = window.document() else {
-        return false;
-    };
-    // Editors that save on blur may still be open when clicked with a pointer. A dialog, chosen
-    // quick-add options, or text in the Add link field can also hold work outside the outbox.
-    if doc
-        .query_selector(
-            "dialog[open], .title-input, .step-input, textarea.notes, .qa-chips.has-chips",
-        )
-        .ok()
-        .flatten()
-        .is_some()
-    {
-        return true;
+
+    /// Read the editor's existing state synchronously when the user asks to reload.
+    pub fn watch(self, dirty: impl Fn() -> bool + Send + Sync + 'static) {
+        let dirty: Arc<Dirty> = Arc::new(dirty);
+        self.0.update_value(|flags| {
+            flags.retain(|weak| weak.strong_count() != 0);
+            flags.push(Arc::downgrade(&dirty));
+        });
+        on_cleanup(move || drop(dirty));
     }
-    doc.query_selector_all(".qa-input, #add-step, #add-task-link")
-        .ok()
-        .is_some_and(|fields| {
-            (0..fields.length()).any(|i| {
-                fields
-                    .item(i)
-                    .and_then(|node| node.dyn_into::<HtmlInputElement>().ok())
-                    .is_some_and(|field| !field.value().is_empty())
-            })
-        })
+
+    /// For uncontrolled fields and compound forms: set on input, clear on save or cancel.
+    pub fn flag(self) -> RwSignal<bool> {
+        let dirty = RwSignal::new(false);
+        self.watch(move || dirty.try_get_untracked().unwrap_or(false));
+        dirty
+    }
+
+    fn dirty(self) -> bool {
+        self.0
+            .with_value(|flags| flags.iter().filter_map(Weak::upgrade).any(|dirty| dirty()))
+    }
 }
 
 #[component]
@@ -120,13 +128,20 @@ pub(super) fn UpdateFooter() -> impl IntoView {
                         if saving.get_untracked() { return; }
                         saving.set(true);
                         leptos::task::spawn_local(async move {
-                            if !backend::flush_for_reload().await {
-                                c.show_toast("Couldn’t save changes yet. Try reloading again once they’re saved.".into(), false);
-                            } else if let Some(window) = web_sys::window()
-                                && (!has_draft(&window, c) || window.confirm_with_message(
-                                    "Reload now? Any draft or open edit that hasn’t been saved will be lost."
-                                ).unwrap_or(false)) {
-                                let _ = window.location().reload();
+                            let result = backend::flush_for_reload().await;
+                            if result == backend::Reload::SaveFailed {
+                                c.show_reload_save_failed();
+                            } else if let Some(window) = web_sys::window() {
+                                let warning = if result == backend::Reload::InMemoryChanges {
+                                    Some("Reload now? In-memory changes, including any draft or open edit, will be lost.")
+                                } else if c.drafts.dirty() {
+                                    Some("Reload now? Any draft or open edit that hasn’t been saved will be lost.")
+                                } else {
+                                    None
+                                };
+                                if warning.is_none_or(|message| window.confirm_with_message(message).unwrap_or(false)) {
+                                    let _ = window.location().reload();
+                                }
                             }
                             saving.set(false);
                         });

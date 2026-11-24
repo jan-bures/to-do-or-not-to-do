@@ -62,6 +62,50 @@ test("canceling reload leaves an unsent quick-add draft intact", async ({ page }
   await expect(footer(page)).toBeVisible();
 });
 
+test("an unsaved list rename warns, but a canceled rename no longer does", async ({ page }) => {
+  const deploy = await deployable(page);
+  deploy();
+  await onFocus(page);
+  await expect(footer(page)).toBeVisible();
+  await page.getByRole("link", { name: /^Finance( |$)/ }).click({ button: "right" });
+  await page.getByRole("menuitem", { name: "Rename list" }).click();
+  const name = page.getByRole("textbox", { name: "List name" });
+  await name.fill("Unsent list name");
+  const dialog = page.waitForEvent("dialog");
+  // The native modal makes the sidebar inert; exercise the reload guard without
+  // dismissing the edit or relying on what is currently focusable.
+  const click = page.locator(".app-update-action").dispatchEvent("click");
+  const warning = await dialog;
+  expect(warning.message()).toContain("draft or open edit");
+  await warning.dismiss();
+  await click;
+  await expect(name).toHaveValue("Unsent list name");
+  await name.press("Escape");
+  await expect(name).toHaveCount(0);
+  const navigated = page.waitForEvent("framenavigated", (frame) => frame === page.mainFrame());
+  await footer(page).click();
+  await navigated;
+});
+
+test("reload warns about committed edits when there is no durable store", async ({ page }) => {
+  const deploy = await deployable(page);
+  const draft = page.getByRole("textbox", { name: "Add a task" });
+  await draft.fill("Only in memory");
+  await draft.press("Enter");
+  await expect(draft).toHaveValue("");
+  await expect(page.locator(".row").filter({ hasText: "Only in memory" })).toHaveCount(1);
+  deploy();
+  await onFocus(page);
+  await expect(footer(page)).toBeVisible();
+  const dialog = page.waitForEvent("dialog");
+  const click = footer(page).click();
+  const warning = await dialog;
+  expect(warning.message()).toContain("In-memory changes");
+  await warning.dismiss();
+  await click;
+  await expect(page.locator(".row").filter({ hasText: "Only in memory" })).toHaveCount(1);
+});
+
 for (const colorScheme of ["light", "dark"]) {
   test.describe(`${colorScheme} update footer gallery`, () => {
     test.use({ colorScheme, deviceScaleFactor: 2, viewport: { width: 1440, height: 900 } });

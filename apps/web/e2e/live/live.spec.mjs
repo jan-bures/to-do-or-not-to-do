@@ -264,6 +264,65 @@ test("set up, sign in, and use the app against the server", async () => {
   await page.close();
 });
 
+const reloadUpdate = (page) => page.getByRole("button", { name: "Reload to update" });
+
+async function offerUpdate(page) {
+  const current = await page.locator('meta[name="todo-web-version"]').getAttribute("content");
+  expect(current).toMatch(/^[a-f0-9]{64}$/);
+  const version = (current.startsWith("a") ? "b" : "a").repeat(64);
+  await page.route("**/app/version.txt", (r) => r.fulfill({ body: version }));
+  await page.evaluate(() => window.dispatchEvent(new Event("focus")));
+  await expect(reloadUpdate(page)).toBeVisible();
+}
+
+test("reload to update blocks on a failing IndexedDB flush and shows the save toast", async () => {
+  const page = await openApp();
+  try {
+    await page.evaluate(injectStorageFailure);
+    await page.evaluate(() => { window.__failIdb = true; });
+    const title = "Update blocked by storage";
+    await add(page, title);
+    await expect(page.getByRole("alert")).toContainText("Couldn’t save in this browser");
+    await offerUpdate(page);
+    let navigations = 0;
+    page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) navigations++; });
+    await reloadUpdate(page).click();
+    await expect(page.getByRole("alert")).toContainText("Couldn’t save changes yet. Try reloading again once they’re saved.");
+    await expect(reloadUpdate(page)).toBeVisible();
+    await expect(row(page, title)).toHaveCount(1);
+    expect(navigations).toBe(0);
+    expect(await stored(page, title)).toBe(0);
+    await page.evaluate(() => { window.__failIdb = false; });
+    await expect.poll(() => occurrences(page, title), { timeout: 15_000 }).toBe(1);
+  } finally {
+    await page.close();
+  }
+});
+
+test("reload to update preserves a non-empty durable outbox without asking for confirmation", async () => {
+  const page = await openApp();
+  try {
+    const title = "Queued across an app update";
+    await page.route("**/api/v1/commands", (r) => r.abort("internetdisconnected"));
+    await add(page, title);
+    await committed(page, title);
+    expect(await occurrences(page, title)).toBe(0);
+    await offerUpdate(page);
+    const dialogs = [];
+    page.on("dialog", async (dialog) => { dialogs.push(dialog.message()); await dialog.dismiss(); });
+    const navigated = page.waitForEvent("framenavigated", (frame) => frame === page.mainFrame());
+    await reloadUpdate(page).click();
+    await navigated;
+    await expect(row(page, title)).toHaveCount(1);
+    expect(await stored(page, title)).toBe(1);
+    expect(dialogs).toEqual([]);
+    await page.unroute("**/api/v1/commands");
+    await expect.poll(() => occurrences(page, title), { timeout: 15_000 }).toBe(1);
+  } finally {
+    await page.close();
+  }
+});
+
 test("assistant edits and selected batch items only sync after approval; reject and Undo are exact", async () => {
   const page = await openApp();
   const problems = watch(page);

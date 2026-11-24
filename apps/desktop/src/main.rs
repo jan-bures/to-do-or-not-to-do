@@ -40,8 +40,8 @@ use args::Command;
 fn main() -> ExitCode {
     let mut restarted = false;
     velopack::VelopackApp::build()
-        // Never auto-apply, including on a second launch. Only the primary app may apply
-        // a verified package, on the user's restart or quit.
+        // The primary instance applies only our signature-verified packages. Velopack
+        // must not independently auto-apply anything, even on a second launch.
         .set_auto_apply_on_startup(false)
         .on_before_uninstall_fast_callback(|_| {
             // Best effort: one registry operation, no UI or other startup work.

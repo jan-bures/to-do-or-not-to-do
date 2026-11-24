@@ -489,6 +489,10 @@ impl RootView {
         }
     }
 
+    pub fn is_signing_out(&self) -> bool {
+        self.signing_out
+    }
+
     pub fn update_ready(&self) -> bool {
         self.updates.snapshot().ready_version().is_some()
     }

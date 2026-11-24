@@ -391,6 +391,7 @@ fn TagEditForm(edit: Edit, close: Callback<()>) -> impl IntoView {
     let asked = RwSignal::new(c.state.with_untracked(|s| Impact::read(s, id)));
     let name = asked.with_untracked(|i| i.as_ref().map_or_else(String::new, |i| i.name.clone()));
     let available = move || c.state.with(|s| s.is_live(id.into()));
+    let dirty = c.drafts.flag();
     let error = RwSignal::new(None::<String>);
     let input = NodeRef::<html::Input>::new();
     view! {
@@ -426,7 +427,8 @@ fn TagEditForm(edit: Edit, close: Callback<()>) -> impl IntoView {
             </div>
             {rename.then(|| view! {
                 <input type="text" value=name node_ref=input id="tag-name" class="room-name-input" aria-label="Tag name"
-                    autocomplete="off" required disabled=move || c.read_only() || !available() on:input=move |_| error.set(None)/>
+                    autocomplete="off" required disabled=move || c.read_only() || !available()
+                    on:input=move |_| { dirty.set(true); error.set(None); }/>
             })}
             {move || error.get().map(|text| view! { <p role="alert" class="action-error">{text}</p> })}
             <div class="dialog-actions">

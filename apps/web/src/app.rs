@@ -115,6 +115,7 @@ pub struct Toast {
     text: String,
     undo: bool,
     sidebar: bool,
+    reload_save_failed: bool,
 }
 
 /// Shared UI state and whether it follows the real clock (`false` for fixtures).
@@ -163,6 +164,7 @@ pub struct Ctx {
     detail_modal: Memo<bool>,
     collapsed: RwSignal<BTreeSet<CollectionId>>,
     new_room: RwSignal<Option<NewRoomKind>>,
+    drafts: updates::Drafts,
     filter_open: RwSignal<bool>,
     filter_text: RwSignal<String>,
     completed_open: RwSignal<bool>,
@@ -373,6 +375,18 @@ impl Ctx {
     }
 
     fn show_toast(self, text: String, undo: bool) {
+        self.set_toast(text, undo, false);
+    }
+
+    fn show_reload_save_failed(self) {
+        self.set_toast(
+            "Couldn’t save changes yet. Try reloading again once they’re saved.".into(),
+            false,
+            true,
+        );
+    }
+
+    fn set_toast(self, text: String, undo: bool, reload_save_failed: bool) {
         let id = self.toast_seq.get_untracked() + 1;
         self.toast_seq.set(id);
         self.toast.set(Some(Toast {
@@ -380,6 +394,7 @@ impl Ctx {
             text,
             undo,
             sidebar: false,
+            reload_save_failed,
         }));
         set_timeout(
             move || {
@@ -765,6 +780,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         detail_modal,
         collapsed: RwSignal::new(platform::load_folded().unwrap_or_default()),
         new_room: RwSignal::new(None),
+        drafts: updates::Drafts::new(),
         filter_open: RwSignal::new(false),
         filter_text,
         completed_open,
@@ -779,6 +795,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         sidebar,
     };
     provide_context(c);
+    c.drafts.watch(move || ai.has_draft());
     Effect::new(move |_| c.room.with(|r| c.board_ui.load_rail(r)));
     Effect::new(move |previous: Option<ListView>| {
         let view = c.room_view.get();
@@ -1820,6 +1837,7 @@ impl NewRoomKind {
 #[component]
 fn NewRoom(kind: NewRoomKind) -> impl IntoView {
     let c = ctx();
+    let dirty = c.drafts.flag();
     let (name, create, cancel) = match kind {
         NewRoomKind::List => ("List name", "Create list", "Cancel new list"),
         NewRoomKind::Collection => (
@@ -1860,7 +1878,8 @@ fn NewRoom(kind: NewRoomKind) -> impl IntoView {
                 }
             }>
                 <input id=kind.field() node_ref=input type="text" autocomplete="off" required
-                    aria-label=name placeholder=format!("{name}…") disabled=move || c.read_only()/>
+                    aria-label=name placeholder=format!("{name}…") disabled=move || c.read_only()
+                    on:input=move |ev| dirty.set(!event_target_value(&ev).is_empty())/>
                 <button class="icon-button" type="submit" aria-label=create title=create
                     disabled=move || c.read_only()>{icon(Icon::Plus)}</button>
                 <button class="icon-button" type="button" aria-label=cancel title="Cancel"
@@ -2699,11 +2718,18 @@ fn ToastView(#[prop(optional)] in_drawer: bool) -> impl IntoView {
             }
             // A change this browser couldn't store stays on screen until storing works again.
             if !in_drawer && let Some(e) = c.sync.with(|s| s.local_error.clone()) {
+                let reload_failed = c.toast.with(|t| t.as_ref().filter(|t| t.reload_save_failed).map(|t| t.text.clone()));
                 return Some(
                     view! {
                         <div class="toast toast-error" role="alert" title=format!("Retrying. The browser said: {e}")>
-                            <span class="toast-text toast-long">"Couldn’t save in this browser. Retrying; keep this tab open."</span>
-                            <span class="toast-text toast-short">"Not saved · keep this tab open"</span>
+                            {if let Some(message) = reload_failed {
+                                view! { <span class="toast-text">{message}</span> }.into_any()
+                            } else {
+                                view! {
+                                    <span class="toast-text toast-long">"Couldn’t save in this browser. Retrying; keep this tab open."</span>
+                                    <span class="toast-text toast-short">"Not saved · keep this tab open"</span>
+                                }.into_any()
+                            }}
                         </div>
                     }
                     .into_any(),
@@ -3138,7 +3164,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
         step.with(|s| s.as_ref().map(|(_, s)| s.title.clone()).unwrap_or_default())
     });
     let editing = RwSignal::new(false);
-    let draft = Draft::new(title);
+    let draft = Draft::new(title, editing);
     let input = NodeRef::<html::Input>::new();
     let focus_title = move || {
         platform::focus(&format!("step-title-{id}"));
@@ -3355,11 +3381,14 @@ struct Draft {
 }
 
 impl Draft {
-    fn new(field: Signal<String>) -> Self {
+    fn new(field: Signal<String>, editing: RwSignal<bool>) -> Self {
         let d = Self {
             text: RwSignal::new(field.get_untracked()),
             dirty: RwSignal::new(false),
         };
+        ctx()
+            .drafts
+            .watch(move || editing.get_untracked() && d.dirty.get_untracked());
         Effect::new(move |_| {
             let v = field.get();
             if !d.dirty.get_untracked() {
@@ -3385,7 +3414,7 @@ impl Draft {
 fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
     let c = ctx();
     let input = NodeRef::<html::Input>::new();
-    let draft = Draft::new(title);
+    let draft = Draft::new(title, c.editing);
     let commit = move || {
         if !c.editing.get_untracked() {
             return;
@@ -3460,6 +3489,8 @@ fn TitleEditor(id: TaskId, title: Signal<String>) -> impl IntoView {
 fn AddStep(id: TaskId) -> impl IntoView {
     let c = ctx();
     let value = RwSignal::new(String::new());
+    c.drafts
+        .watch(move || value.with_untracked(|text| !text.is_empty()));
     view! {
         <form
             class="add-step"

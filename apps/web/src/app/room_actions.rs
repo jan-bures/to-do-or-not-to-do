@@ -796,12 +796,14 @@ fn EditDialog() -> impl IntoView {
     let input = NodeRef::<html::Input>::new();
     let error = RwSignal::new(None::<String>);
     let saving_focus = RwSignal::new(false);
+    let dirty = c.drafts.flag();
     view! {
         <dialog class="room-dialog" node_ref=controls.edit_dialog aria-labelledby="room-action-heading"
             aria-describedby="room-action-description"
             on:keydown=move |ev| block_dialog_repeat(&ev)
             on:click=move |ev| { if scrim_click(&ev) { close(); } }
             on:close=move |_| {
+                dirty.set(false);
                 error.set(None);
                 if let Some(edit) = controls.edit.try_update(Option::take).flatten()
                     && !saving_focus.try_update(|v| std::mem::replace(v, false)).unwrap_or(false)
@@ -815,6 +817,7 @@ fn EditDialog() -> impl IntoView {
                 let rename = matches!(edit, Edit::Rename(_));
                 let original = c.state.with_untracked(|s| subject.name(s).unwrap_or_default().to_owned());
                 let shown_name = original.clone();
+                let compare_name = original.clone();
                 let available = move || c.state.with(|s| subject.name(s).is_some());
                 view! {
                     <form on:submit=move |ev| {
@@ -867,7 +870,10 @@ fn EditDialog() -> impl IntoView {
                             <input type="text" value=shown_name node_ref=input id="rename-room-name"
                                 class="room-name-input" aria-label=format!("{} name", subject.kind())
                                 autocomplete="off" required disabled=move || c.read_only() || !available()
-                                on:input=move |_| error.set(None)/>
+                                on:input=move |ev| {
+                                    dirty.set(event_target_value(&ev) != compare_name);
+                                    error.set(None);
+                                }/>
                         })}
                         {move || error.get().map(|message| view! {
                             <p role="alert" class="action-error">{message}</p>

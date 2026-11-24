@@ -5,6 +5,8 @@ use std::time::{Duration, Instant};
 use todo_core::time::Timestamp;
 
 const CHECK_INTERVAL: Duration = Duration::from_hours(6);
+const INITIAL_DELAY: Duration = Duration::from_secs(45);
+const CHECK_FAILURES_SHOWN: usize = 3;
 pub(super) const MAX_JITTER: Duration = Duration::from_mins(30);
 pub const FOCUS_IDLE: Duration = Duration::from_mins(30);
 const RETRY_INTERVALS: [Duration; 3] = [
@@ -27,9 +29,10 @@ pub enum State {
     Disabled,
     Idle,
     UpToDate { checked_at: Timestamp },
-    Checking,
+    Checking { manual: bool },
     Downloading { progress: Option<u8> },
     Ready { version: String },
+    Skipped { build: u32 },
     Failed { kind: Failure, at: Timestamp },
 }
 
@@ -39,6 +42,9 @@ pub struct Snapshot {
     pub state: State,
     pub can_check: bool,
     pub restart_failed: bool,
+    pub quit_deferred: bool,
+    check_failures: usize,
+    show_check_failure: bool,
 }
 
 impl Default for Snapshot {
@@ -54,6 +60,9 @@ impl Snapshot {
             state,
             can_check: false,
             restart_failed: false,
+            quit_deferred: false,
+            check_failures: 0,
+            show_check_failure: false,
         }
     }
 
@@ -64,27 +73,70 @@ impl Snapshot {
         }
     }
 
-    pub fn footer_action(&self) -> bool {
-        self.ready_version().is_some()
-            || (matches!(self.state, State::Failed { .. }) && self.can_check)
+    pub fn skipped_label(&self) -> Option<String> {
+        match self.state {
+            State::Skipped { build } => Some(format!(
+                "Skipped build {build} after a failed restart · Retry"
+            )),
+            _ => None,
+        }
     }
 
-    pub(super) fn begin(&mut self) -> bool {
+    pub fn visible_failure(&self) -> bool {
+        match self.state {
+            State::Failed {
+                kind: Failure::Check,
+                ..
+            } => self.show_check_failure,
+            State::Skipped { .. } | State::Failed { .. } => true,
+            _ => false,
+        }
+    }
+
+    pub fn footer_action(&self) -> bool {
+        self.ready_version().is_some() || (self.visible_failure() && self.can_check)
+    }
+
+    pub(super) fn begin(&mut self, check: Check) -> bool {
         if !self.can_check {
             return false;
         }
-        self.set(State::Checking, true);
+        self.set(
+            State::Checking {
+                manual: check == Check::Manual,
+            },
+            true,
+        );
         true
+    }
+
+    pub(super) fn checked(&mut self, check: Check, state: State, has_worker: bool) {
+        if matches!(
+            state,
+            State::Failed {
+                kind: Failure::Check,
+                ..
+            }
+        ) {
+            self.check_failures = (self.check_failures + 1).min(CHECK_FAILURES_SHOWN);
+            self.show_check_failure =
+                check == Check::Manual || self.check_failures >= CHECK_FAILURES_SHOWN;
+        } else {
+            self.check_failures = 0;
+            self.show_check_failure = false;
+        }
+        self.set(state, has_worker);
     }
 
     pub(super) fn set(&mut self, state: State, has_worker: bool) {
         self.can_check = has_worker
             && matches!(
                 state,
-                State::Idle | State::UpToDate { .. } | State::Failed { .. }
+                State::Idle | State::UpToDate { .. } | State::Skipped { .. } | State::Failed { .. }
             );
         if state != self.state {
             self.restart_failed = false;
+            self.quit_deferred = false;
         }
         self.state = state;
     }
@@ -109,7 +161,7 @@ pub(super) struct Schedule {
 impl Schedule {
     pub fn new(now: Instant, jitter: Duration) -> Self {
         Self {
-            due: now,
+            due: now + INITIAL_DELAY,
             failures: 0,
             jitter,
             last_finished: None,
@@ -122,7 +174,7 @@ impl Schedule {
             || (self.failures == 0
                 && self
                     .last_finished
-                    .is_none_or(|last| now.duration_since(last) >= FOCUS_IDLE))
+                    .is_some_and(|last| now.duration_since(last) >= FOCUS_IDLE))
     }
 
     pub fn finished(&mut self, check: Check, success: bool, now: Instant) {
@@ -156,13 +208,13 @@ mod tests {
         let start = Instant::now();
         let jitter = Duration::from_mins(12);
         let mut schedule = Schedule::new(start, jitter);
-        assert_eq!(schedule.due, start);
+        assert_eq!(schedule.due, start + INITIAL_DELAY);
         let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Disabled);
-        assert!(!view.begin());
+        assert!(!view.begin(Check::Manual));
         view.set(State::Idle, true);
-        assert!(view.begin());
-        assert_eq!(view.state, State::Checking);
-        assert!(!view.begin());
+        assert!(view.begin(Check::Manual));
+        assert_eq!(view.state, State::Checking { manual: true });
+        assert!(!view.begin(Check::Manual));
         let at = Timestamp::UNIX_EPOCH;
         schedule.finished(Check::Manual, false, start);
         view.set(
@@ -172,10 +224,10 @@ mod tests {
             },
             true,
         );
-        assert_eq!(schedule.due, start);
+        assert_eq!(schedule.due, start + INITIAL_DELAY);
 
         let first = schedule.due;
-        assert!(view.begin());
+        assert!(view.begin(Check::Automatic));
         schedule.finished(Check::Automatic, false, first);
         view.set(
             State::Failed {
@@ -186,13 +238,13 @@ mod tests {
         );
         assert_eq!(schedule.due, first + Duration::from_mins(5));
         let retry = schedule.due;
-        assert!(view.begin());
+        assert!(view.begin(Check::Manual));
         let halfway = first + Duration::from_mins(2);
         schedule.finished(Check::Manual, true, halfway);
         view.set(State::UpToDate { checked_at: at }, true);
         assert_eq!(schedule.due, retry);
 
-        assert!(view.begin());
+        assert!(view.begin(Check::Automatic));
         schedule.finished(Check::Automatic, false, retry);
         assert_eq!(schedule.due, retry + Duration::from_mins(30));
         let next = schedule.due;
@@ -213,10 +265,11 @@ mod tests {
     fn focus_checks_respect_recent_attempts_and_backoff() {
         let start = Instant::now();
         let mut schedule = Schedule::new(start, Duration::ZERO);
-        assert!(schedule.focus_due(start));
-        schedule.finished(Check::Automatic, true, start);
-        assert!(!schedule.focus_due(start + FOCUS_IDLE - Duration::from_secs(1)));
-        let focus = start + FOCUS_IDLE;
+        assert!(!schedule.focus_due(start));
+        assert!(schedule.focus_due(start + INITIAL_DELAY));
+        schedule.finished(Check::Automatic, true, start + INITIAL_DELAY);
+        let focus = start + INITIAL_DELAY + FOCUS_IDLE;
+        assert!(!schedule.focus_due(focus - Duration::from_secs(1)));
         assert!(schedule.focus_due(focus));
         schedule.finished(Check::Focus, false, focus);
         assert!(!schedule.focus_due(focus + Duration::from_mins(1)));
@@ -224,19 +277,46 @@ mod tests {
     }
 
     #[test]
+    fn only_manual_checks_and_three_consecutive_background_failures_reach_the_footer() {
+        let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Idle);
+        view.set(State::Idle, true);
+        let at = Timestamp::UNIX_EPOCH;
+        let failure = State::Failed {
+            kind: Failure::Check,
+            at,
+        };
+        for (check, visible) in [
+            (Check::Automatic, false),
+            (Check::Focus, false),
+            (Check::Automatic, true),
+        ] {
+            assert!(view.begin(check));
+            assert_eq!(view.state, State::Checking { manual: false });
+            view.checked(check, failure.clone(), true);
+            assert_eq!(view.state, failure); // Settings sees every failure.
+            assert_eq!(view.footer_action(), visible);
+        }
+        view.checked(Check::Automatic, State::UpToDate { checked_at: at }, true);
+        view.checked(Check::Focus, failure.clone(), true);
+        assert!(!view.footer_action());
+        view.checked(Check::Manual, failure, true);
+        assert!(view.footer_action());
+    }
+
+    #[test]
     fn pending_update_remains_actionable_when_detached() {
         let mut view = Snapshot::new(Some("0.1.0-build.9".into()), State::Idle);
         view.set(State::Idle, true);
-        assert!(view.begin());
+        assert!(view.begin(Check::Manual));
         view.set(State::Downloading { progress: None }, true);
-        assert!(!view.begin());
+        assert!(!view.begin(Check::Manual));
         view.set(State::Downloading { progress: Some(50) }, true);
-        assert!(!view.begin());
+        assert!(!view.begin(Check::Manual));
         let ready = |version: &str| State::Ready {
             version: version.into(),
         };
         view.set(ready("0.1.0-build.10"), true);
-        assert!(!view.begin());
+        assert!(!view.begin(Check::Manual));
         view.set(ready("0.1.0-build.10"), false);
         assert_eq!(view.ready_version(), Some("0.1.0-build.10"));
         assert!(view.footer_action());

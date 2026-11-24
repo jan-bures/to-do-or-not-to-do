@@ -73,6 +73,7 @@ struct Local {
     now: Now,
     /// Pretend storing fails (`?fixture=storage-error`, for the gallery).
     storage_error: bool,
+    changed: bool,
     /// Pretend a newer version took the database over (`?fixture=read-only`, for the gallery).
     read_only: bool,
     started_ms: f64,
@@ -352,16 +353,33 @@ pub fn flush_now() {
     }
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Reload {
+    Safe,
+    InMemoryChanges,
+    SaveFailed,
+}
+
 /// Make the outbox durable before reloading. The next page can retry network delivery, even offline.
-pub async fn flush_for_reload() -> bool {
+pub async fn flush_for_reload() -> Reload {
     use futures_util::future::select;
     use std::pin::pin;
-    if !unsaved() {
-        return true;
-    }
     let Some((storage, _)) = store() else {
-        return true;
+        let changed = BACKEND.with(|b| match &*b.borrow() {
+            Some(Backend::Live(c)) => c.status().pending != 0,
+            #[cfg(feature = "fixtures")]
+            Some(Backend::Local(local)) => local.changed,
+            None => false,
+        });
+        return if changed {
+            Reload::InMemoryChanges
+        } else {
+            Reload::Safe
+        };
     };
+    if !unsaved() {
+        return Reload::Safe;
+    }
     // An active writer may already be flushing; don't cancel it if the wait times out.
     flush_now();
     let save = async {
@@ -373,7 +391,11 @@ pub async fn flush_for_reload() -> bool {
         }
     };
     select(pin!(save), pin!(sleep(Duration::from_secs(3)))).await;
-    !unsaved()
+    if unsaved() {
+        Reload::SaveFailed
+    } else {
+        Reload::Safe
+    }
 }
 
 /// True if closing the page now could lose a change (not stored yet, or storing failed).
@@ -414,6 +436,7 @@ pub fn open_fixtures(state: State, now: Now) {
             state: Arc::new(state),
             now,
             storage_error: query.contains("storage-error"),
+            changed: false,
             read_only: query.contains("read-only"),
             started_ms: js_sys::Date::now(),
             counter: 0,
@@ -730,6 +753,7 @@ fn submit_inner(command: Command, tracked: bool) -> Result<Option<UndoTarget>, S
             let events = todo_core::decide(&l.state, &owner(), &command, at)?;
             l.state =
                 Arc::new(changes::fixture::apply_batch(&l.state, &events).map_err(local_error)?);
+            l.changed |= !events.is_empty();
             Ok(tracked.then_some(UndoTarget::Local(events)))
         }
         None => Err(local_error("not started")),
@@ -769,6 +793,7 @@ pub fn undo(target: &UndoTarget) -> Result<TrackedUndo, String> {
         (Some(Backend::Local(l)), UndoTarget::Local(events)) => {
             let at = l.event_time();
             l.state = Arc::new(changes::fixture::undo(&l.state, events, &owner(), at)?);
+            l.changed = true;
             Ok(TrackedUndo::Cancelled)
         }
         _ => Ok(TrackedUndo::Unavailable),
@@ -900,6 +925,7 @@ pub fn undo_activity(event: protocol::EventRef) -> Result<Option<CommandId>, &'s
         }
         item.can_undo = false;
         item.undone = true;
+        local.changed = true;
         Ok(None)
     });
     #[cfg(not(feature = "fixtures"))]
@@ -936,7 +962,9 @@ pub fn dismiss_failures(ids: &[CommandId]) -> Result<(), String> {
         Some(Backend::Live(c)) => c.dismiss_many(ids).map(drop).map_err(|e| e.to_string()),
         #[cfg(feature = "fixtures")]
         Some(Backend::Local(l)) => {
+            let previous = l.failures.len();
             l.failures.retain(|f| !ids.contains(&f.id));
+            l.changed |= l.failures.len() != previous;
             Ok(())
         }
         None => Ok(()),

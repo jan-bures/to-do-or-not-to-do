@@ -57,20 +57,25 @@ pub struct Tray {
 
 impl Tray {
     pub fn set_update(&self, snapshot: &Snapshot) {
-        let label = match &snapshot.state {
-            State::NotInstalled | State::Disabled => "Automatic updates unavailable".into(),
-            State::Idle => "Check for updates".into(),
-            State::UpToDate { .. } => "Up to date · Check again".into(),
-            State::Checking => "Checking for updates…".into(),
-            State::Downloading { progress } => progress.map_or_else(
-                || "Downloading update…".into(),
-                |percent| format!("Downloading update · {percent}%"),
-            ),
-            State::Ready { .. } if snapshot.restart_failed => "Update failed · Retry".into(),
-            State::Ready { version } => format!("Restart to update ({version})"),
-            State::Failed { .. } if snapshot.can_check => "Update failed · Retry".into(),
-            State::Failed { .. } => "Update failed".into(),
-        };
+        let label = snapshot
+            .skipped_label()
+            .unwrap_or_else(|| match &snapshot.state {
+                State::NotInstalled | State::Disabled => "Automatic updates unavailable".into(),
+                State::Idle => "Check for updates".into(),
+                State::UpToDate { .. } => "Up to date · Check again".into(),
+                State::Checking { .. } => "Checking for updates…".into(),
+                State::Downloading { progress } => progress.map_or_else(
+                    || "Downloading update…".into(),
+                    |percent| format!("Downloading update · {percent}%"),
+                ),
+                State::Ready { .. } if snapshot.restart_failed => "Update failed · Retry".into(),
+                State::Ready { version } => format!("Restart to update ({version})"),
+                State::Failed { .. } if !snapshot.visible_failure() => "Check for updates".into(),
+                State::Failed { .. } | State::Skipped { .. } if snapshot.can_check => {
+                    "Update failed · Retry".into()
+                }
+                State::Failed { .. } | State::Skipped { .. } => "Update failed".into(),
+            });
         self.update.set_text(label);
         self.update
             .set_enabled(snapshot.ready_version().is_some() || snapshot.can_check);

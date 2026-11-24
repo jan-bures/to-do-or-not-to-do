@@ -1,5 +1,5 @@
-//! Signed Velopack updates are staged by a low-priority worker and verified again before
-//! being applied on restart or quit.
+//! Signed Velopack updates are verified before startup apply or before the worker offers
+//! restart and quit. The UI only rechecks the verified file's metadata.
 
 mod history;
 mod rejections;
@@ -19,7 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use todo_core::time::Timestamp;
 use tokio::sync::watch;
 use ureq::tls::{RootCerts, TlsConfig};
@@ -272,6 +272,8 @@ pub struct Controller(Arc<Shared>);
 struct Shared {
     status: watch::Sender<Snapshot>,
     worker: Mutex<Option<Connection>>,
+    verified: Mutex<Option<Box<VerifiedPackage>>>,
+    applying: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -281,29 +283,68 @@ struct Connection {
 }
 
 impl Controller {
-    pub fn new(enabled: bool, restarted: bool) -> Self {
-        if enabled && let Some(install) = Installation::locate() {
-            let version = install.manager.get_current_version();
-            let state = if ReleaseUrls::new(REPOSITORY).is_none() {
-                State::Disabled
-            } else {
-                startup_state(&install.dir, &version, restarted, Receipt::verify)
-            };
-            return Self::with_state(Some(version.to_string()), state);
+    /// Run before GPUI owns a UI thread. `None` means Velopack is waiting for us to exit.
+    pub fn startup(enabled: bool, restarted: bool, background: bool) -> Option<Self> {
+        let Some(install) = enabled.then(Installation::locate).flatten() else {
+            return Some(Self::with_state(None, State::NotInstalled));
+        };
+        let version = install.manager.get_current_version();
+        let controller = Self::with_state(Some(version.to_string()), State::Disabled);
+        if ReleaseUrls::new(REPOSITORY).is_none() {
+            return Some(controller);
         }
-        Self::with_state(None, State::NotInstalled)
+        match startup_apply(
+            &install.dir,
+            &version,
+            restarted,
+            Receipt::verify,
+            |package| {
+                launch_apply(
+                    &install.manager,
+                    package.asset.clone(),
+                    Apply::Restart,
+                    background,
+                )
+                .is_ok()
+            },
+        ) {
+            Startup::Applying => None,
+            Startup::Continue(state) => {
+                controller.0.status.send_modify(|s| s.set(state, false));
+                Some(controller)
+            }
+            Startup::Retry(package) => {
+                let state = package.ready();
+                *controller
+                    .0
+                    .verified
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner) = Some(package);
+                controller.0.status.send_modify(|s| {
+                    s.set(state, false);
+                    s.restart_failed = true;
+                    s.quit_deferred = true;
+                });
+                Some(controller)
+            }
+        }
     }
 
     fn with_state(version: Option<String>, state: State) -> Self {
         Self(Arc::new(Shared {
             status: watch::Sender::new(Snapshot::new(version, state)),
             worker: Mutex::default(),
+            verified: Mutex::default(),
+            applying: AtomicBool::new(false),
         }))
     }
 
     pub fn fixture(state: State) -> Self {
         let controller = Self::with_state(Some("0.1.0-build.146".into()), state.clone());
-        controller.0.status.send_modify(|s| s.set(state, true));
+        controller
+            .0
+            .status
+            .send_modify(|s| s.checked(Check::Manual, state, true));
         controller
     }
 
@@ -322,12 +363,12 @@ impl Controller {
         };
         // Reserve Checking before waking the worker: a double click, or a timeout racing
         // this click, cannot enqueue another check.
-        if self.0.status.send_if_modified(Snapshot::begin)
+        if self.0.status.send_if_modified(|s| s.begin(Check::Manual))
             && worker.wake.send(Check::Manual).is_err()
         {
             self.0
                 .status
-                .send_modify(|s| s.set(failed(Failure::Check), false));
+                .send_modify(|s| s.checked(Check::Manual, failed(Failure::Check), false));
         }
     }
 
@@ -344,16 +385,21 @@ impl Controller {
     pub fn apply(&self, mode: Apply) -> bool {
         self.apply_with(mode, |version, mode| {
             let install = Installation::locate().ok_or(Failure::Apply)?;
-            match install.pending() {
-                Ok(Some(asset)) if asset.Version == version => {
-                    Ok(launch_apply(&install.manager, asset, mode).is_ok())
-                }
-                Err(rejected) => {
-                    discard_pending(&install.dir, rejected.as_ref());
-                    Err(Failure::Verify)
-                }
-                Ok(_) => Err(Failure::Apply),
+            let mut verified = self
+                .0
+                .verified
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let package = verified
+                .as_ref()
+                .filter(|v| v.asset.Version == version)
+                .ok_or(Failure::Verify)?;
+            if !package.unchanged(&install.dir) {
+                // Fail closed; a manual/automatic check can authenticate and stage it again.
+                *verified = None;
+                return Err(Failure::Verify);
             }
+            Ok(launch_apply(&install.manager, package.asset.clone(), mode, false).is_ok())
         })
     }
 
@@ -362,21 +408,33 @@ impl Controller {
         mode: Apply,
         launch: impl FnOnce(&str, Apply) -> Result<bool, Failure>,
     ) -> bool {
-        let Some(version) = self.snapshot().ready_version().map(str::to_owned) else {
+        if self.0.applying.swap(true, Ordering::AcqRel) {
             return false;
-        };
-        match launch(&version, mode) {
-            Ok(true) => return true,
-            // Velopack didn't launch. Keep the verified package and offer a retry.
-            Ok(false) => self.0.status.send_modify(|s| s.restart_failed = true),
-            Err(failure) => {
-                let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
-                self.0
-                    .status
-                    .send_modify(|s| s.set(failed(failure), worker.is_some()));
+        }
+        let snapshot = self.snapshot();
+        let result = snapshot
+            .ready_version()
+            .filter(|_| mode != Apply::Quit || !snapshot.quit_deferred)
+            .map(|version| launch(version, mode));
+        if let Some(result) = result {
+            if mode == Apply::Quit || result != Ok(true) {
+                tracing::warn!(?mode, ?result, "staged desktop update launch result");
+            }
+            match result {
+                Ok(true) => return true, // Keep the latch held until the process exits.
+                Ok(false) => self.0.status.send_modify(|s| {
+                    s.restart_failed = true;
+                    s.quit_deferred |= mode == Apply::Quit;
+                }),
+                Err(failure) => {
+                    let worker = self.0.worker.lock().unwrap_or_else(PoisonError::into_inner);
+                    self.0
+                        .status
+                        .send_modify(|s| s.set(failed(failure), worker.is_some()));
+                }
             }
         }
-        tracing::warn!("could not start the staged desktop update");
+        self.0.applying.store(false, Ordering::Release);
         false
     }
 
@@ -425,7 +483,7 @@ impl Controller {
                         continue;
                     }
                     if check != Check::Manual {
-                        let began = control.for_worker(&run, Snapshot::begin);
+                        let began = control.for_worker(&run, |s| s.begin(check));
                         if !began {
                             // A manual request beat this timeout, or the package is already staged.
                             // Ready is stable: don't flash Checking or replace its package.
@@ -455,21 +513,30 @@ impl Controller {
                     // mismatches have a separate per-offer cooldown.
                     schedule.finished(
                         check,
-                        result.is_ok() || result == Err(Failure::Verify),
+                        result.is_ok() || matches!(result, Err(Failure::Verify)),
                         Instant::now(),
                     );
-                    let state = match result {
-                        Ok(Some(version)) => State::Ready { version },
-                        Ok(None) => State::UpToDate {
-                            checked_at: Timestamp::now(),
-                        },
-                        Err(kind) => {
-                            tracing::debug!(?kind, "desktop update check failed");
-                            failed(kind)
-                        }
-                    };
                     control.for_worker(&run, |s| {
-                        s.set(state, true);
+                        let state = match result {
+                            Ok(Pending::Ready(package)) => {
+                                let state = package.ready();
+                                *control
+                                    .0
+                                    .verified
+                                    .lock()
+                                    .unwrap_or_else(PoisonError::into_inner) = Some(package);
+                                state
+                            }
+                            Ok(Pending::None) => State::UpToDate {
+                                checked_at: Timestamp::now(),
+                            },
+                            Ok(Pending::Skipped(build)) => State::Skipped { build },
+                            Err(kind) => {
+                                tracing::debug!(?kind, "desktop update check failed");
+                                failed(kind)
+                            }
+                        };
+                        s.checked(check, state, true);
                         true
                     });
                 }
@@ -561,54 +628,137 @@ impl Installation {
         }
         Some(Self { manager, dir })
     }
+}
 
-    // Never let Velopack locate/open a more recent package just because of its filename. Only an
-    // authenticated receipt can name a package, and its bytes must still match at apply time.
-    fn pending(&self) -> Result<Option<VelopackAsset>, Option<Rejection>> {
-        verified_pending(
-            &self.dir,
-            &self.manager.get_current_version(),
-            Receipt::verify,
-        )
+#[derive(Debug, PartialEq, Eq)]
+struct FileStamp {
+    size: u64,
+    modified: SystemTime,
+}
+
+impl FileStamp {
+    fn read(path: &Path) -> io::Result<Self> {
+        let metadata = std::fs::metadata(path)?;
+        Ok(Self {
+            size: metadata.len(),
+            modified: metadata.modified()?,
+        })
     }
 }
 
-fn startup_state(
+#[derive(Debug)]
+struct VerifiedPackage {
+    asset: VelopackAsset,
+    path: PathBuf,
+    stamp: FileStamp,
+}
+
+impl VerifiedPackage {
+    fn verify(dir: &Path, asset: &VelopackAsset) -> io::Result<Option<Self>> {
+        let path = dir.join(&asset.FileName);
+        let stamp = FileStamp::read(&path)?;
+        if stamp.size != asset.Size
+            || !release::matches_file(asset, &path)?
+            || stamp != FileStamp::read(&path)?
+        {
+            return Ok(None);
+        }
+        Ok(Some(Self {
+            asset: asset.clone(),
+            path,
+            stamp,
+        }))
+    }
+
+    fn unchanged(&self, dir: &Path) -> bool {
+        self.path == dir.join(&self.asset.FileName)
+            && FileStamp::read(&self.path).is_ok_and(|stamp| stamp == self.stamp)
+    }
+
+    fn ready(&self) -> State {
+        State::Ready {
+            version: self.asset.Version.clone(),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Pending {
+    None,
+    Ready(Box<VerifiedPackage>),
+    Skipped(u32),
+}
+
+#[derive(Debug)]
+enum Startup {
+    Applying,
+    Continue(State),
+    Retry(Box<VerifiedPackage>),
+}
+
+fn startup_apply(
     dir: &Path,
     installed: &Version,
     restarted: bool,
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
-) -> State {
-    match verified_pending(dir, installed, verify) {
-        Ok(Some(asset)) if restarted => {
-            // Velopack relaunched us, but the same update is still pending. Don't loop.
-            tracing::warn!(version = %asset.Version, "desktop update did not apply; skipping this version");
-            if let Err(e) = write_version_marker(&dir.join(FAILED), &asset.Version) {
-                tracing::warn!(error = %e, "could not record the failed desktop update");
+    launch: impl FnOnce(&VerifiedPackage) -> bool,
+) -> Startup {
+    let state = match verified_pending(dir, installed, verify) {
+        Ok(Pending::Ready(package)) if restarted => {
+            // Velopack relaunched us, but a newer package is still pending. Don't loop.
+            let version = &package.asset.Version;
+            tracing::warn!(%version, "desktop update did not apply; skipping this version");
+            if write_version_marker(&dir.join(FAILED), version).is_err() {
+                tracing::warn!("could not record the failed desktop update");
+                // Even without a marker, do not auto-apply this receipt again.
+                let _ = std::fs::remove_file(dir.join(RECEIPT));
             }
-            return failed(Failure::Apply);
+            skipped_build(version)
+                .map_or_else(|| failed(Failure::Apply), |build| State::Skipped { build })
         }
-        Ok(Some(asset)) => {
-            return State::Ready {
-                version: asset.Version,
-            };
+        Ok(Pending::Ready(package)) => {
+            if launch(&package) {
+                return Startup::Applying;
+            }
+            tracing::warn!("could not start the staged desktop update at launch");
+            return Startup::Retry(package);
         }
-        Ok(None) => {}
-        Err(rejected) => discard_pending(dir, rejected.as_ref()),
-    }
-    if Rejections::load(dir).has_newer_blocked(installed, Timestamp::now()) {
-        failed(Failure::Verify)
-    } else {
-        State::Idle
-    }
+        Ok(Pending::Skipped(build)) => State::Skipped { build },
+        Ok(Pending::None)
+            if Rejections::load(dir).has_newer_blocked(installed, Timestamp::now()) =>
+        {
+            failed(Failure::Verify)
+        }
+        Ok(Pending::None) => State::Idle,
+        Err(rejected) => {
+            discard_pending(dir, installed, rejected.as_ref());
+            failed(Failure::Verify)
+        }
+    };
+    Startup::Continue(state)
 }
 
-fn discard_pending(dir: &Path, rejected: Option<&Rejection>) {
+fn discard_pending(dir: &Path, installed: &Version, rejected: Option<&Rejection>) {
     let _ = std::fs::remove_file(dir.join(RECEIPT));
     if let Some(rejected) = rejected {
         let version = &rejected.version;
         let _ = std::fs::remove_file(dir.join(format!("{APP_ID}-{version}-full.nupkg")));
         Rejections::load(dir).record_mismatch(dir, rejected, Timestamp::now());
+    } else if let Ok(entries) = std::fs::read_dir(dir) {
+        // A corrupt receipt cannot identify the package. Remove only canonical full packages
+        // newer than this install, without trusting a file name from unauthenticated metadata.
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if name
+                .to_str()
+                .and_then(|name| name.strip_prefix(APP_ID))
+                .and_then(|name| name.strip_prefix('-')?.strip_suffix("-full.nupkg"))
+                .and_then(release::package_version)
+                .is_some_and(|(version, _)| version > *installed)
+            {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
     }
 }
 
@@ -616,27 +766,29 @@ fn verified_pending(
     dir: &Path,
     installed: &Version,
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
-) -> Result<Option<VelopackAsset>, Option<Rejection>> {
-    let Some(receipt) = read_receipt(&dir.join(RECEIPT)).map_err(|_| None)? else {
-        return Ok(None);
+) -> Result<Pending, Option<Rejection>> {
+    let signed = read_receipt(&dir.join(RECEIPT))
+        .map_err(|_| None)?
+        .as_ref()
+        .map(verify)
+        .transpose()
+        .map_err(|_| None)?;
+    let Some(signed) = signed.filter(|signed| signed.newer_than(installed)) else {
+        // The updater can remove a package without installing it. Keep reporting a recent
+        // failed restart even if that package or its receipt is gone.
+        return pending_marker(dir, installed).map_err(|_| None);
     };
-    let signed = verify(&receipt).map_err(|_| None)?;
-    if !signed.newer_than(installed)
-        || !is_candidate(
-            &signed.full,
-            read_version_marker(&dir.join(FAILED))
-                .map_err(|_| None)?
-                .as_ref(),
-        )
+    // Never let Velopack identify a package just by its name. A valid receipt must name it,
+    // and actual bytes on disk must still match its signed size and SHA-256.
+    if let Some(build) = blocked_build(dir, &signed.version, Check::Automatic, SystemTime::now())
+        .map_err(|_| None)?
     {
-        return Ok(None);
+        return Ok(Pending::Skipped(build));
     }
-    let path = dir.join(&signed.full.FileName);
-    match release::matches_file(&signed.full, &path) {
-        Ok(true) => Ok(Some(signed.full)),
-        Ok(false) => Err(Some(signed.rejection)),
-        // A missing or temporarily unreadable file isn't proof its contents were wrong.
-        Err(_) => Ok(None),
+    match VerifiedPackage::verify(dir, &signed.full) {
+        Ok(Some(package)) => Ok(Pending::Ready(Box::new(package))),
+        Ok(None) => Err(Some(signed.rejection)),
+        Err(_) => Err(None), // No byte mismatch proven; don't record a cooldown.
     }
 }
 
@@ -677,28 +829,55 @@ fn atomic_write(path: &Path, write: impl FnOnce(&mut File) -> io::Result<()>) ->
     Ok(())
 }
 
-fn read_version_marker(marker: &Path) -> Result<Option<Version>, Error> {
-    match std::fs::read_to_string(marker) {
-        Ok(value) => Ok(Some(Version::parse(value.trim())?)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e.into()),
+fn write_version_marker(marker: &Path, version: &str) -> io::Result<()> {
+    atomic_write(marker, |file| writeln!(file, "{version}"))
+}
+
+fn skipped_build(version: &str) -> Option<u32> {
+    release::package_version(version).map(|(_, build)| build)
+}
+
+fn pending_marker(dir: &Path, installed: &Version) -> io::Result<Pending> {
+    Ok(failed_marker(&dir.join(FAILED), SystemTime::now())?
+        .filter(|(version, _)| version > installed)
+        .map_or(Pending::None, |(_, build)| Pending::Skipped(build)))
+}
+
+fn blocked_build(
+    dir: &Path,
+    offered: &Version,
+    check: Check,
+    now: SystemTime,
+) -> io::Result<Option<u32>> {
+    let marker = dir.join(FAILED);
+    let Some((failed, build)) = failed_marker(&marker, now)? else {
+        return Ok(None);
+    };
+    if check == Check::Manual && failed == *offered {
+        std::fs::remove_file(marker)?;
+        return Ok(None);
     }
+    Ok((*offered <= failed).then_some(build))
 }
 
-fn write_version_marker(marker: &Path, version: &str) -> Result<(), Error> {
-    let dir = marker
-        .parent()
-        .ok_or_else(|| Error::Other("missing packages directory".into()))?;
-    let mut temp = tempfile::NamedTempFile::new_in(dir)?;
-    writeln!(temp, "{version}")?;
-    temp.as_file().sync_all()?;
-    temp.persist(marker).map_err(|e| e.error)?;
-    Ok(())
-}
-
-fn is_candidate(asset: &VelopackAsset, failed: Option<&Version>) -> bool {
-    failed
-        .is_none_or(|failed| Version::parse(&asset.Version).is_ok_and(|version| version > *failed))
+fn failed_marker(marker: &Path, now: SystemTime) -> io::Result<Option<(Version, u32)>> {
+    let file = match File::open(marker) {
+        Ok(file) => file,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let expired = now
+        .duration_since(file.metadata()?.modified()?)
+        .is_ok_and(|age| age >= Duration::from_hours(24));
+    let bytes = release::read_bounded(file, 256)?;
+    let version = std::str::from_utf8(&bytes)
+        .ok()
+        .and_then(|s| release::package_version(s.trim()));
+    if expired || version.is_none() {
+        std::fs::remove_file(marker)?;
+        return Ok(None);
+    }
+    Ok(version)
 }
 
 fn stage_update(
@@ -709,9 +888,9 @@ fn stage_update(
     verify: impl FnOnce(&Receipt) -> Result<Release, release::Invalid>,
     downloading: impl Fn(Option<u8>),
     now: impl Fn() -> Timestamp,
-) -> Result<Option<String>, Failure> {
+) -> Result<Pending, Failure> {
     let Some((tag, manifest)) = feed.latest()? else {
-        return Ok(None);
+        return pending_marker(dir, installed).map_err(|_| Failure::Apply);
     };
     let receipt = Receipt {
         manifest,
@@ -722,34 +901,36 @@ fn stage_update(
         return Err(Failure::Verify);
     }
     if !signed.newer_than(installed) {
-        return Ok(None);
+        return pending_marker(dir, installed).map_err(|_| Failure::Apply);
+    }
+    if let Some(build) =
+        blocked_build(dir, &signed.version, check, SystemTime::now()).map_err(|_| Failure::Apply)?
+    {
+        return Ok(Pending::Skipped(build));
     }
     let mut rejections = Rejections::load(dir);
     if check != Check::Manual && rejections.blocks(&signed.rejection, now()) {
         return Err(Failure::Verify);
     }
-    let failed = read_version_marker(&dir.join(FAILED)).map_err(|_| Failure::Apply)?;
-    if !is_candidate(&signed.full, failed.as_ref()) {
-        return Err(Failure::Apply);
-    }
     // A previous build may have left a full package without a usable receipt. Reuse it only
     // after authenticating the current receipt and hashing the full file against that receipt.
-    if release::matches_file(&signed.full, &dir.join(&signed.full.FileName)).unwrap_or(false) {
+    if let Ok(Some(package)) = VerifiedPackage::verify(dir, &signed.full) {
         atomic_json(&dir.join(RECEIPT), &receipt).map_err(|_| Failure::Download)?;
         rejections.clear(dir, &signed.rejection);
-        return Ok(Some(signed.full.Version));
+        return Ok(Pending::Ready(Box::new(package)));
     }
     downloading(None);
-    match stage_verified(feed, dir, &signed, &receipt, &downloading) {
-        Ok(()) => rejections.clear(dir, &signed.rejection),
+    let package = match stage_verified(feed, dir, &signed, &receipt, &downloading) {
+        Ok(package) => package,
         Err(StageFailure::Mismatch) => {
             rejections.record_mismatch(dir, &signed.rejection, now());
             return Err(Failure::Verify);
         }
         Err(StageFailure::Download) => return Err(Failure::Download),
-    }
+    };
+    rejections.clear(dir, &signed.rejection);
     tracing::info!("desktop update staged for next launch");
-    Ok(Some(signed.full.Version))
+    Ok(Pending::Ready(Box::new(package)))
 }
 
 fn stage_verified(
@@ -758,7 +939,7 @@ fn stage_verified(
     release: &Release,
     receipt: &Receipt,
     progress: &impl Fn(Option<u8>),
-) -> Result<(), StageFailure> {
+) -> Result<VerifiedPackage, StageFailure> {
     // Native Velopack delta reconstruction can produce a different ZIP from the original full
     // package. Stage the signed full bytes directly, without letting download_updates extract
     // a replacement Update.exe or letting any unauthenticated file qualify as pending.
@@ -775,11 +956,19 @@ fn stage_verified(
     feed.ensure_running().map_err(|_| StageFailure::Download)?;
     let dest = dir.join(&release.full.FileName);
     partial.persist(&dest).map_err(|_| StageFailure::Download)?;
-    if atomic_json(&dir.join(RECEIPT), receipt).is_err() {
+    // Cache the hash-verified on-disk file, not just the bytes streamed from the feed.
+    let result = (|| {
+        let package = VerifiedPackage::verify(dir, &release.full)
+            .map_err(|_| StageFailure::Download)?
+            .ok_or(StageFailure::Mismatch)?;
+        atomic_json(&dir.join(RECEIPT), receipt).map_err(|_| StageFailure::Download)?;
+        Ok(package)
+    })();
+    if result.is_err() {
         let _ = std::fs::remove_file(dest);
-        return Err(StageFailure::Download);
+        let _ = std::fs::remove_file(dir.join(RECEIPT));
     }
-    Ok(())
+    result
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -788,13 +977,18 @@ pub enum Apply {
     Quit,
 }
 
-fn launch_apply(manager: &UpdateManager, asset: VelopackAsset, mode: Apply) -> Result<(), Error> {
-    // The user requested a foreground restart, even if the original launch was at sign-in.
+fn launch_apply(
+    manager: &UpdateManager,
+    asset: VelopackAsset,
+    mode: Apply,
+    background: bool,
+) -> Result<(), Error> {
+    // Explicit restart is foreground; automatic startup apply preserves autostart behavior.
     manager.wait_exit_then_apply_updates(
         asset,
         true,
         mode == Apply::Restart,
-        std::iter::empty::<String>(),
+        background.then(|| "--background".to_owned()),
     )
 }
 
@@ -814,10 +1008,13 @@ mod tests {
         let mut observer = controller.subscribe();
         controller.check_now();
         assert!(observer.has_changed().expect("watch is open"));
-        assert_eq!(observer.borrow_and_update().state, State::Checking);
+        assert_eq!(
+            observer.borrow_and_update().state,
+            State::Checking { manual: true }
+        );
         assert_eq!(requests.try_recv(), Ok(Check::Manual));
         assert!(
-            !controller.for_worker(&stopped, Snapshot::begin),
+            !controller.for_worker(&stopped, |s| s.begin(Check::Automatic)),
             "a due auto-check cannot race the click"
         );
         controller.check_now();
@@ -848,21 +1045,100 @@ mod tests {
     fn quit_applies_only_a_ready_package_without_restarting() {
         let controller = Controller::fixture(State::Downloading { progress: Some(99) });
         assert!(!controller.apply_with(Apply::Quit, |_, _| panic!("not staged")));
-        let controller = Controller::fixture(State::Ready {
-            version: "0.1.0-build.147".into(),
-        });
+        let controller = ready_controller();
         assert!(controller.apply_with(Apply::Quit, |version, mode| {
             assert_eq!(version, "0.1.0-build.147");
             assert_eq!(mode, Apply::Quit);
             Ok(true)
         }));
-        assert!(!controller.apply_with(Apply::Restart, |_, _| Ok(false)));
+    }
+
+    fn ready_controller() -> Controller {
+        Controller::fixture(State::Ready {
+            version: "0.1.0-build.147".into(),
+        })
+    }
+
+    #[test]
+    fn failed_quit_defers_to_startup_but_allows_explicit_restart() {
+        let controller = ready_controller();
+        assert!(!controller.apply_with(Apply::Quit, |_, _| Ok(false)));
+        assert!(controller.snapshot().quit_deferred);
         assert!(controller.snapshot().restart_failed);
         assert!(controller.snapshot().footer_action());
+        assert!(!controller.apply_with(Apply::Quit, |_, _| panic!("quit deferred")));
         assert!(controller.apply_with(Apply::Restart, |_, mode| {
             assert_eq!(mode, Apply::Restart);
             Ok(true)
         }));
+    }
+
+    #[test]
+    fn apply_failure_invalidates_ready_and_publishes_the_error() {
+        let controller = ready_controller();
+        assert!(!controller.apply_with(Apply::Restart, |_, _| Err(Failure::Verify)));
+        let state = controller.snapshot();
+        assert!(matches!(
+            state.state,
+            State::Failed {
+                kind: Failure::Verify,
+                ..
+            }
+        ));
+        assert!(!state.restart_failed);
+        assert!(state.ready_version().is_none());
+    }
+
+    #[test]
+    fn apply_latch_blocks_while_launching_and_after_success() {
+        let controller = ready_controller();
+        assert!(controller.apply_with(Apply::Restart, |_, _| {
+            assert!(!controller.apply_with(Apply::Quit, |_, _| panic!("launch in flight")));
+            Ok(true)
+        }));
+        assert!(!controller.apply_with(Apply::Quit, |_, _| panic!("updater already launched")));
+    }
+
+    #[test]
+    fn failed_marker_clears_only_for_its_manual_offer_or_after_24_hours() {
+        let dir = tempfile::tempdir().expect("packages directory");
+        let marker = dir.path().join(FAILED);
+        let older = Version::parse("0.1.0-build.9").expect("older build");
+        let failed = Version::parse("0.1.0-build.10").expect("failed build");
+        let newer = Version::parse("0.1.0-build.11").expect("newer build");
+        let write = || {
+            write_version_marker(&marker, "0.1.0-build.10").expect("write marker");
+            FileStamp::read(&marker).expect("marker metadata").modified
+        };
+        let now = write();
+        let blocked = |version, check, at| {
+            blocked_build(dir.path(), version, check, at).expect("read marker")
+        };
+        assert_eq!(blocked(&older, Check::Manual, now), Some(10));
+        assert_eq!(blocked(&newer, Check::Manual, now), None);
+        assert_eq!(blocked(&failed, Check::Focus, now), Some(10));
+        assert!(matches!(
+            verified_pending(dir.path(), &older, |_| panic!("no receipt")),
+            Ok(Pending::Skipped(10))
+        ));
+        assert_eq!(blocked(&failed, Check::Manual, now), None);
+        assert!(!marker.exists());
+        assert_eq!(blocked(&failed, Check::Automatic, now), None);
+
+        let now = write();
+        assert_eq!(
+            blocked(
+                &failed,
+                Check::Automatic,
+                now + Duration::from_hours(24) - Duration::from_secs(1)
+            ),
+            Some(10)
+        );
+        assert_eq!(
+            blocked(&failed, Check::Automatic, now + Duration::from_hours(24)),
+            None
+        );
+        assert!(!marker.exists());
     }
 
     #[test]
@@ -1135,7 +1411,12 @@ mod tests {
                 verify,
                 |_| {},
                 || now.get(),
-            );
+            )
+            .map(|pending| match pending {
+                Pending::Ready(package) => Some(package.asset.Version),
+                Pending::None => None,
+                Pending::Skipped(build) => panic!("unexpected skipped build {build}"),
+            });
             server.join().expect("test server");
             result
         };
@@ -1179,10 +1460,14 @@ mod tests {
             proof: "{}".into(),
         };
         atomic_json(&dir.path().join(RECEIPT), &untrusted).expect("unsigned receipt fixture");
-        assert_eq!(
-            startup_state(dir.path(), &installed, false, verify),
-            State::Idle
-        );
+        let no_launch = |_: &VerifiedPackage| panic!("no verified package to apply");
+        assert!(matches!(
+            startup_apply(dir.path(), &installed, false, verify, no_launch),
+            Startup::Continue(State::Failed {
+                kind: Failure::Verify,
+                ..
+            })
+        ));
         assert_eq!(std::fs::read_dir(dir.path()).expect("packages").count(), 0);
         let package = dir.path().join(name);
         assert_eq!(
@@ -1207,17 +1492,23 @@ mod tests {
             ),
             Ok(Some(offered.to_string()))
         );
-        assert_eq!(
-            startup_state(dir.path(), &installed, false, verify),
-            State::Ready {
-                version: offered.to_string(),
-            }
-        );
+        assert!(matches!(
+            startup_apply(dir.path(), &installed, false, verify, |cached| {
+                assert_eq!(cached.asset.Version, offered.to_string());
+                assert!(cached.unchanged(dir.path()));
+                true
+            }),
+            Startup::Applying
+        ));
+        assert!(matches!(
+            startup_apply(dir.path(), &installed, false, verify, |_| false),
+            Startup::Retry(_)
+        ));
         std::fs::remove_file(dir.path().join(RECEIPT)).expect("forget receipt for legacy test");
-        assert_eq!(
-            startup_state(dir.path(), &installed, false, verify),
-            State::Idle
-        );
+        assert!(matches!(
+            startup_apply(dir.path(), &installed, false, verify, no_launch),
+            Startup::Continue(State::Idle)
+        ));
         assert_eq!(
             check(vec![offer(), valid_proof()], &installed, Check::Automatic),
             Ok(Some(offered.to_string())),
@@ -1248,11 +1539,11 @@ mod tests {
 
         assert!(Rejections::load(dir.path()).blocks(&signed.rejection, now.get()));
         assert!(matches!(
-            startup_state(dir.path(), &installed, false, verify),
-            State::Failed {
+            startup_apply(dir.path(), &installed, false, verify, no_launch),
+            Startup::Continue(State::Failed {
                 kind: Failure::Verify,
                 ..
-            }
+            })
         ));
         assert_eq!(
             check(vec![offer(), valid_proof()], &installed, Check::Automatic),
@@ -1273,11 +1564,10 @@ mod tests {
         );
         std::fs::remove_file(dir.path().join(RECEIPT)).expect("forget receipt for legacy test");
         std::fs::write(&package, PACKAGE).expect("unsigned legacy pending package");
-        assert!(
-            verified_pending(dir.path(), &installed, verify)
-                .expect("no receipt")
-                .is_none()
-        );
+        assert!(matches!(
+            verified_pending(dir.path(), &installed, verify),
+            Ok(Pending::None)
+        ));
 
         std::fs::remove_file(&package)
             .expect("reset legacy package fixture before cooldown retries");
@@ -1312,39 +1602,52 @@ mod tests {
             !Rejections::load(dir.path()).blocks(&signed.rejection, now.get()),
             "successful retry clears the marker"
         );
-        assert!(
-            verified_pending(dir.path(), &installed, verify)
-                .expect("receipt verified")
-                .is_some()
-        );
-        std::fs::write(&package, b"fixture tamper!").expect("tamper with staged package");
+        let Pending::Ready(cached) =
+            verified_pending(dir.path(), &installed, verify).expect("receipt verified")
+        else {
+            panic!("verified package missing")
+        };
+        std::fs::write(&package, CORRUPT).expect("tamper with staged package");
+        File::options()
+            .write(true)
+            .open(&package)
+            .expect("staged file")
+            .set_modified(cached.stamp.modified + Duration::from_secs(1))
+            .expect("change mtime");
+        assert!(!cached.unchanged(dir.path()));
         assert_eq!(
             verified_pending(dir.path(), &installed, verify)
                 .expect_err("pending verification must fail"),
             Some(signed.rejection)
         );
         assert!(matches!(
-            startup_state(dir.path(), &installed, false, verify),
-            State::Failed {
+            startup_apply(dir.path(), &installed, false, verify, no_launch),
+            Startup::Continue(State::Failed {
                 kind: Failure::Verify,
                 ..
-            }
+            })
         ));
         assert!(!package.exists());
+        assert!(!dir.path().join(RECEIPT).exists());
         std::fs::write(&package, PACKAGE).expect("restore the signed bytes");
         atomic_json(&dir.path().join(RECEIPT), &receipt).expect("restore receipt");
         assert!(matches!(
-            startup_state(dir.path(), &installed, true, verify),
-            State::Failed {
-                kind: Failure::Apply,
-                ..
-            }
+            startup_apply(dir.path(), &installed, true, verify, no_launch),
+            Startup::Continue(State::Skipped { build: 10 })
         ));
-        assert!(
-            verified_pending(dir.path(), &installed, verify)
-                .expect("valid receipt")
-                .is_none()
+        assert!(matches!(
+            verified_pending(dir.path(), &installed, verify),
+            Ok(Pending::Skipped(10))
+        ));
+        assert!(matches!(
+            startup_apply(dir.path(), &installed, false, verify, no_launch),
+            Startup::Continue(State::Skipped { build: 10 })
+        ));
+        assert_eq!(
+            check(vec![offer(), valid_proof()], &installed, Check::Manual),
+            Ok(Some(offered.to_string()))
         );
+        assert!(!dir.path().join(FAILED).exists());
     }
 
     #[test]

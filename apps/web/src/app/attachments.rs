@@ -29,6 +29,13 @@ pub(super) struct Uploads(RwSignal<BTreeMap<TaskId, UploadState>>);
 impl Uploads {
     pub(super) fn new(c: Ctx) -> Self {
         let uploads = Self(RwSignal::new(BTreeMap::new()));
+        c.drafts.watch(move || {
+            uploads.0.with_untracked(|states| {
+                states
+                    .values()
+                    .any(|state| matches!(state, UploadState::Waiting | UploadState::Uploading))
+            })
+        });
         let open = Memo::new(move |_| c.detail.with(|d| d.as_ref().map(|d| d.id)));
         Effect::new(move |_| {
             let id = open.get();

@@ -85,7 +85,11 @@ impl Ui {
     }
 
     pub(super) fn has_draft(self) -> bool {
-        self.draft.with_untracked(|text| !text.is_empty()) || self.preparing.get_untracked()
+        self.draft.with_untracked(|text| !text.is_empty())
+            || self.preparing.get_untracked()
+            || self
+                .view
+                .with_untracked(|v| matches!(v.composer, Composer::Review { .. }))
     }
 
     pub(super) fn sync(self, signed_out: bool) {

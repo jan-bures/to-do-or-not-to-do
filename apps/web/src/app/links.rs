@@ -11,6 +11,7 @@ pub(super) fn Links(task: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView
     let c = ctx();
     let input = NodeRef::<html::Input>::new();
     let error = RwSignal::new(None::<String>);
+    let dirty = c.drafts.flag();
     let sources = Memo::new(move |_| {
         detail.with(|d| d.as_ref().map(|d| d.sources.clone()).unwrap_or_default())
     });
@@ -50,6 +51,7 @@ pub(super) fn Links(task: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView
                     Ok(cmd) => {
                         if c.submit_undoable(cmd, "Link added.".into(), None) {
                             input.set_value("");
+                            dirty.set(false);
                             error.set(None);
                             let _ = input.focus();
                         } else { error.set(c.toast.get_untracked().map(|t| t.text)); }
@@ -64,12 +66,16 @@ pub(super) fn Links(task: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView
                 {icon(Icon::Link)}
                 <input id="add-task-link" type="text" inputmode="url" autocomplete="off" node_ref=input aria-label="Add a web link"
                     placeholder="Add a web link…" aria-keyshortcuts="L" aria-describedby=move || error.with(|e| e.as_ref().map(|_| "link-address-error"))
-                    disabled=move || c.read_only() on:input=move |_| error.set(None)
+                    disabled=move || c.read_only() on:input=move |ev| {
+                        dirty.set(!event_target_value(&ev).is_empty());
+                        error.set(None);
+                    }
                     on:keydown=move |ev| {
                         if ev.key() == "Escape" && !ev.is_composing() && input.get_untracked().is_some_and(|i| !i.value().is_empty()) {
                             ev.stop_propagation();
                             if !ev.repeat() {
                                 if let Some(i) = input.get_untracked() { i.set_value(""); }
+                                dirty.set(false);
                                 error.set(None);
                             }
                         }

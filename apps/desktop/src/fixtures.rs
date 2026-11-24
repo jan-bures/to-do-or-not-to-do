@@ -246,7 +246,8 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         | "updates-footer-current"
         | "updates-footer-checking"
         | "updates-footer-downloading"
-        | "updates-footer-failed" => {
+        | "updates-footer-failed"
+        | "updates-footer-skipped" => {
             let mut f = long_sidebar();
             f.ui.panes = f.ui.panes.with(Pane::Sidebar, desktop::SIDEBAR_MIN);
             f.sync.connection = todo_client::Connection::Offline;

@@ -92,7 +92,7 @@ impl ShellView {
                 "Up to date",
                 relative_status("Checked", *checked_at, self.store.now().at),
             ),
-            State::Checking => (
+            State::Checking { .. } => (
                 Icon::RefreshCw,
                 p.ink_2,
                 "Checking for updates…",
@@ -112,6 +112,12 @@ impl ShellView {
                 p.accent_strong,
                 "Update ready",
                 format!("{version} is ready to install."),
+            ),
+            State::Skipped { .. } => (
+                Icon::CircleAlert,
+                p.danger_ink,
+                "Update skipped",
+                snapshot.skipped_label().unwrap_or_default(),
             ),
             State::Failed { kind, at } => {
                 let title = match kind {
@@ -174,7 +180,11 @@ impl ShellView {
                                     div()
                                         .style(ty::META)
                                         .text_color(p.danger_ink)
-                                        .child("Couldn’t start the update. Try restarting again."),
+                                        .child(if snapshot.quit_deferred {
+                                            "Couldn’t start the update. Retry now or reopen To-do to apply it."
+                                        } else {
+                                            "Couldn’t start the update. Try restarting again."
+                                        }),
                                 )
                             }),
                     ),
@@ -183,7 +193,7 @@ impl ShellView {
 
     pub(super) fn update_busy_button(&self, state: &State) -> Option<Div> {
         let p = self.palette;
-        matches!(state, State::Checking | State::Downloading { .. }).then(|| {
+        matches!(state, State::Checking { .. } | State::Downloading { .. }).then(|| {
             div().px(px(space::S3)).pb(px(space::S2)).child(
                 kit::button_quiet(&p, "Check for updates")
                     .h(px(component::BUTTON_SMALL))
@@ -212,13 +222,23 @@ impl ShellView {
         let ready = snapshot.ready_version();
         if snapshot.footer_action() {
             let retry = snapshot.restart_failed || ready.is_none();
+            let skipped = snapshot.skipped_label();
             let (label, icon, ink) = if retry {
-                ("Update failed · Retry", Icon::RefreshCw, p.danger_ink)
+                (
+                    skipped.as_deref().unwrap_or("Update failed · Retry"),
+                    Icon::RefreshCw,
+                    p.danger_ink,
+                )
             } else {
                 ("Restart to update", Icon::ArrowUp, p.accent_strong)
             };
             let tip = ready.map_or_else(|| label.into(), |build| format!("{label} ({build})"));
-            let button = row()
+            let row = if skipped.is_some() {
+                row().h_auto().py(px(space::S2))
+            } else {
+                row()
+            };
+            let button = row
                 .id("update-indicator")
                 .role(Role::Button)
                 .aria_label(tip.clone())
@@ -230,8 +250,12 @@ impl ShellView {
                 .text_color(ink)
                 .cursor_pointer()
                 .track_focus(&self.update_focus)
-                .child(kit::icon(icon, component::ICON_SMALL, ink))
-                .child(label)
+                .child(
+                    div()
+                        .flex_none()
+                        .child(kit::icon(icon, component::ICON_SMALL, ink)),
+                )
+                .child(div().min_w_0().child(label.to_owned()))
                 .on_click(cx.listener(|this, _, window, cx| {
                     if this.update_snapshot().ready_version().is_some() {
                         cx.emit(super::ShellEvent::RestartToUpdate);
@@ -251,9 +275,9 @@ impl ShellView {
             )));
         }
         let (label, progress) = match snapshot.state {
-            State::Checking => ("Checking for updates…", None),
+            State::Checking { manual: true } => ("Checking for updates…", None),
             State::Downloading { progress } => ("Downloading update…", progress),
-            State::Failed { .. } => ("Update failed", None),
+            _ if snapshot.visible_failure() => ("Update failed", None),
             _ => return None,
         };
         Some(

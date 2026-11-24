@@ -78,6 +78,8 @@ pub(super) fn QuickAdd(#[prop(optional)] column: Option<QueryStatus>) -> impl In
             .map(|s| format!("Add to {}", workflow::stage_info(s).0))
             .or_else(|| c.view_room.with(|r| r.add_placeholder.clone()))
     });
+    c.drafts
+        .watch(move || draft.with_untracked(|value| value != &initial()));
     let room = Memo::new(move |_| c.room.get());
     let features = Memo::new(move |_| {
         c.state

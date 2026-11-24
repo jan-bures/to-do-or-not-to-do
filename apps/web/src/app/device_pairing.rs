@@ -15,7 +15,8 @@ fn until_expiry_ms(deadline: f64) -> i64 {
 
 #[component]
 pub(super) fn DeviceSettings() -> impl IntoView {
-    let open = ctx().device_settings_open;
+    let c = ctx();
+    let open = c.device_settings_open;
     let dialog = NodeRef::<html::Dialog>::new();
     let mode = RwSignal::new(None::<bool>); // true: invite; false: approve
     let busy = RwSignal::new(false);
@@ -24,6 +25,11 @@ pub(super) fn DeviceSettings() -> impl IntoView {
     let invite = RwSignal::new_local(None::<(Invitation, Qr)>);
     let code = RwSignal::new(String::new());
     let pending = RwSignal::new(None::<(String, PendingDevice)>);
+    c.drafts.watch(move || {
+        open.get_untracked()
+            && mode.get_untracked() == Some(false)
+            && code.with_untracked(|code| !code.is_empty())
+    });
     let left = RwSignal::new(0_u32);
     let checking = Memo::new(move |_| left.get() == 0);
     let notice = RwSignal::new(None::<String>);

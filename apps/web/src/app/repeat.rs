@@ -191,8 +191,10 @@ fn CustomEditor(
         )
     });
     let interval = custom.with_untracked(|d| d.map_or(1, |d| d.interval));
+    let dirty = c.drafts.flag();
     view! {
-        <form class="picker-page" on:submit=move |ev| {
+        <form class="picker-page" on:input=move |_| dirty.set(true) on:change=move |_| dirty.set(true)
+            on:submit=move |ev| {
             ev.prevent_default();
             if summary.with_untracked(|s| s.as_ref().is_some_and(Result::is_ok))
                 && let Some(draft) = custom.get_untracked() { apply.run(draft); }
@@ -220,7 +222,10 @@ fn CustomEditor(
                     {Weekday::ALL.into_iter().zip(["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"]).map(|(day, label)| view! {
                         <button type="button" title=model::core_weekday(day) aria-label=model::core_weekday(day)
                             aria-pressed=move || custom.with(|v| v.is_some_and(|v| v.days[day.offset()])).to_string()
-                            on:click=move |_| custom.update(|v| { if let Some(v) = v { v.days[day.offset()] = !v.days[day.offset()]; } })>{label}</button>
+                            on:click=move |_| {
+                                dirty.set(true);
+                                custom.update(|v| { if let Some(v) = v { v.days[day.offset()] = !v.days[day.offset()]; } });
+                            }>{label}</button>
                     }).collect_view()}
                 </fieldset>
             </Show>
