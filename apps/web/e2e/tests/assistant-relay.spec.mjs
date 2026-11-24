@@ -99,8 +99,13 @@ test("device sign-in, shared account and consent, and sign-out across two browse
     await expect(aiSettings(second).getByText("you@example.com", { exact: true })).toBeVisible();
   } finally { await secondContext.close(); }
   await page.locator("#assistant-settings").click();
-  await settings.getByRole("combobox", { name: "Finance", exact: true }).selectOption("all");
+  const finance = settings.getByRole("combobox", { name: "Finance", exact: true });
+  await expect(finance).toHaveValue("hidden");
+  await finance.selectOption("all");
+  await expect(finance).toHaveValue("all");
   await settings.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(settings).not.toBeVisible();
+  expect(Object.values(mock.data.access.lists).filter((access) => access === "All")).toHaveLength(2);
   await send(page, "Scope grew");
   await expect(panel(page).getByText(/ChatGPT can read these lists:.*Finance/)).toBeVisible();
   expect(mock.chats).toHaveLength(1);
