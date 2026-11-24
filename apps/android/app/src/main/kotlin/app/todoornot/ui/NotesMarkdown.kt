@@ -27,6 +27,7 @@ import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.hideFromAccessibility
@@ -40,7 +41,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.LayoutDirection
+import androidx.compose.ui.unit.isSpecified
 import androidx.compose.ui.unit.dp
 import app.todoornot.core.NoteBlock
 import app.todoornot.core.NoteCheckbox
@@ -163,11 +166,19 @@ private fun NoteBlocks(
                             }
                             NoteBlocks(item.blocks, editable, onToggle, onLink, Modifier.weight(1f))
                         } else {
+                            // Occupy the marker column and the first line like the desktop and web; the
+                            // 48 dp touch target overflows invisibly instead of pushing the text aside.
+                            val line = T.NOTES.style(r.ink2).lineHeight
                             Check(checkbox.checked, { onToggle(checkbox) }, checkbox.label,
-                                modifier = Modifier.size(touch), size = C.ICON_SMALL.dp, enabled = editable)
-                            Box(Modifier.weight(1f).heightIn(min = touch), contentAlignment = Alignment.CenterStart) {
-                                NoteBlocks(item.blocks, editable, onToggle, onLink)
-                            }
+                                modifier = Modifier.layout { measurable, _ ->
+                                    val target = touch.roundToPx()
+                                    val width = C.ICON_SMALL.dp.roundToPx()
+                                    val height = if (line.isSpecified) line.roundToPx() else width
+                                    val placeable = measurable.measure(Constraints.fixed(target, target))
+                                    layout(width, height) { placeable.place((width - target) / 2, (height - target) / 2) }
+                                },
+                                size = C.ICON_SMALL.dp, enabled = editable)
+                            NoteBlocks(item.blocks, editable, onToggle, onLink, Modifier.weight(1f))
                         }
                     }
                 }
