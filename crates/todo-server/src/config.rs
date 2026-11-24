@@ -487,6 +487,8 @@ pub struct Config {
     pub web_push: WebPushConfig,
     /// The desktop release feed.
     pub releases: ReleasesConfig,
+    /// Optional owner-only AI relay.
+    pub assistant: crate::assistant::Config,
     /// Optional Android reminder wake-ups.
     pub push: Option<PushConfig>,
 }
@@ -541,6 +543,7 @@ impl Default for Config {
             web: WebConfig::default(),
             web_push: WebPushConfig::default(),
             releases: ReleasesConfig::default(),
+            assistant: crate::assistant::Config::default(),
             push: None,
         }
     }
@@ -705,6 +708,7 @@ impl Config {
             }
         }
         self.attachments.validate().map_err(ConfigError::Invalid)?;
+        self.assistant.validate()?;
         if let Some(push) = &self.push {
             push.validate()?;
         }

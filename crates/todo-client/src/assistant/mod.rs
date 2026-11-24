@@ -12,21 +12,22 @@ macro_rules! opaque_debug {
     )+};
 }
 
-mod access;
 pub mod endpoint;
 pub mod fake;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod local;
 pub mod openai;
 pub mod provider;
+pub mod responses;
 mod tools;
 pub mod wire;
 
-pub use access::{AccessRules, ListAccess};
+pub use todo_tools::assistant::access::{AccessRules, ListAccess};
 pub use todo_tools::assistant::approval::{
     Edit, Effect, ListRef, PendingProposal, ProposalItem, ProposalKind, ProposalPreview, Revision,
     TaskRef,
 };
+pub use todo_tools::assistant::relay;
 pub use tools::ToolKind;
 
 use crate::{

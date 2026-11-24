@@ -77,6 +77,8 @@ pub struct AppState {
     pub web: Option<Arc<crate::web::spa::WebApp>>,
     /// The private desktop release feed, when `[releases] dir` is set.
     pub releases: Option<std::path::PathBuf>,
+    /// The optional owner-only AI relay.
+    pub(crate) assistant: Option<Arc<crate::assistant::Assistant>>,
     /// Firebase client options, when Android push wake-ups are configured.
     pub push: Option<Arc<crate::config::PushConfig>>,
     pub(crate) web_push: Option<Arc<crate::web_push::Sender>>,
@@ -429,6 +431,13 @@ impl Server {
             }
             None => None,
         };
+        let assistant = {
+            let (settings, dir) = (config.assistant.clone(), config.data_dir.clone());
+            tokio::task::spawn_blocking(move || crate::assistant::Assistant::open(settings, &dir))
+                .await
+                .map_err(|_| ConfigError::Invalid("could not initialize assistant".into()))?
+                .map_err(|e| ConfigError::Invalid(e.to_string()))?
+        };
         let releases = if let Some(dir) = &config.releases.dir {
             Some(
                 crate::releases::directory(dir)
@@ -500,6 +509,7 @@ impl Server {
             attachments: attachments.clone(),
             web,
             releases,
+            assistant,
             push,
             web_push,
         };

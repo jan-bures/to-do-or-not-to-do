@@ -11,20 +11,13 @@ use url::{Host, Url};
 pub enum BrowserEndpointError {
     #[error("Enter a model server URL without credentials, a query, or a fragment.")]
     Address,
-    #[error(
-        "For a tailnet server, use Tailscale Serve (HTTPS) and allow this site in CORS. The browser blocks plain HTTP to the tailnet."
-    )]
-    TailnetHttp,
-    #[error(
-        "Use HTTP at localhost or 127.0.0.1, or an HTTPS Tailscale Serve URL ending in .ts.net on port 443."
-    )]
+    #[error("Use HTTP at localhost or 127.0.0.1 for a model on this device.")]
     Destination,
     #[error("Choose a model server on a different origin from this app.")]
     SameOrigin,
 }
 
-/// Keep the browser rule in step with the app page's `connect-src`. The browser cannot pin DNS
-/// answers to specific interfaces like the native client, so only HTTPS tailnet hostnames pass.
+/// Keep direct inference loopback-only, in step with the web app's `connect-src`.
 pub fn browser_endpoint(input: &str) -> Result<(Url, Destination), BrowserEndpointError> {
     let mut url = endpoint::address(input).ok_or(BrowserEndpointError::Address)?;
     let host = url.host().ok_or(BrowserEndpointError::Address)?;
@@ -33,9 +26,6 @@ pub fn browser_endpoint(input: &str) -> Result<(Url, Destination), BrowserEndpoi
         ("http", Destination::ThisDevice, Host::Domain("localhost")) => {}
         ("http", Destination::ThisDevice, Host::Ipv4(ip))
             if ip == std::net::Ipv4Addr::LOCALHOST => {}
-        ("https", Destination::Tailscale, Host::Domain(host))
-            if host.ends_with(".ts.net") && url.port().is_none() => {}
-        ("http", Destination::Tailscale, _) => return Err(BrowserEndpointError::TailnetHttp),
         _ => return Err(BrowserEndpointError::Destination),
     }
     let path = url.path().trim_end_matches('/');
@@ -114,11 +104,6 @@ mod tests {
                 "http://localhost:11434/v1/chat/completions",
                 Destination::ThisDevice,
             ),
-            (
-                "https://todo.example.ts.net/model/v1/chat/completions",
-                "https://todo.example.ts.net/model/v1/chat/completions",
-                Destination::Tailscale,
-            ),
         ] {
             let (url, destination) = browser_endpoint(input).unwrap();
             assert_eq!(url.as_str(), expected);
@@ -128,6 +113,9 @@ mod tests {
             "https://you@todo.example.ts.net",
             "https://todo.example.ts.net?token=one",
             "https://todo.example.ts.net/#fragment",
+            "https://todo.example.ts.net/model/v1/chat/completions",
+            "http://todo.example.ts.net",
+            "http://100.64.0.1",
             "https://todo.example.com",
             "https://todo.example.ts.net.example.com",
             "https://todo.example.ts.net:8443",
@@ -137,12 +125,6 @@ mod tests {
             "http://127.0.0.1:0",
         ] {
             assert!(browser_endpoint(invalid).is_err(), "{invalid}");
-        }
-        for cleartext in ["http://todo.example.ts.net", "http://100.64.0.1"] {
-            assert_eq!(
-                browser_endpoint(cleartext),
-                Err(BrowserEndpointError::TailnetHttp)
-            );
         }
     }
 }

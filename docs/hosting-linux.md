@@ -190,6 +190,49 @@ shred -u r2-attachments.json ingest-email-hmac.secret
 `provision.sh` also corrects the modes in `/etc/todo` when you run it: `*.secret` files become todo:todo 0600,
 everything else root:todo 0640.
 
+### AI assistant relay
+
+The relay is optional. Leave out `[assistant]` and `[assistant.private]` to keep it off. Only an owner
+with a passkey session or a paired device can use it; agent tokens, even ones with task write access,
+are not accepted.
+
+```toml
+[assistant]
+chatgpt = true
+# Optional; omit to allow only the installed app's browser handoff for new sign-ins.
+chatgpt_device_client_id = "<approved-openai-device-client-id>"
+key_file = "/var/lib/todo/assistant.key"
+
+[assistant.private]
+base_url = "http://<model>.<tailnet>.ts.net:8030/v1"
+key_file = "/etc/todo/assistant-model.secret"
+```
+
+- Configure only the providers you need. The server creates `assistant.key`, by default under
+  `data_dir`, if there is no existing vault. If supplying your own key file, make it a single line of
+  64 hex digits, owned by `todo`, mode `0600`. Use a new key, not the attachment or ingest key.
+  Tokens and list-sharing permissions are encrypted in `data_dir/assistant.vault`. The vault and key
+  are not in the task database or its backups. Retain them safely and separately if a VM move must
+  preserve sign-ins; otherwise sign in and configure list access again. Never restore a vault copy to
+  recover a signed-out account: it may contain stale tokens. If the key is lost, stop the server and
+  set the unreadable vault aside before restarting with a new key.
+- Device sign-in uses the Codex device-authorization protocol. The client ID must be enabled by
+  OpenAI for device codes and ChatGPT inference. It is not an API key or the desktop's dynamic SIWC
+  registration. Device-code sign-in does not appear without it. With ChatGPT enabled, a connected
+  account can be used from any owner session. A ChatGPT sign-out removes that account and its
+  consent on all devices. If revocation is not confirmed, disconnect the app in ChatGPT settings.
+- For private inference, the server (not the phone or browser) needs a route to the upstream. Join the
+  server to your tailnet with shields-up and grant only outbound access to the trusted model port.
+  The URL may use a MagicDNS name ending in `.ts.net`, a Tailscale address (IPv4 `100.64.0.0/10` or
+  IPv6 `fd7a:115c:a1e0::/48`), or loopback. The connector filters DNS results before connecting.
+  Plain HTTP on a tailnet relies on Tailscale for transport privacy. Redirects and system proxies are
+  not used. Use HTTPS when available. Install the bearer key in `assistant.private.key_file` as
+  `todo:todo` mode `0600`; the web and paired apps never receive it.
+- Restart the server after changing these settings. Choose a provider and model under **AI settings**.
+  List access defaults to **Hidden**. **Private only** lists cannot be used by ChatGPT. The relay
+  checks the currently allowed list IDs and account approval before sending; owner-typed text is not
+  filtered. Only share data with a model you trust.
+
 ### Android reminder wake-ups
 
 Optional. Omit `[push]` to keep FCM off; Android still runs its periodic sync. FCM itself is available on

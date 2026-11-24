@@ -57,6 +57,15 @@ dir = "/opt/todo/current/web"
 # gce_metadata = true
 # service_account_file = "/etc/todo/fcm-service-account.json"
 
+# Optional AI assistant relay. See docs/hosting-linux.md for file modes and setup.
+# [assistant]
+# chatgpt = true
+# chatgpt_device_client_id = "<approved-openai-device-client-id>"
+# key_file = "/var/lib/todo/assistant.key"
+# [assistant.private]
+# base_url = "http://<model>.<tailnet>.ts.net:8030/v1"
+# key_file = "/etc/todo/assistant-model.secret"
+
 # Optional private Windows desktop update feed. See docs/desktop.md before enabling it.
 # [releases]
 # dir = "/opt/todo/desktop-releases"

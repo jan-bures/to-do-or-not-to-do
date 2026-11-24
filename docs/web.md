@@ -134,7 +134,7 @@ The page gets its own CSP:
 
 ```
 default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; style-src 'self'; img-src 'self' data: blob:;
-connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self';
+connect-src 'self' http://127.0.0.1:* http://localhost:*; font-src 'self';
 worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self';
 object-src 'none'
 ```
@@ -145,7 +145,9 @@ attributes, and the landscape's stroke widths and opacities are SVG presentation
 only their measured screen coordinates, and the docked grid sets its detail width, via CSSOM custom
 properties. Neither needs inline style markup. Browser tests fail on any CSP violation. The rest of the
 server's headers (`Referrer-Policy: same-origin`, `X-Content-Type-Options`, ...) apply as on every page. The `connect-src`
-exceptions are for direct browser inference; external scripts, styles and forms remain disallowed.
+exceptions are for direct loopback inference; hosted models and Web Push use the same origin. External
+scripts, styles and forms remain disallowed. The reminder worker and its helper script have their own
+policy that allows only same-origin scripts, network requests and images.
 
 ## AI assistant
 
@@ -154,37 +156,27 @@ its own resizable divider and remembers the width in this browser. It opens as a
 and as a bottom sheet on phones. Enter sends, Shift+Enter inserts a newline, and **Stop** aborts the reply.
 Closing the panel preserves the chat until reload. Settings are also available under **Settings → AI assistant…**.
 
-**Your own server** supports OpenAI-compatible Chat Completions with tool calling. Enter the base URL and
-model name. Use `http://localhost:11434` or `http://127.0.0.1:11434` for a model on the browser's device.
-For another device on your tailnet, enable HTTPS certificates in Tailscale and use **Tailscale Serve**,
-not Funnel. On the model host, for example:
+**ChatGPT** and **Your private models (via your server)** use the [server relay](hosting-linux.md#ai-assistant-relay).
+The browser uses the same-origin owner session and never receives the provider credentials. For a new
+ChatGPT account, if device sign-in is enabled, choose **Sign in with ChatGPT**, open the verification page,
+and enter the displayed one-time code. Only approve a sign-in you started. After approval, choose the
+account and a model. Other paired devices can see the account without signing in again. **Sign out**
+removes the account from all devices. **Manage usage** opens ChatGPT's usage settings. Eligible requests
+can use the account's plan or available credits; there's no automatic fallback to another provider.
 
-```sh
-tailscale serve --bg http://127.0.0.1:11434
-```
+**This device** still supports a direct OpenAI-compatible endpoint on `http://localhost` or
+`http://127.0.0.1`. The model must allow the app's exact origin using CORS, including `POST`,
+`Content-Type`, and, for an optional key, `Authorization`. The local key can be remembered only in the
+current tab. To-do credentials, cookies and referrers are never sent to a direct endpoint. Tailnet
+endpoints previously configured directly must be moved to the server relay.
 
-Enter the `https://<device>.<tailnet>.ts.net` URL printed by Serve (standard HTTPS port 443). The browser blocks plain HTTP to the
-tailnet from the HTTPS app; other origins are not supported. Serve handles TLS, not your model's CORS policy.
-The model or its local reverse proxy must answer unauthenticated `OPTIONS` requests, allow the exact app
-origin (for example `https://todo.example.com`), `POST`, and `Content-Type` plus `Authorization` if using an
-API key. Send `Access-Control-Allow-Origin` on both the preflight and the actual response, including errors
-and streams. Browsers may ask permission to access your local network; if a browser sends
-`Access-Control-Request-Private-Network: true`, accept it for the configured app origin with
-`Access-Control-Allow-Private-Network: true` on the preflight.
-
-The browser posts to `…/v1/chat/completions` directly, never through `todo-server`. It sends an optional
-**API key** as a Bearer header to the configured endpoint only; redirects, cookies, referrer, and To-do
-credentials are not sent. The key is held in memory unless you select **Remember in this tab**, which uses
-`sessionStorage` to survive reloads in that tab. It is not stored in `localStorage`. Model settings are scoped
-by the signed-in owner. A key is bound to that sign-in and endpoint; signing out, changing owner, or
-disconnecting the model clears it. ChatGPT account sign-in is not supported.
-
-Each list defaults to **Hidden**. **Private only** allows reads by models on this device or over Tailscale
-Serve. **All models** is equivalent on web because web has no Cloud provider. Lists inherit the collection
-rule unless overridden. Only use a model you trust: the browser cannot verify what runs at the configured
-address or whether it forwards requests. The shared assistant projects the confirmed replica before tool reads.
-Changing the access rules or provider clears the conversation. Pane width is browser-local; conversation text
-is not persisted or synced.
+Each list defaults to **Hidden**. **Private only** permits the private relay and loopback models;
+**All models** also permits ChatGPT. Lists inherit the collection rule unless overridden. Relay list
+rules and ChatGPT approval are shared across paired devices, while loopback access stays in the browser.
+The first send to ChatGPT asks to approve plan use and the list scope. It asks again when a newly
+eligible list would be shared, and not when fewer lists are used. The assistant projects the confirmed
+replica before tool reads. Changes to the provider or access reset the conversation. Pane width and
+model choice are browser-local; conversation text is not persisted or synced.
 
 Model output cannot submit commands. **Approve** submits the exact reviewed effects through the same durable
 sync, digest and confirmed-revision checks as desktop; **Reject** submits nothing. Confirmed changes appear
@@ -687,7 +679,7 @@ The status bar shows shortcuts only when their actions are available.
   and reload, rescheduling and removal, and fallback actions. The docked splitter
   tests cover keyboard and pointer resizing, the live accessibility values, persistence through reloads
   and viewport changes, and wide-detail text and list layout. Assistant tests cover focus, responsive layout,
-  a real streaming fetch and Stop, Tailscale Serve and loopback validation, Bearer versus session headers,
+  a real streaming fetch and Stop, loopback validation, relay device sign-in and shared consent, Bearer versus session headers,
   per-owner storage, and exact outbound bodies for the model's list-access gate. Settings tests use the keyboard to open
   the same-origin admin pages from the desktop sidebar and phone drawer. Set `FIXTURE_PORT` to change the port
   from the default 4173.

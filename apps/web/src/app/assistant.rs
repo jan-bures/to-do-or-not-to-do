@@ -1,15 +1,16 @@
 //! Web presentation of the shared assistant controller. Only explicit review gestures submit.
 
+mod hosted;
 mod review;
 mod settings;
 
-use super::assistant_provider::BrowserProvider;
+use super::assistant_provider::{BrowserProvider, Hosted};
 use super::{Ctx, RoomId, backend, ctx, html, icon, mark, pickers, platform};
 use leptos::prelude::*;
 use std::{collections::BTreeMap, time::Duration};
 use todo_client::assistant::{
     Approval, AssistantView, Composer, Controller, SendIntent, StepKind, StepStatus, TaskRef,
-    ToolKind, TurnView, provider::ProviderError,
+    ToolKind, TurnView, provider::ProviderError, relay,
 };
 use todo_client::web::{BrowserClock, BrowserEntropy};
 use todo_core::ids::TaskId;
@@ -31,6 +32,9 @@ pub(super) struct Ui {
     profile: StoredValue<settings::Profile>,
     credential: StoredValue<settings::Credential>,
     signed_out: StoredValue<bool>,
+    relay_status: RwSignal<Option<relay::Status>>,
+    consent: RwSignal<Option<hosted::ConsentPrompt>>,
+    preparing: RwSignal<bool>,
     route: RwSignal<Option<&'static str>>,
     sequence: StoredValue<u64>,
     draft: RwSignal<String>,
@@ -45,7 +49,7 @@ impl Ui {
         let open = RwSignal::new(false);
         let scope = settings::Scope::activate();
         let (profile, credential) = settings::load(scope.as_ref());
-        let route = settings::configure(scope.clone(), &profile, &credential);
+        let route = settings::configure(scope.clone(), &profile, &credential, None);
         let view = RwSignal::new(CHAT.with(Controller::view));
         leptos::task::spawn_local(async move {
             let mut seen = CHAT.with(Controller::view_version);
@@ -67,6 +71,9 @@ impl Ui {
             profile: StoredValue::new(profile),
             credential: StoredValue::new(credential),
             signed_out: StoredValue::new(false),
+            relay_status: RwSignal::new(None),
+            consent: RwSignal::new(None),
+            preparing: RwSignal::new(false),
             route: RwSignal::new(route),
             sequence: StoredValue::new(0),
             draft: RwSignal::new(String::new()),
@@ -88,7 +95,7 @@ impl Ui {
                 self.signed_out.set_value(false);
                 let (profile, credential) = settings::load(scope.as_ref());
                 self.route
-                    .set(settings::configure(scope, &profile, &credential));
+                    .set(settings::configure(scope, &profile, &credential, None));
                 self.profile.set_value(profile);
                 self.credential.set_value(credential);
                 self.refresh();
@@ -110,6 +117,8 @@ impl Ui {
         CHAT.with(Controller::sign_out);
         self.settings.set(None);
         self.credential.set_value(Default::default());
+        self.relay_status.set(None);
+        self.consent.set(None);
         self.route.set(None);
         self.draft.set(String::new());
         self.error.set(None);
@@ -171,6 +180,11 @@ impl Ui {
             c.drawer.set(false);
             c.room_actions.close_menu(false);
             self.open.set(true);
+            if self.profile.with_value(|p| p.hosted.is_some()) {
+                leptos::task::spawn_local(async move {
+                    let _ = self.refresh_hosted().await;
+                });
+            }
             self.focus_composer();
         }
     }
@@ -192,12 +206,24 @@ impl Ui {
 
     fn send(self, c: Ctx) {
         let prompt = self.draft.get_untracked();
-        if prompt.trim().is_empty() || self.active() || c.sync.with_untracked(|s| s.signed_out) {
+        if prompt.trim().is_empty()
+            || self.preparing.get_untracked()
+            || self.active()
+            || c.sync.with_untracked(|s| s.signed_out)
+        {
             return;
         }
         if self.reload_profile() {
             return;
         }
+        if let Some(hosted) = self.profile.with_value(|p| p.hosted) {
+            self.prepare_hosted_send(c, hosted, prompt);
+        } else {
+            self.start_turn(c, prompt);
+        }
+    }
+
+    fn start_turn(self, c: Ctx, prompt: String) {
         self.sync(false);
         let mut sequence = self.sequence.get_value();
         sequence += 1;
@@ -376,6 +402,7 @@ pub(super) fn Panel() -> impl IntoView {
                 </div>
             </div>
             <footer class="ai-footer">
+                <hosted::ConsentNotice/>
                 <div role="status" class="ai-pending" hidden=move || !ai.view.with(|v| matches!(v.composer, Composer::Review { .. }))>
                     {icon(Icon::CircleAlert)}
                     <span>{move || ai.view.with(|v| match v.composer {

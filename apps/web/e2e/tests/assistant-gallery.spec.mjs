@@ -26,7 +26,7 @@ for (const theme of ["light", "dark"]) {
       await expect(panel(page)).toHaveAttribute("aria-modal", "true");
       await page.locator("#assistant-settings").click();
       await expect(aiSettings(page)).toBeVisible();
-      await expect(aiSettings(page).getByRole("heading", { name: "Your own server" })).toBeInViewport();
+      await expect(aiSettings(page).getByRole("heading", { name: "ChatGPT", exact: true })).toBeInViewport();
       await expect(aiSettings(page).getByLabel("API key", { exact: true })).toHaveValue("");
       await shot(page, "medium-settings", theme);
       await page.keyboard.press("Escape");

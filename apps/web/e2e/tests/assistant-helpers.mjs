@@ -1,9 +1,9 @@
 import { expect } from "@playwright/test";
 
-export const MODEL_ORIGIN = "https://todo.example.ts.net";
+export const MODEL_ORIGIN = "http://127.0.0.1:11434";
 export const panel = (page) => page.locator("#assistant-panel");
 export const prompt = (page) => page.getByRole("textbox", { name: "Message the assistant" });
-export const aiSettings = (page) => page.getByRole("dialog", { name: "AI assistant", exact: true }).filter({ has: page.getByLabel("Base URL") });
+export const aiSettings = (page) => page.locator("#assistant-settings-dialog");
 
 export async function configure(page, rules = {}, address = MODEL_ORIGIN, { apiKey, remember = false } = {}) {
   await page.locator("#assistant-settings").click();

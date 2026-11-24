@@ -10,11 +10,7 @@ use uuid::Uuid;
 
 use super::ProposalItem;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum DataClass {
-    Local,
-    Cloud,
-}
+pub use todo_tools::assistant::access::DataClass;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BillingClass {

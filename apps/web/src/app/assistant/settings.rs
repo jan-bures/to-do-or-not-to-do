@@ -2,7 +2,7 @@
 
 mod store;
 
-use super::{BrowserProvider, CHAT, ctx, html, icon, platform};
+use super::{BrowserProvider, CHAT, ctx, hosted, html, icon, platform, relay};
 use crate::app::glyph;
 use crate::model;
 use leptos::prelude::*;
@@ -39,35 +39,59 @@ pub(super) fn configure(
     scope: Option<Scope>,
     profile: &Profile,
     credential: &Credential,
+    hosted_status: Option<&relay::Status>,
 ) -> Option<&'static str> {
     let mut route = None;
-    let selection = scope
-        .filter(Scope::active)
-        .filter(|_| valid_model(&profile.model))
-        .and_then(|scope| {
-            let provider = BrowserProvider::new(&profile.address).ok()?;
-            route = Some(provider.destination.label());
-            let epoch = scope.epoch();
-            let key = if credential.matches(&profile.address, epoch) {
-                credential.value.clone()
-            } else {
-                String::new()
+    let selection = scope.filter(Scope::active).and_then(|scope| {
+        let expected = profile.clone();
+        if let Some(hosted) = profile.hosted {
+            let status = hosted_status?;
+            let account = match hosted {
+                super::Hosted::Private if status.private_models => None,
+                super::Hosted::ChatGpt(id) => Some(status.accounts.iter().find(|a| a.id == id)?),
+                _ => return None,
             };
-            let expected = profile.clone();
-            let login = login_fingerprint();
-            Some(Selection {
-                provider: Arc::new(provider.bind(key, move || {
-                    scope.active()
-                        && scope.epoch() == epoch
-                        && login_fingerprint() == login
-                        && Profile::load(&scope) == expected
-                })),
-                model: profile.model.clone(),
-                allow_billed: false,
-                billed_list_scope: None,
-                access: profile.access.clone(),
-            })
-        });
+            if !valid_model(&profile.hosted_model) {
+                return None;
+            }
+            route = Some(hosted.label());
+            return Some(Selection {
+                provider: Arc::new(
+                    BrowserProvider::hosted(hosted).bind(String::new(), move || {
+                        scope.active() && Profile::load(&scope) == expected
+                    }),
+                ),
+                model: profile.hosted_model.clone(),
+                allow_billed: account.is_some_and(|a| a.approved),
+                billed_list_scope: account.map(|a| a.approved_lists.clone()),
+                access: status.access.clone(),
+            });
+        }
+        if !valid_model(&profile.model) {
+            return None;
+        }
+        let provider = BrowserProvider::new(&profile.address).ok()?;
+        route = Some("This device");
+        let epoch = scope.epoch();
+        let key = if credential.matches(&profile.address, epoch) {
+            credential.value.clone()
+        } else {
+            String::new()
+        };
+        let login = login_fingerprint();
+        Some(Selection {
+            provider: Arc::new(provider.bind(key, move || {
+                scope.active()
+                    && scope.epoch() == epoch
+                    && login_fingerprint() == login
+                    && Profile::load(&scope) == expected
+            })),
+            model: profile.model.clone(),
+            allow_billed: false,
+            billed_list_scope: None,
+            access: profile.access.clone(),
+        })
+    });
     CHAT.with(|chat| chat.configure(selection));
     route
 }
@@ -110,12 +134,19 @@ impl super::Ui {
     }
 
     fn use_profile(self, profile: Profile, credential: Credential) {
-        self.route
-            .set(configure(self.scope.get_value(), &profile, &credential));
+        self.route.set(self.relay_status.with_untracked(|status| {
+            configure(
+                self.scope.get_value(),
+                &profile,
+                &credential,
+                status.as_ref(),
+            )
+        }));
         self.profile.set_value(profile);
         self.credential.set_value(credential);
         self.error.set(None);
         self.draft.set(String::new());
+        self.consent.set(None);
         self.approvals.set(Default::default());
         self.refresh();
     }
@@ -136,9 +167,9 @@ pub(in super::super) fn Settings() -> impl IntoView {
     let key_input = NodeRef::<html::Input>::new();
     let has_key = RwSignal::new(false);
     let remember_key = RwSignal::new(false);
-    let destination = Memo::new(move |_| {
-        draft.with(|p| BrowserProvider::new(&p.address).ok().map(|p| p.destination))
-    });
+    let local_access = StoredValue::new(AccessRules::default());
+    let reviewed_status = RwSignal::new(None::<relay::Status>);
+    let saving = RwSignal::new(false);
     let clear_input = move || {
         if let Some(input) = key_input.get_untracked() {
             input.set_value("");
@@ -155,6 +186,25 @@ pub(in super::super) fn Settings() -> impl IntoView {
             let credential = ai.credential.get_value();
             draft.set(profile.clone());
             baseline.set_value(profile);
+            local_access.set_value(draft.with_untracked(|p| p.access.clone()));
+            reviewed_status.set(None);
+            leptos::task::spawn_local(async move {
+                match ai.refresh_hosted().await {
+                    Ok(status) if ai.settings.get_untracked().is_some() => {
+                        if draft.with_untracked(|p| p.hosted.is_some()) {
+                            draft.update(|p| p.access = status.access.clone());
+                        }
+                        reviewed_status.set(Some(status));
+                    }
+                    Err(_)
+                        if ai.settings.get_untracked().is_some()
+                            && draft.with_untracked(|p| p.hosted.is_some()) =>
+                    {
+                        error.set(Some("Couldn’t load list access from your server. Reopen AI settings to try again.".into()));
+                    }
+                    _ => {}
+                }
+            });
             baseline_epoch.set_value(
                 ai.scope
                     .with_value(|scope| scope.as_ref().and_then(Scope::epoch)),
@@ -175,6 +225,9 @@ pub(in super::super) fn Settings() -> impl IntoView {
         }
     });
     let save = move |disconnect: bool| {
+        if saving.get_untracked() {
+            return;
+        }
         let Some(scope) = ai
             .scope
             .get_value()
@@ -185,6 +238,70 @@ pub(in super::super) fn Settings() -> impl IntoView {
             return;
         };
         let mut next = draft.get_untracked();
+        if next.hosted.is_some() || (disconnect && baseline.with_value(|p| p.hosted.is_some())) {
+            if Profile::load(&scope) != baseline.get_value() {
+                error.set(Some(
+                    "Settings changed in another tab. Reopen settings to review the changes."
+                        .into(),
+                ));
+                return;
+            }
+            if disconnect {
+                next.hosted = None;
+                next.hosted_model.clear();
+                next.address.clear();
+                next.model.clear();
+                next.access = local_access.get_value();
+                let _ = scope.revoke();
+                if next.save(&scope) {
+                    ai.use_profile(next, Credential::default());
+                    if let Some(el) = dialog.get_untracked() {
+                        el.close();
+                    }
+                }
+                return;
+            }
+            let Some(reviewed) = reviewed_status.get_untracked() else {
+                error.set(Some(
+                    "Wait for the server’s assistant settings to load.".into(),
+                ));
+                return;
+            };
+            if !valid_model(&next.hosted_model) {
+                error.set(Some("Choose a model.".into()));
+                return;
+            }
+            saving.set(true);
+            leptos::task::spawn_local(async move {
+                let result = if next.access == reviewed.access {
+                    Ok(reviewed)
+                } else {
+                    hosted::save_access(relay::AccessUpdate {
+                        access: next.access.clone(),
+                        access_version: reviewed.access_version,
+                    })
+                    .await
+                };
+                saving.set(false);
+                match result {
+                    Ok(status) if scope.active() && !ai.signed_out.get_value() => {
+                        next.access = local_access.get_value();
+                        if !next.save(&scope) {
+                            error.set(Some("This browser couldn’t save the model choice.".into()));
+                            return;
+                        }
+                        ai.relay_status.set(Some(status));
+                        ai.use_profile(next, ai.credential.get_value());
+                        if let Some(el) = dialog.get_untracked() {
+                            el.close();
+                        }
+                    }
+                    Ok(_) => {}
+                    Err(err) => error.set(Some(err.to_string())),
+                }
+            });
+            return;
+        }
         next.address = next.address.trim().into();
         next.model = next.model.trim().into();
         let raw_key = key_input
@@ -290,15 +407,19 @@ pub(in super::super) fn Settings() -> impl IntoView {
             </header>
             <form on:submit=move |ev| { ev.prevent_default(); save(false); }>
                 <div class="ai-settings-body" node_ref=body>
-                    <section class="ai-provider" aria-label="Your own server">
+                    <hosted::HostedCards draft status=reviewed_status error local_access/>
+                    <section class="ai-provider" aria-label="This device" data-selected=move || draft.with(|p| p.hosted.is_none()).to_string()>
                         <div class="ai-provider-heading">
-                            {icon(Icon::Settings)}<h3>"Your own server"</h3>
-                            <span>{move || destination.get().map(|d| d.label())}</span>
+                            {icon(Icon::Settings)}<h3>"This device"</h3>
                         </div>
-                        <p>"Connect directly to an OpenAI-compatible server that allows this site in CORS. Use a model you trust: the browser can’t verify what runs at that address or whether it forwards requests."</p>
+                        <p>"Connect directly to a model on this device that allows this site in CORS."</p>
+                        <Show when=move || draft.with(|p| p.hosted.is_some())>
+                            <button type="button" class="button" on:click=move |_| draft.update(|p| { p.hosted = None; p.access = local_access.get_value(); })>"Use this device"</button>
+                        </Show>
+                        <div class="ai-provider-fields" hidden=move || draft.with(|p| p.hosted.is_some())>
                         <label for="ai-base-url">"Base URL"</label>
                         <input id="ai-base-url" type="url" spellcheck="false" autocomplete="off" autofocus
-                            placeholder="https://<device>.<tailnet>.ts.net/v1" prop:value=move || draft.with(|p| p.address.clone())
+                            placeholder="http://localhost:11434" prop:value=move || draft.with(|p| p.address.clone())
                             on:input=move |ev| {
                                 draft.update(|p| { p.address = event_target_value(&ev); });
                                 clear_input();
@@ -324,10 +445,13 @@ pub(in super::super) fn Settings() -> impl IntoView {
                                 }>"Remove key"</button>
                             </Show>
                         </div>
+                        </div>
                     </section>
                     <section class="ai-access" aria-labelledby="ai-access-title">
                         <h3 id="ai-access-title">"Lists the assistant can see"</h3>
-                        <p>"Hidden lists are never sent. Private only lists can go to a model on this device or over Tailscale Serve. Lists inherit their collection’s rule unless overridden."</p>
+                        <p>"Hidden lists are never sent. Private only lists can go to a model on this device or through your server’s private relay. Lists inherit their collection’s rule unless overridden."</p>
+                        <Show when=move || draft.with(|p| p.hosted.is_none()) || reviewed_status.with(Option::is_some)
+                            fallback=move || view! { <p role="status">"Waiting for server list access…"</p> }>
                         {move || c.state.with(|state| {
                             let mut rows = Vec::new();
                             for group in model::collections(state) {
@@ -341,6 +465,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                             }
                             rows
                         })}
+                        </Show>
                     </section>
                 </div>
                 <footer class="ai-settings-footer">
@@ -352,7 +477,7 @@ pub(in super::super) fn Settings() -> impl IntoView {
                         <button type="button" class="button" on:click=move |_| {
                             if let Some(el) = dialog.get_untracked() { el.close(); }
                         }>"Cancel"</button>
-                        <button type="submit" class="button primary">"Save"</button>
+                        <button type="submit" class="button primary" disabled=move || saving.get()>"Save"</button>
                     </div>
                 </footer>
             </form>

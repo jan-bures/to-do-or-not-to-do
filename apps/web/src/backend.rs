@@ -53,6 +53,14 @@ fn session_transport(csrf: CsrfToken) -> FetchTransport {
     FetchTransport::new(csrf).with_owner_scope(crate::platform::owner_scope())
 }
 
+/// Reuse the live API's refreshable CSRF token instead of keeping an assistant-specific copy.
+pub(crate) fn assistant_transport() -> Option<FetchTransport> {
+    let csrf = CSRF
+        .with(|c| c.borrow().clone())
+        .or_else(|| crate::platform::csrf().map(CsrfToken::new))?;
+    Some(session_transport(csrf))
+}
+
 enum Backend {
     Live(Client),
     #[cfg(feature = "fixtures")]

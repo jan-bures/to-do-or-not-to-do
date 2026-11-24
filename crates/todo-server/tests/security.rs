@@ -148,6 +148,13 @@ fn inventory() -> Vec<Route> {
             }
         }
     }
+    for (method, path) in todo_server::assistant::routes() {
+        v.push(Route {
+            method: method.to_string(),
+            path: format!("/api/v1{path}"),
+            public: false,
+        });
+    }
     v.push(Route {
         method: ANY.into(),
         path: todo_server::mcp::PATH.into(),
@@ -179,7 +186,9 @@ fn concrete(path: &str) -> String {
     if path.starts_with("/api/v1/smart-lists/") {
         path.replace("{id}", "my_day")
     } else if path.starts_with("/api/") {
-        path.replace("{id}", UUID).replace("{seq}", "1")
+        path.replace("{id}", UUID)
+            .replace("{attempt}", UUID)
+            .replace("{seq}", "1")
     } else if path == "/releases/{file}" {
         "/releases/releases.win.json".into()
     } else {
@@ -207,6 +216,10 @@ fn registrations() -> BTreeSet<(String, String, String)> {
                 .unwrap()
                 .to_string_lossy()
                 .replace('\\', "/");
+            // Local auth/Responses stubs, included only under cfg(test).
+            if file == "assistant/openai/tests.rs" {
+                continue;
+            }
             let code: String = std::fs::read_to_string(&path)
                 .unwrap()
                 .lines()
@@ -298,6 +311,8 @@ fn the_inventory_matches_the_router_source() {
     let expected: BTreeSet<(String, String, String)> = [
         ("app.rs", "route", "\"/health\""),
         ("app.rs", "nest", "\"/api/v1\""),
+        // The assistant router, built from `todo_server::assistant::routes()`'s table.
+        ("assistant/mod.rs", "route", "$path"),
         // The MCP service, at `todo_server::mcp::PATH`.
         ("mcp/mod.rs", "route_service", "PATH"),
         ("releases.rs", "route", "\"/releases/{file}\""),

@@ -70,6 +70,10 @@ impl Scope {
     }
 
     pub(super) fn remembered(&self, address: &str, epoch: Option<Uuid>) -> Credential {
+        if todo_client::assistant::openai::browser_endpoint(address).is_err() {
+            self.forget();
+            return Credential::default();
+        }
         let stored = session_storage()
             .and_then(|s| s.get_item(&self.key(API_KEY)).ok().flatten())
             .and_then(|s| serde_json::from_str::<Credential>(&s).ok());
@@ -118,7 +122,9 @@ fn session_storage() -> Option<web_sys::Storage> {
 pub(in crate::app::assistant) struct Profile {
     pub(super) address: String,
     pub(super) model: String,
-    pub(super) access: AccessRules,
+    pub(in crate::app::assistant) access: AccessRules,
+    pub(in crate::app::assistant) hosted: Option<super::super::Hosted>,
+    pub(in crate::app::assistant) hosted_model: String,
 }
 
 impl Profile {

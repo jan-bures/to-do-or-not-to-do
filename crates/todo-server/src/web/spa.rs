@@ -52,10 +52,10 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::path::Path as FsPath;
 
-/// Direct model connections are limited to Tailscale Serve HTTPS and HTTP loopback.
+/// Direct model connections are limited to HTTP loopback. Hosted models use the same-origin relay.
 /// Other assets stay same-origin. Keep in sync with the browser's model endpoint validation.
 pub const APP_CSP: &str = "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; \
-style-src 'self'; img-src 'self' data: blob:; connect-src 'self' https://*.ts.net http://127.0.0.1:* http://localhost:*; font-src 'self'; \
+style-src 'self'; img-src 'self' data: blob:; connect-src 'self' http://127.0.0.1:* http://localhost:*; font-src 'self'; \
 worker-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'";
 
 const WORKER_CSP: &str =

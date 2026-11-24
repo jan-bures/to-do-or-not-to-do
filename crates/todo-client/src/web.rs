@@ -241,6 +241,41 @@ impl FetchTransport {
         .await
     }
 
+    /// Sends a same-origin request without buffering a successful response. Session and CSRF
+    /// handling are identical to the event stream. Retain the returned body while reading it.
+    pub async fn open_body(
+        &self,
+        request: Request,
+        accept: &str,
+    ) -> Result<StreamOpen<FetchBody>, TransportError> {
+        let path = request.path.as_str();
+        let method = request.method;
+        let json = request.body.as_deref().map(Uint8Array::from);
+        let body = json.as_ref().map(|b| (b.as_ref(), "application/json"));
+        with_fresh_token(
+            &self.csrf,
+            |token| async move {
+                let abort = new_abort()?;
+                let response = Self::fetch(path, method, body, &token, accept, &abort.0).await?;
+                if response.status() == 200 {
+                    return Ok(Attempt::Done(StreamOpen::Open(FetchBody {
+                        response,
+                        _abort: abort,
+                    })));
+                }
+                let refused = read(&response).await?;
+                Ok(if is_csrf_refusal(&refused) {
+                    Attempt::CsrfRefused(StreamOpen::Refused(refused))
+                } else {
+                    Attempt::Done(StreamOpen::Refused(refused))
+                })
+            },
+            || self.refresh(),
+            StreamOpen::Refused,
+        )
+        .await
+    }
+
     async fn fetch(
         path: &str,
         method: Method,
@@ -282,10 +317,23 @@ impl FetchTransport {
     }
 }
 
-/// One try at opening the event stream.
-enum Opened {
-    Open(web_sys::Response, Abort),
-    Refused(Response),
+/// A streamed fetch, aborted when this handle is dropped.
+pub struct FetchBody {
+    response: web_sys::Response,
+    _abort: Abort,
+}
+
+impl fmt::Debug for FetchBody {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("FetchBody").finish_non_exhaustive()
+    }
+}
+
+impl FetchBody {
+    /// The browser response stream and headers.
+    pub fn response(&self) -> &web_sys::Response {
+        &self.response
+    }
 }
 
 /// Aborts a `fetch` when dropped (the engine gave up on it, or the stream ended).
@@ -395,33 +443,12 @@ impl Transport for FetchTransport {
         &self,
         request: Request,
     ) -> Result<StreamOpen<FetchEventStream>, TransportError> {
-        let path = request.path.as_str();
-        let method = request.method;
-        let json = request.body.as_deref().map(Uint8Array::from);
-        let body = json.as_ref().map(|b| (b.as_ref(), "application/json"));
-        let opened = with_fresh_token(
-            &self.csrf,
-            |token| async move {
-                let abort = new_abort()?;
-                let res =
-                    Self::fetch(path, method, body, &token, "text/event-stream", &abort.0).await?;
-                if res.status() == 200 {
-                    return Ok(Attempt::Done(Opened::Open(res, abort)));
-                }
-                let refused = read(&res).await?;
-                Ok(if is_csrf_refusal(&refused) {
-                    Attempt::CsrfRefused(Opened::Refused(refused))
-                } else {
-                    Attempt::Done(Opened::Refused(refused))
-                })
-            },
-            || self.refresh(),
-            Opened::Refused,
-        )
-        .await?;
-        let (res, abort) = match opened {
-            Opened::Open(res, abort) => (res, abort),
-            Opened::Refused(r) => return Ok(StreamOpen::Refused(r)),
+        let FetchBody {
+            response: res,
+            _abort: abort,
+        } = match self.open_body(request, "text/event-stream").await? {
+            StreamOpen::Open(body) => body,
+            StreamOpen::Refused(r) => return Ok(StreamOpen::Refused(r)),
         };
         let body = res
             .body()

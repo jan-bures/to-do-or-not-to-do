@@ -166,14 +166,11 @@ test("settings reject plain HTTP on the tailnet and HTTPS outside the allowlist"
   await settings.getByLabel("Model", { exact: true }).fill("example-model");
   const address = settings.getByLabel("Base URL");
   const save = settings.getByRole("button", { name: "Save", exact: true });
-  for (const url of [MODEL_ORIGIN.replace("https:", "http:"), "http://100.64.0.1:11434"]) {
+  for (const url of ["http://model.example.ts.net", "https://model.example.ts.net", "http://100.64.0.1:11434", "https://todo.example.com"]) {
     await address.fill(url);
     await save.click();
-    await expect(settings.getByRole("alert")).toContainText(/Tailscale Serve \(HTTPS\).*CORS/);
+    await expect(settings.getByRole("alert")).toContainText("Use HTTP at localhost or 127.0.0.1");
   }
-  await address.fill("https://todo.example.com");
-  await save.click();
-  await expect(settings.getByRole("alert")).toContainText("or an HTTPS Tailscale Serve URL ending in .ts.net");
   await address.fill("http://localhost:11434");
   await save.click();
   await expect(panel(page).locator(".ai-model")).toHaveText("This device · example-model");
@@ -183,9 +180,9 @@ test("settings reject plain HTTP on the tailnet and HTTPS outside the allowlist"
 test("a tab can remember a scoped key; Disconnect invalidates it", async ({ page, context }) => {
   const w = watch(page);
   const apiKey = "unit-test-bearer";
-  // Install a cookie eligible for this cross-site route. It must still not be sent.
-  await context.addCookies([{ name: "__Host-todo_session", value: "synthetic-not-a-session", url: MODEL_ORIGIN, sameSite: "None", secure: true }]);
-  expect(await context.cookies(MODEL_ORIGIN)).toEqual(expect.arrayContaining([expect.objectContaining({ name: "__Host-todo_session" })]));
+  // Cookies are not scoped by port. Even an eligible loopback cookie must not be sent.
+  await context.addCookies([{ name: "fixture-model-cookie", value: "synthetic-not-a-session", url: MODEL_ORIGIN }]);
+  expect(await context.cookies(MODEL_ORIGIN)).toEqual(expect.arrayContaining([expect.objectContaining({ name: "fixture-model-cookie" })]));
   await open(page);
   await trigger(page).click();
   await configure(page, {}, MODEL_ORIGIN, { apiKey, remember: true });
@@ -262,12 +259,12 @@ test("the same document restores its model on a signed-in update, without restor
   await expect(panel(page).getByText("The model was restored.")).toBeVisible();
 });
 
-test("Tailscale Serve is private, and collection inheritance keeps hidden lists out of requests", async ({ page }) => {
+test("Loopback inference honors private-access inheritance and keeps hidden lists out of requests", async ({ page }) => {
   const w = watch(page);
   await open(page);
   await trigger(page).click();
   await configure(page, { Work: "private", Planning: "hidden" });
-  await expect(panel(page).locator(".ai-model")).toHaveText("Tailscale · example-model");
+  await expect(panel(page).locator(".ai-model")).toHaveText("This device · example-model");
   await page.locator("#assistant-settings").click();
   const settings = aiSettings(page);
   await expect(settings.getByRole("combobox", { name: "Work", exact: true })).toHaveValue("");

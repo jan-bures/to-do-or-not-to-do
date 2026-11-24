@@ -50,6 +50,11 @@ export function serve(dir, port) {
   const server = createServer((req, res) => {
     const url = new URL(req.url, "http://localhost");
     const path = decodeURIComponent(url.pathname);
+    if (path === "/api/v1/assistant/status") {
+      res.writeHead(200, { "content-type": "application/json", "cache-control": "no-store" });
+      return res.end(JSON.stringify({ chatgpt: false, chatgpt_device_code: false, private_models: false,
+        accounts: [], access: { lists: {}, collections: {} }, access_version: "00000000-0000-0000-0000-000000000000" }));
+    }
     if (path === "/" || path === "/app/") {
       res.writeHead(302, { location: "/app" });
       return res.end();

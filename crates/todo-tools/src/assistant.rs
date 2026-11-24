@@ -4,8 +4,10 @@
 //! for the selected provider profile. The projection does not expose the source snapshot. It does
 //! not track replica revisions or execute proposals; the host must discard it when scope changes.
 
+pub mod access;
 pub mod approval;
 mod projection;
+pub mod relay;
 
 use crate::{args::*, descriptor};
 use schemars::JsonSchema;

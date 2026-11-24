@@ -172,6 +172,7 @@ pub fn router(state: AppState) -> Router<AppState> {
         )
         .route("/commands", post(commands::post_command))
         .route("/assistant/approvals", post(commands::post_approval))
+        .merge(crate::assistant::router())
         .route("/events", get(events::get_events))
         .route("/events/{seq}/undo", post(commands::post_undo))
         .route("/activity", get(read::activity))

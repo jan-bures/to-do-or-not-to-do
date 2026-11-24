@@ -58,7 +58,7 @@ hkdf.workspace = true
 rusty-s3.workspace = true
 ureq.workspace = true
 url.workspace = true
-reqwest = { workspace = true, features = ["rustls-no-provider"] }
+reqwest = { workspace = true, features = ["rustls-no-provider", "form"] }
 rustls.workspace = true
 ring.workspace = true
 httpdate.workspace = true

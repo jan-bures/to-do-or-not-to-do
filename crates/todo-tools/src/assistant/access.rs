@@ -1,4 +1,4 @@
-//! Device-local list and collection permissions, resolved against the confirmed replica.
+//! Assistant list and collection permissions, resolved against confirmed task state.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -8,7 +8,13 @@ use todo_core::{
     ids::{CollectionId, ListId},
 };
 
-use super::provider::DataClass;
+/// Where assistant inference happens. A private model reached through the paired server is Local.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DataClass {
+    Local,
+    Cloud,
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ListAccess {
@@ -80,7 +86,7 @@ impl AccessRules {
         })
     }
 
-    pub(super) fn allowed(&self, state: &State, data: DataClass) -> BTreeSet<ListId> {
+    pub fn allowed(&self, state: &State, data: DataClass) -> BTreeSet<ListId> {
         state
             .lists
             .keys()
