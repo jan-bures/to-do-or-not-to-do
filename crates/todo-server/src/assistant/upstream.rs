@@ -218,6 +218,15 @@ pub(super) fn network_error(error: reqwest::Error) -> Error {
     if error.is_timeout() {
         Error::Timeout
     } else {
+        // The error kind only; reqwest's display text can include the request URL.
+        tracing::warn!(
+            connect = error.is_connect(),
+            redirect = error.is_redirect(),
+            body = error.is_body(),
+            decode = error.is_decode(),
+            status = error.status().map(|s| s.as_u16()),
+            "assistant upstream request failed"
+        );
         Error::Upstream
     }
 }
@@ -229,7 +238,14 @@ pub(super) fn check_status(status: StatusCode) -> Result<(), Error> {
         StatusCode::NOT_FOUND => Err(Error::ModelMissing),
         StatusCode::BAD_REQUEST | StatusCode::UNPROCESSABLE_ENTITY => Err(Error::Unsupported),
         StatusCode::TOO_MANY_REQUESTS => Err(Error::UpstreamLimit),
-        _ => Err(Error::Upstream),
+        _ => {
+            // The status alone; upstream bodies may echo submitted content.
+            tracing::warn!(
+                status = status.as_u16(),
+                "assistant upstream returned an unexpected status"
+            );
+            Err(Error::Upstream)
+        }
     }
 }
 
@@ -238,11 +254,22 @@ pub(super) async fn read_json<T: DeserializeOwned>(mut res: reqwest::Response) -
     let mut bytes = Zeroizing::new(Vec::new());
     while let Some(chunk) = res.chunk().await.map_err(network_error)? {
         if bytes.len() + chunk.len() > MAX_JSON {
+            tracing::warn!(
+                limit = MAX_JSON,
+                "assistant upstream JSON exceeded the size limit"
+            );
             return Err(Error::Upstream);
         }
         bytes.extend_from_slice(&chunk);
     }
-    serde_json::from_slice(&bytes).map_err(|_| Error::Upstream)
+    serde_json::from_slice(&bytes).map_err(|_| {
+        // Only the shape: top-level field names and the size, never values.
+        let keys = serde_json::from_slice::<serde_json::Map<String, serde_json::Value>>(&bytes)
+            .map(|map| map.keys().cloned().collect::<Vec<_>>().join(","))
+            .unwrap_or_else(|_| "not an object".into());
+        tracing::warn!(bytes = bytes.len(), keys = %keys, "assistant upstream JSON had an unexpected shape");
+        Error::Upstream
+    })
 }
 
 pub(super) fn relay(

@@ -227,12 +227,18 @@ fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
             approved: false,
             approved_lists: Default::default(),
         };
+        let existing = before.map(|id| relay::Account {
+            id,
+            label: "you@example.com".into(),
+            approved: false,
+            approved_lists: Default::default(),
+        });
         shell.finish_chatgpt_sign_in(
             revision,
             account.clone(),
             relay::Status {
                 chatgpt: true,
-                accounts: vec![account.clone()],
+                accounts: existing.into_iter().chain([account.clone()]).collect(),
                 ..Default::default()
             },
             cx,
@@ -254,6 +260,58 @@ fn sign_in_shows_the_connected_account_without_replacing_the_selection() {
         assert_eq!(draft.chatgpt_account, Some(account.id));
         assert!(draft.model.is_empty());
         assert!(!draft.enabled);
+    });
+}
+
+#[test]
+fn signing_in_without_a_valid_selection_selects_the_new_account() {
+    use todo_client::assistant::relay;
+
+    let mut app = TestApp::new();
+    let mut window = shell(&mut app);
+    window.update(|shell, window, cx| {
+        shell.preview_assistant("ai-chatgpt-signed-out", window, cx);
+        let setup = shell.ai.settings.as_mut().expect("fixture settings");
+        setup.draft.cloud = true;
+        setup.draft.chatgpt_account = None;
+        let revision = setup.revision;
+        let other = relay::Account {
+            id: Uuid::new_v4(),
+            label: "other@example.com".into(),
+            approved: false,
+            approved_lists: Default::default(),
+        };
+        let account = relay::Account {
+            id: Uuid::new_v4(),
+            label: "new@example.com".into(),
+            approved: false,
+            approved_lists: Default::default(),
+        };
+        shell.finish_chatgpt_sign_in(
+            revision,
+            account.clone(),
+            relay::Status {
+                chatgpt: true,
+                accounts: vec![other.clone(), account.clone()],
+                ..Default::default()
+            },
+            cx,
+        );
+        let setup = shell.ai.settings.as_ref().expect("settings");
+        assert_eq!(setup.draft.chatgpt_account, Some(account.id));
+        assert_eq!(shell.ai.cloud.signed_in, Some((account.id, account.label)));
+
+        // A status that drops the selected account falls back to a remaining one.
+        shell.apply_ai_relay_status(
+            relay::Status {
+                chatgpt: true,
+                accounts: vec![other.clone()],
+                ..Default::default()
+            },
+            cx,
+        );
+        let setup = shell.ai.settings.as_ref().expect("settings");
+        assert_eq!(setup.draft.chatgpt_account, Some(other.id));
     });
 }
 

@@ -154,6 +154,7 @@ impl ShellView {
         }
         self.ai.cloud.status = Some(status);
         self.ai.cloud.error = None;
+        self.default_chatgpt_account(None, cx);
         if changed && self.ai.profile.uses_relay() {
             self.ai
                 .controller
@@ -349,9 +350,50 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) {
         self.cloud_job_finished(revision, Vec::new(), cx);
+        let had_selection = self.chatgpt_selection_valid();
         self.apply_ai_relay_status(status, cx);
+        if !had_selection {
+            self.default_chatgpt_account(Some(account.id), cx);
+        }
         self.ai.cloud.signed_in = Some((account.id, account.label));
         cx.notify();
+    }
+
+    fn chatgpt_selection_valid(&self) -> bool {
+        let saved = self.ai.cloud.saved();
+        self.ai.settings.as_ref().is_some_and(|setup| {
+            setup
+                .draft
+                .chatgpt_account
+                .is_some_and(|id| saved.iter().any(|account| account.id == id))
+        })
+    }
+
+    /// Without a valid account the model row stays hidden, so pick one: the preferred (newly
+    /// signed-in) account, else the first saved one. Only for the ChatGPT provider; an existing
+    /// valid choice is never replaced.
+    fn default_chatgpt_account(&mut self, prefer: Option<Uuid>, cx: &mut Context<Self>) {
+        let cloud = self
+            .ai
+            .settings
+            .as_ref()
+            .is_some_and(|setup| setup.draft.cloud);
+        if !cloud {
+            return;
+        }
+        let saved = self.ai.cloud.saved();
+        let keep = prefer.is_none() && self.chatgpt_selection_valid();
+        if keep {
+            return;
+        }
+        let pick = prefer
+            .filter(|id| saved.iter().any(|account| account.id == *id))
+            .or_else(|| saved.first().map(|account| account.id));
+        if let Some(id) = pick {
+            let signed_in = self.ai.cloud.signed_in.take();
+            self.choose_chatgpt_account(id, cx);
+            self.ai.cloud.signed_in = signed_in;
+        }
     }
 
     pub(super) fn choose_chatgpt_account(&mut self, id: Uuid, cx: &mut Context<Self>) {
