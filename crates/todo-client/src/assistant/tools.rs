@@ -160,7 +160,7 @@ pub(super) fn execute(
         ToolKind::Search => {
             let args = assistant::QUERY_TASKS.decode(args).map_err(argument)?;
             let page = projection
-                .find_tasks_within(&args, MAX_RESULT_BYTES)
+                .query_tasks_within(&args, MAX_RESULT_BYTES)
                 .map_err(read_error)?;
             page.items.iter().for_each(&mut record_task);
             count = page.items.len();

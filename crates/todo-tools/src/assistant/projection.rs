@@ -1,5 +1,5 @@
 use super::{TaskQueryArgs, title_search::TitleSearch};
-use crate::args::{GetTaskArgs, PageArgs, QueryArgs};
+use crate::args::{GetTaskArgs, PageArgs};
 use crate::command::resolve_inbox;
 use crate::read::{
     Binding, InvalidCursor, MAX_DETAIL_CHILDREN, QueryError, decode_cursor, encode_cursor,
@@ -249,47 +249,17 @@ impl Projection {
         )
     }
 
-    pub fn query_tasks(&self, args: &QueryArgs) -> Result<Page<TaskSummary<'_>>, ReadError> {
+    pub fn query_tasks(&self, args: &TaskQueryArgs) -> Result<Page<TaskSummary<'_>>, ReadError> {
         self.query_tasks_within(args, usize::MAX)
     }
 
     pub fn query_tasks_within(
         &self,
-        args: &QueryArgs,
-        max_bytes: usize,
-    ) -> Result<Page<TaskSummary<'_>>, ReadError> {
-        self.task_page(
-            args.query.as_deref(),
-            None,
-            args.cursor.as_deref(),
-            args.limit,
-            max_bytes,
-        )
-    }
-
-    pub fn find_tasks_within(
-        &self,
         args: &TaskQueryArgs,
         max_bytes: usize,
     ) -> Result<Page<TaskSummary<'_>>, ReadError> {
-        self.task_page(
-            args.query.as_deref(),
-            args.text.as_deref(),
-            args.cursor.as_deref(),
-            args.limit,
-            max_bytes,
-        )
-    }
-
-    fn task_page(
-        &self,
-        query: Option<&str>,
-        text: Option<&str>,
-        cursor: Option<&str>,
-        limit: Option<usize>,
-        max_bytes: usize,
-    ) -> Result<Page<TaskSummary<'_>>, ReadError> {
-        let query = parse_query(query.unwrap_or_default())?;
+        let query = parse_query(args.query.as_deref().unwrap_or_default())?;
+        let text = args.text.as_deref();
         let search = text.map(TitleSearch::new).transpose()?;
         let query_key = query.to_string();
         let day = self.ctx.today.to_string();
@@ -312,7 +282,7 @@ impl Projection {
             order.0.insert(0, KeyPart(KeyValue::Int(score), false));
             Some(order)
         };
-        let after = cursor_id(cursor, &binding)?
+        let after = cursor_id(args.cursor.as_deref(), &binding)?
             .map(|id| {
                 self.state
                     .tasks
@@ -321,7 +291,7 @@ impl Projection {
                     .ok_or(InvalidCursor)
             })
             .transpose()?;
-        let limit = page_limit(limit);
+        let limit = page_limit(args.limit);
         let matcher = query.matcher(&self.state, &self.ctx);
         let selected = select_keyed(
             self.state.tasks.values(),

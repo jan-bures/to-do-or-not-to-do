@@ -1108,7 +1108,7 @@ fn approximate_title_search_returns_only_visible_ranked_candidates_and_pages() {
     let query = json!({"text":"import failures","query":"not done","limit":1});
     let projection = Projection::new(&base, &BTreeSet::from([INBOX]), EvalContext::utc(NOW));
     let first = projection
-        .find_tasks_within(
+        .query_tasks_within(
             &serde_json::from_value(query.clone()).unwrap(),
             RESULT_BUDGET,
         )
@@ -1116,7 +1116,7 @@ fn approximate_title_search_returns_only_visible_ranked_candidates_and_pages() {
     let cursor = first.next_cursor.unwrap();
     assert!(
         projection
-            .find_tasks_within(
+            .query_tasks_within(
                 &serde_json::from_value(
                     json!({"text":"import","query":"not done","cursor":cursor})
                 )
