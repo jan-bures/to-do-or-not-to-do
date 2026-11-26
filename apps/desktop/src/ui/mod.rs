@@ -13,3 +13,4 @@ pub mod quick_add;
 pub mod root;
 pub mod shell;
 pub mod text_area;
+mod word_edit;

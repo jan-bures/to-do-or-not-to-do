@@ -14,6 +14,7 @@ use gpui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use super::input::{InputColors, InputEvent};
+use super::word_edit::{self, WordEdit};
 
 actions!(
     text_area,
@@ -44,7 +45,7 @@ actions!(
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     use gpui::KeyBinding;
     let ctx = Some("TextArea");
-    vec![
+    let mut bindings = vec![
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
         KeyBinding::new("left", Left, ctx),
@@ -65,7 +66,9 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("shift-enter", SoftNewline, ctx),
         KeyBinding::new("escape", Done, ctx),
         KeyBinding::new("ctrl-enter", Done, ctx),
-    ]
+    ];
+    bindings.extend(word_edit::key_bindings("TextArea"));
+    bindings
 }
 
 /// One paragraph as laid out: its shaped text, where it starts in the content, and its top.
@@ -276,6 +279,16 @@ impl TextArea {
         self.select_to(self.next_boundary(self.cursor_offset()), window, cx);
     }
 
+    fn edit_word(&mut self, edit: &WordEdit, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.cursor_offset();
+        let target = edit.target(&self.content, cursor);
+        match edit {
+            WordEdit::Left | WordEdit::Right => self.move_to(target, window, cx),
+            WordEdit::SelectLeft | WordEdit::SelectRight => self.select_to(target, window, cx),
+            WordEdit::DeleteLeft | WordEdit::DeleteRight => self.delete_to(target, window, cx),
+        }
+    }
+
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         self.move_to(0, window, cx);
         self.select_to(self.content.len(), window, cx)
@@ -297,23 +310,19 @@ impl TextArea {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            let prev = self.previous_boundary(self.cursor_offset());
-            if self.cursor_offset() == prev {
-                return;
-            }
-            self.select_to(prev, window, cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        self.delete_to(self.previous_boundary(self.cursor_offset()), window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_to(self.next_boundary(self.cursor_offset()), window, cx);
+    }
+
+    fn delete_to(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
-            let next = self.next_boundary(self.cursor_offset());
-            if self.cursor_offset() == next {
+            if self.cursor_offset() == target {
                 return;
             }
-            self.select_to(next, window, cx)
+            self.select_to(target, window, cx);
         }
         self.replace_text_in_range(None, "", window, cx)
     }
@@ -868,6 +877,7 @@ impl Render for TextArea {
             .on_action(cx.listener(Self::down))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::edit_word))
             .on_action(cx.listener(Self::select_up))
             .on_action(cx.listener(Self::select_down))
             .on_action(cx.listener(Self::select_all))
@@ -887,5 +897,37 @@ impl Render for TextArea {
 impl Focusable for TextArea {
     fn focus_handle(&self, _: &App) -> FocusHandle {
         self.focus_handle.clone()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn word_shortcuts_work_across_paragraphs() {
+        let mut app = gpui::TestApp::new();
+        app.update(|cx| cx.bind_keys(key_bindings()));
+        let mut window = app.open_window(|window, cx| {
+            use crate::theme::{self, Theme};
+            let colors = crate::ui::shell::quick_add_colors(&theme::palette(
+                Theme::Light,
+                theme::hues::MY_DAY,
+            ));
+            let mut area = TextArea::new("", colors, cx);
+            area.set_text("One word\n\nTwo words", cx);
+            window.focus(&area.focus_handle, cx);
+            area
+        });
+        window.draw();
+        window.simulate_keystrokes("ctrl-left ctrl-left ctrl-shift-left");
+        window.update(|area, _, _| {
+            assert_eq!(&area.content[area.selected_range.clone()], "word\n\n");
+            assert!(area.selection_reversed);
+        });
+        window.simulate_keystroke("ctrl-delete");
+        window.update(|area, _, _| assert_eq!(area.content.as_ref(), "One Two words"));
+        window.simulate_keystrokes("ctrl-right ctrl-backspace");
+        window.update(|area, _, _| assert_eq!(area.content.as_ref(), "One words"));
     }
 }

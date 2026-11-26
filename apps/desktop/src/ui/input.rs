@@ -14,6 +14,8 @@ use gpui::{
 };
 use unicode_segmentation::UnicodeSegmentation;
 
+use super::word_edit::{self, WordEdit};
+
 // actions
 actions!(
     text_input,
@@ -40,7 +42,7 @@ actions!(
 pub fn key_bindings() -> Vec<gpui::KeyBinding> {
     use gpui::KeyBinding;
     let ctx = Some("TextInput");
-    vec![
+    let mut bindings = vec![
         KeyBinding::new("backspace", Backspace, ctx),
         KeyBinding::new("delete", Delete, ctx),
         KeyBinding::new("left", Left, ctx),
@@ -56,7 +58,9 @@ pub fn key_bindings() -> Vec<gpui::KeyBinding> {
         KeyBinding::new("enter", Submit, ctx),
         KeyBinding::new("escape", Cancel, ctx),
         KeyBinding::new("win-.", ShowCharacterPalette, ctx),
-    ]
+    ];
+    bindings.extend(word_edit::key_bindings("TextInput"));
+    bindings
 }
 
 /// Colours of the input's text, placeholder, caret and selection.
@@ -162,6 +166,16 @@ impl TextInput {
         self.select_to(self.next_boundary(self.cursor_offset()), window, cx);
     }
 
+    fn edit_word(&mut self, edit: &WordEdit, window: &mut Window, cx: &mut Context<Self>) {
+        let cursor = self.cursor_offset();
+        let target = edit.target(&self.content, cursor);
+        match edit {
+            WordEdit::Left | WordEdit::Right => self.move_to(target, window, cx),
+            WordEdit::SelectLeft | WordEdit::SelectRight => self.select_to(target, window, cx),
+            WordEdit::DeleteLeft | WordEdit::DeleteRight => self.delete_to(target, window, cx),
+        }
+    }
+
     fn select_all(&mut self, _: &SelectAll, window: &mut Window, cx: &mut Context<Self>) {
         self.move_to(0, window, cx);
         self.select_to(self.content.len(), window, cx)
@@ -176,25 +190,20 @@ impl TextInput {
     }
 
     fn backspace(&mut self, _: &Backspace, window: &mut Window, cx: &mut Context<Self>) {
-        if self.selected_range.is_empty() {
-            let prev = self.previous_boundary(self.cursor_offset());
-            if self.cursor_offset() == prev {
-                window.play_system_bell();
-                return;
-            }
-            self.select_to(prev, window, cx)
-        }
-        self.replace_text_in_range(None, "", window, cx)
+        self.delete_to(self.previous_boundary(self.cursor_offset()), window, cx);
     }
 
     fn delete(&mut self, _: &Delete, window: &mut Window, cx: &mut Context<Self>) {
+        self.delete_to(self.next_boundary(self.cursor_offset()), window, cx);
+    }
+
+    fn delete_to(&mut self, target: usize, window: &mut Window, cx: &mut Context<Self>) {
         if self.selected_range.is_empty() {
-            let next = self.next_boundary(self.cursor_offset());
-            if self.cursor_offset() == next {
+            if self.cursor_offset() == target {
                 window.play_system_bell();
                 return;
             }
-            self.select_to(next, window, cx)
+            self.select_to(target, window, cx);
         }
         self.replace_text_in_range(None, "", window, cx)
     }
@@ -768,6 +777,7 @@ impl Render for TextInput {
             .on_action(cx.listener(Self::right))
             .on_action(cx.listener(Self::select_left))
             .on_action(cx.listener(Self::select_right))
+            .on_action(cx.listener(Self::edit_word))
             .on_action(cx.listener(Self::select_all))
             .on_action(cx.listener(Self::home))
             .on_action(cx.listener(Self::end))
@@ -805,7 +815,7 @@ fn one_line(text: SharedString) -> SharedString {
 
 #[cfg(test)]
 mod tests {
-    use super::one_line;
+    use super::*;
     use crate::model::labels;
 
     #[test]
@@ -817,5 +827,34 @@ mod tests {
         for raw in ["x\ny", "\t", "\u{85}", "plain"] {
             assert_eq!(one_line(raw.into()).as_ref(), labels::one_line(raw));
         }
+    }
+
+    #[test]
+    fn word_shortcuts_move_extend_and_delete_in_a_single_line() {
+        let mut app = gpui::TestApp::new();
+        app.update(|cx| cx.bind_keys(key_bindings()));
+        let mut window = app.open_window(|window, cx| {
+            use crate::theme::{self, Theme};
+            let colors = crate::ui::shell::quick_add_colors(&theme::palette(
+                Theme::Light,
+                theme::hues::MY_DAY,
+            ));
+            let mut input = TextInput::new("", colors, cx);
+            input.set_text("Cafe\u{301}  Čaj 🍵", cx);
+            window.focus(&input.focus_handle, cx);
+            input
+        });
+        window.draw();
+        window.simulate_keystrokes("home ctrl-right");
+        window.update(|input, _, _| assert_eq!(input.selected_range, 8..8));
+        window.simulate_keystrokes("ctrl-shift-left ctrl-shift-right ctrl-shift-right");
+        window.update(|input, _, _| {
+            assert_eq!(&input.content[input.selected_range.clone()], "Čaj ");
+            assert!(!input.selection_reversed);
+        });
+        window.simulate_keystroke("ctrl-backspace");
+        window.update(|input, _, _| assert_eq!(input.content.as_ref(), "Cafe\u{301}  🍵"));
+        window.simulate_keystrokes("ctrl-delete ctrl-backspace ctrl-backspace");
+        window.update(|input, _, _| assert!(input.content.is_empty()));
     }
 }
