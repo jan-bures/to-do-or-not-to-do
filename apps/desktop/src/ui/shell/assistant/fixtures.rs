@@ -297,7 +297,6 @@ impl ShellView {
                 | "ai-chatgpt-signed-in"
                 | "ai-chatgpt-model-picker"
                 | "ai-chatgpt-account"
-                | "ai-chatgpt-consent"
                 | "ai-private-relay"
         ) {
             self.ai.profile.key = Zeroizing::new("fixture-key".into());
@@ -376,47 +375,27 @@ impl ShellView {
                             todo_client::assistant::provider::BillingClass::Subscription;
                     }
                 }
-                if name == "ai-chatgpt-consent" {
-                    let access = &mut self.ai.profile.access;
-                    let mut lists: BTreeSet<_> = state
-                        .lists
-                        .keys()
-                        .copied()
-                        .filter(|&id| access.list(&state, id) == ListAccess::AllModels)
-                        .collect();
-                    if let Some(account) = &mut self.ai.cloud.fixture {
-                        account.consented_lists = Some(lists.clone());
-                        access.lists.insert(errands.id, ListAccess::AllModels);
-                        lists.insert(errands.id);
-                        self.ai.cloud.consent = Some(super::cloud::Consent::new(
-                            account.clone(),
-                            "Summarize this week".into(),
-                            (Some(state), lists),
-                        ));
-                    }
-                } else {
-                    self.open_ai_settings(window, cx);
-                    if name == "ai-chatgpt-model-picker"
-                        && let Some(setup) = &mut self.ai.settings
-                    {
-                        setup.pick_model = true;
-                        setup.models = [
-                            ("fixture-model", "GPT Sample"),
-                            ("fixture-mini", "GPT Sample Mini"),
-                            ("fixture-nano", "GPT Sample Nano"),
-                            ("fixture-fast", "GPT Sample Fast"),
-                            ("fixture-reasoning", "GPT Sample Reasoning"),
-                            ("fixture-coding", "GPT Sample Coding"),
-                            ("fixture-long", "GPT Sample Long Context"),
-                            ("fixture-preview", "GPT Sample Preview"),
-                        ]
-                        .into_iter()
-                        .map(|(id, label)| Model {
-                            id: id.into(),
-                            label: label.into(),
-                        })
-                        .collect();
-                    }
+                self.open_ai_settings(window, cx);
+                if name == "ai-chatgpt-model-picker"
+                    && let Some(setup) = &mut self.ai.settings
+                {
+                    setup.pick_model = true;
+                    setup.models = [
+                        ("fixture-model", "GPT Sample"),
+                        ("fixture-mini", "GPT Sample Mini"),
+                        ("fixture-nano", "GPT Sample Nano"),
+                        ("fixture-fast", "GPT Sample Fast"),
+                        ("fixture-reasoning", "GPT Sample Reasoning"),
+                        ("fixture-coding", "GPT Sample Coding"),
+                        ("fixture-long", "GPT Sample Long Context"),
+                        ("fixture-preview", "GPT Sample Preview"),
+                    ]
+                    .into_iter()
+                    .map(|(id, label)| Model {
+                        id: id.into(),
+                        label: label.into(),
+                    })
+                    .collect();
                 }
                 cx.notify();
                 return;

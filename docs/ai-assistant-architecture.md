@@ -284,8 +284,9 @@ contract, import `auth.json`, ask for cookies, or recreate the Codex device flow
 breakage, credential exposure and loss of account or integration access. The public preview can also
 change and does not imply every platform or model is supported.
 
-**Windows:** ChatGPT account is a provider in AI settings. It requires explicit sign-in and first-send
-consent, uses a separate DPAPI account record, and needs no manual OAuth client ID or secret. The app
+**Windows:** ChatGPT account is a provider in AI settings. It requires explicit sign-in and needs no
+manual OAuth client ID or secret. When you send a message, the desktop app registers the current
+**All models** list scope for that account if needed. The app
 sends the stable host UUID as a URN and saves the issued client ID before token exchange, so a failed
 exchange can be retried with a new authorization against the same registration. The Cloud adapter
 uses the same scoped tools and approval pipeline as the private server. It never receives `Private only`

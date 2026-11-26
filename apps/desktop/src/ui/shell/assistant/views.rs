@@ -658,7 +658,11 @@ impl ShellView {
         let focused = body.focus_handle.is_focused(window);
         let paused = self.ai.profile.cloud && self.ai.cloud.usage_paused;
         let can_send = streaming
-            || (ready && !paused && !body.content.trim().is_empty() && self.retry_seconds() == 0);
+            || (ready
+                && !paused
+                && !self.ai.cloud.sending
+                && !body.content.trim().is_empty()
+                && self.retry_seconds() == 0);
         let placeholder = match view.composer {
             _ if blocked => "Confirm your server in AI settings",
             Composer::ChooseModel => "Choose a model to start",
@@ -706,11 +710,11 @@ impl ShellView {
                         },
                     )),
                 can_send,
-                |this, window, cx| {
+                |this, _, cx| {
                     if matches!(this.ai.view().composer, Composer::Streaming { .. }) {
                         this.ai.controller.cancel();
                     } else {
-                        this.send_ai_input(window, cx);
+                        this.send_ai_input(cx);
                     }
                 },
                 cx,
@@ -1843,9 +1847,6 @@ impl ShellView {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> Option<Stateful<Div>> {
-        if self.ai.cloud.consent.is_some() {
-            return Some(self.ai_chatgpt_consent(cx));
-        }
         let setup = self.ai.settings.as_ref()?;
         let p = self.palette;
         let running = matches!(setup.check, Check::Running(_));

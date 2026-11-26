@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 use std::{collections::BTreeSet, io};
 use todo_core::{
     State,
-    ids::{ListId, TaskId},
+    ids::{CollectionId, ListId, TaskId},
     query::{EvalContext, parse_date},
 };
 use todo_tools::assistant::{self, Projection, ReadError, approval::Batch};
@@ -56,15 +56,20 @@ impl ToolKind {
 
 #[derive(Default)]
 pub(super) struct References {
+    pub collections: BTreeSet<CollectionId>,
     pub lists: BTreeSet<ListId>,
     pub tasks: BTreeSet<TaskId>,
 }
 
 impl References {
     pub fn visible(&self, state: &State, allowed: &BTreeSet<ListId>) -> bool {
-        self.lists
+        self.collections
             .iter()
-            .all(|id| allowed.contains(id) && state.is_live((*id).into()))
+            .all(|id| super::view_context::collection_visible(state, allowed, *id))
+            && self
+                .lists
+                .iter()
+                .all(|id| allowed.contains(id) && state.is_live((*id).into()))
             && self.tasks.iter().all(|id| {
                 state
                     .tasks

@@ -6,31 +6,6 @@ use todo_client::assistant::{
     native_relay::{Hosted, Relay, VERIFY_URL},
     relay,
 };
-use todo_core::{State, ids::ListId};
-
-pub(super) struct Consent {
-    account: Uuid,
-    prompt: String,
-    pub lists: BTreeSet<ListId>,
-    pub previously_allowed: Option<BTreeSet<ListId>>,
-    pub state: Option<Arc<State>>,
-}
-
-impl Consent {
-    pub fn new(
-        account: AccountView,
-        prompt: String,
-        (state, lists): (Option<Arc<State>>, BTreeSet<ListId>),
-    ) -> Self {
-        Self {
-            account: account.id,
-            prompt,
-            lists,
-            previously_allowed: account.consented_lists,
-            state,
-        }
-    }
-}
 
 #[derive(Default)]
 pub(super) struct Cloud {
@@ -38,14 +13,12 @@ pub(super) struct Cloud {
     pub(super) sending: bool,
     pub status: Option<relay::Status>,
     pub error: Option<String>,
-    pub consent: Option<Consent>,
     pub fixture: Option<AccountView>,
     pub fixture_enabled: bool,
     pub usage_paused: bool,
     pub code: Option<String>,
     pub signed_in: Option<(Uuid, String)>,
     loading: bool,
-    consenting: bool,
 }
 
 impl Cloud {
@@ -161,7 +134,6 @@ impl ShellView {
                 .controller
                 .configure(self.ai.cloud.selection(&self.ai.profile));
             self.ai.clear_chat_state();
-            self.ai.cloud.consent = None;
             self.ai.rate_until = None;
             self.ai.connection = ConnectionHealth::Unknown;
         }
@@ -591,92 +563,80 @@ impl ShellView {
         true
     }
 
-    pub(super) fn require_cloud_consent(&mut self, prompt: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn sync_chatgpt_access(
+        &mut self,
+        prompt: &str,
+        location: ViewLocation,
+        cx: &mut Context<Self>,
+    ) -> bool {
         if !self.ai.profile.cloud {
             return false;
-        }
-        if self.ai.cloud.consenting {
-            return true;
         }
         let Some(account) = self.ai.cloud.active(&self.ai.profile) else {
             return true;
         };
-        let scope = self.ai.controller.list_scope();
-        if account.covers(&scope.1) {
+        let (_, lists) = self.ai.controller.list_scope();
+        let (Some(relay), Some(session), Some(status)) = (
+            self.ai.cloud.relay.clone(),
+            self.store.session(),
+            self.ai.cloud.status.as_ref(),
+        ) else {
+            return true;
+        };
+        let Some(request) = account.access_update(&lists, status.access_version) else {
             return false;
-        }
-        self.ai.consent_scroll.reset_to_top();
-        self.ai.cloud.consent = Some(Consent::new(account, prompt.to_owned(), scope));
+        };
+        let model = self.ai.profile.model.clone();
+        let draft = self.ai.composer.read(cx).content.clone();
+        let prompt = prompt.to_owned();
+        self.ai.cloud.sending = true;
+        let work = session::spawn(&session.assistant_runtime(), async move {
+            relay.consent(account.id, request).await
+        });
+        cx.spawn(async move |this, cx| {
+            let result = work.await.unwrap_or(Err(ProviderError::Unavailable));
+            let _ = this.update(cx, |this, cx| {
+                this.ai.cloud.sending = false;
+                if this.ai.stopped
+                    || !this.ai.open
+                    || this.ai.modal()
+                    || this.ai.profile.hosted() != Some(Hosted::ChatGpt(account.id))
+                    || this.ai.profile.model != model
+                    || this.ai.composer.read(cx).content != draft
+                {
+                    cx.notify();
+                    return;
+                }
+                if let Ok(approved) = result
+                    && approved.id == account.id
+                    && approved.approved
+                    && approved.approved_lists == lists
+                    && let Some(stored) =
+                        this.ai.cloud.status.as_mut().and_then(|status| {
+                            status.accounts.iter_mut().find(|a| a.id == account.id)
+                        })
+                {
+                    *stored = approved;
+                    this.ai.controller.set_billed_list_scope(lists.clone());
+                    this.refresh_ai(cx);
+                    if this.ai.controller.list_scope().1.is_subset(&lists) {
+                        this.send_ai_refreshed(prompt, location, cx);
+                    } else {
+                        this.ai.notice =
+                            Some("List access changed. Send your message again.".into());
+                    }
+                } else {
+                    this.ai.notice = Some(
+                        "Couldn’t update ChatGPT list access. Send your message again.".into(),
+                    );
+                    this.refresh_ai_relay(cx);
+                }
+                cx.notify();
+            });
+        })
+        .detach();
         cx.notify();
         true
-    }
-
-    pub(super) fn answer_cloud_consent(
-        &mut self,
-        accept: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(question) = self.ai.cloud.consent.take() else {
-            return;
-        };
-        if accept && !self.ai.cloud.consenting {
-            self.refresh_ai(cx);
-            let scope = self.ai.controller.list_scope();
-            if let Some(account) = self
-                .ai
-                .cloud
-                .active(&self.ai.profile)
-                .filter(|a| a.id == question.account)
-            {
-                if !scope.1.is_subset(&question.lists) {
-                    self.ai.consent_scroll.reset_to_top();
-                    self.ai.cloud.consent = Some(Consent::new(account, question.prompt, scope));
-                } else if let (Some(relay), Some(session), Some(status)) = (
-                    self.ai.cloud.relay.clone(),
-                    self.store.session(),
-                    self.ai.cloud.status.as_ref(),
-                ) {
-                    let lists = scope.1;
-                    let consent = relay::Consent {
-                        lists: lists.clone(),
-                        access_version: status.access_version,
-                    };
-                    self.ai.cloud.consenting = true;
-                    let work = session::spawn(&session.assistant_runtime(), async move {
-                        relay.consent(account.id, consent).await
-                    });
-                    cx.spawn(async move |this, cx| {
-                        let result = work.await.unwrap_or(Err(ProviderError::Unavailable));
-                        let _ = this.update(cx, |this, cx| {
-                            this.ai.cloud.consenting = false;
-                            if this.ai.stopped || this.ai.profile.chatgpt_account != Some(question.account) { return; }
-                            match result {
-                                Ok(account) => {
-                                    if let Some(status) = &mut this.ai.cloud.status && let Some(stored) = status.accounts.iter_mut().find(|a| a.id == account.id) { *stored = account; }
-                                    this.ai.controller.set_billed_list_scope(lists);
-                                    this.send_ai(question.prompt, cx);
-                                }
-                                Err(_) => {
-                                    this.ai.notice = Some("Couldn’t save that approval. Send again to review the current list scope.".into());
-                                    this.refresh_ai_relay(cx);
-                                }
-                            }
-                            cx.notify();
-                        });
-                    }).detach();
-                }
-            }
-        }
-        if self.ai.cloud.consent.is_some() {
-            window.focus(
-                &self.ai.focus_handle("assistant-chatgpt-consent-cancel", cx),
-                cx,
-            );
-        } else {
-            self.focus_ai(window, cx);
-        }
-        cx.notify();
     }
 }
 

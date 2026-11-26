@@ -432,6 +432,10 @@ selection does not add entries; **Open in main window** navigates in the main wi
 
 ### Ask AI
 
+Ask AI uses the open list, collection, and task when you send a message, so you can say “this list” or
+“this task.” It shares names and IDs only for items the selected model can access. A built-in list
+supplies its query so the assistant can look up matching tasks within its allowed lists.
+
 **Ask AI** (**Ctrl+J**) opens a right-hand panel. In wide windows, drag its left divider, or use
 **←/→** (with **Shift** for larger steps) once the divider has focus. **Home** resets its width.
 In narrower windows it opens over the list. Space for Detail is shared at 1600 px and wider; in the
@@ -470,10 +474,9 @@ client is available without signing in again. This does not sign the owner into 
 ChatGPT conversations.
 
 Settings name the account that connected without switching the selected account or model. Select the
-account, then choose a model from its catalog. The first send asks to approve ChatGPT plan use and
-all lists currently set to **All models**. It asks again if a new list becomes eligible, or if a list
-is lowered and later made eligible again. Approval is shared for the account across
-paired clients. **Hidden** and **Private only** lists, task notes, and attachments are not shared.
+account, then choose a model from its catalog. Sending a message uses your ChatGPT plan and registers
+the lists currently set to **All models** for that account. List-access settings apply across paired
+clients. **Hidden** and **Private only** lists, task notes, and attachments are not shared.
 The To-do server relays the chat to OpenAI with `store: false`, which is not a zero-retention promise.
 Eligible requests can use plan allowance or available credits. Use **Manage usage** to review limits;
 a usage failure stops the reply without automatically retrying it.
