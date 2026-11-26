@@ -19,7 +19,7 @@ pub struct Tool<A> {
 }
 
 impl<A: JsonSchema + DeserializeOwned> Tool<A> {
-    const fn new(name: &'static str, description: &'static str) -> Self {
+    pub(crate) const fn new(name: &'static str, description: &'static str) -> Self {
         Self {
             name,
             description,

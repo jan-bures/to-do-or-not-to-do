@@ -1093,6 +1093,67 @@ fn tool_page(history: &[Message]) -> &Value {
 }
 
 #[test]
+fn approximate_title_search_returns_only_visible_ranked_candidates_and_pages() {
+    let mut base = state();
+    add_tasks(&mut base, 4, |index| match index {
+        0 => "Investigate impórt failure on empty files".into(),
+        1 => "Import failures".into(),
+        2 => "Import settings".into(),
+        _ => "Failure notifications".into(),
+    });
+    apply_command(
+        &mut base,
+        json!({"cmd":"create_task","id":Uuid::from_u128(99),"list":HIDDEN,"title":"Import failures (hidden)"}),
+    );
+    let query = json!({"text":"import failures","query":"not done","limit":1});
+    let projection = Projection::new(&base, &BTreeSet::from([INBOX]), EvalContext::utc(NOW));
+    let first = projection
+        .find_tasks_within(
+            &serde_json::from_value(query.clone()).unwrap(),
+            RESULT_BUDGET,
+        )
+        .unwrap();
+    let cursor = first.next_cursor.unwrap();
+    assert!(
+        projection
+            .find_tasks_within(
+                &serde_json::from_value(
+                    json!({"text":"import","query":"not done","cursor":cursor})
+                )
+                .unwrap(),
+                RESULT_BUDGET,
+            )
+            .is_err()
+    );
+    let (chat, provider) = fixture(
+        CAPABILITIES,
+        [
+            round([call("first", "query_tasks", query)]),
+            round([call(
+                "next",
+                "query_tasks",
+                json!({"text":"import failures","query":"not done","limit":1,"cursor":cursor}),
+            )]),
+            round([]),
+        ],
+    );
+    chat.update_snapshot(Some(snapshot(8, base)));
+    block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
+    let requests = provider.requests();
+    let first = tool_page(&requests[1].history);
+    let next = tool_page(&requests[2].history);
+    assert_eq!(first["items"].as_array().unwrap().len(), 1);
+    assert_eq!(first["items"][0]["title"], "Import failures");
+    assert_eq!(next["items"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        next["items"][0]["title"],
+        "Investigate impórt failure on empty files"
+    );
+    assert!(next["next_cursor"].is_null());
+    assert_eq!(chat.view().turns[0].summary.tasks_read, 2);
+}
+
+#[test]
 fn default_query_pages_read_all_realistic_open_tasks() {
     let mut base = state();
     base.tasks.remove(&LIVE);

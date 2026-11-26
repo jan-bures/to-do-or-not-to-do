@@ -8,10 +8,11 @@ pub mod access;
 pub mod approval;
 mod projection;
 pub mod relay;
+mod title_search;
 
 use crate::{args::*, descriptor};
 use schemars::JsonSchema;
-use serde::de::DeserializeOwned;
+use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::{Map, Value, json};
 
 pub use projection::{
@@ -153,10 +154,25 @@ pub static LIST_LISTS: Tool<PageArgs> = Tool::new(
     "List the visible lists with their IDs, features, collections and live task counts. Pass next_cursor back as cursor.",
     &["limit", "cursor"],
 );
-pub static QUERY_TASKS: Tool<QueryArgs> = Tool::new(
-    &descriptor::QUERY_TASKS,
-    "Find visible task summaries with a smart-list query. Pass next_cursor back as cursor with the same query.",
-    &["query", "limit", "cursor"],
+#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+pub struct TaskQueryArgs {
+    pub query: Option<String>,
+    /// Approximate task title, using distinctive words. Matches partial words and small typos.
+    /// Omit to list tasks that match the query filters. At most 1024 bytes and 32 words.
+    pub text: Option<String>,
+    pub limit: Option<usize>,
+    pub cursor: Option<String>,
+}
+
+static ASSISTANT_TASK_QUERY: descriptor::Tool<TaskQueryArgs> = descriptor::Tool::new(
+    descriptor::QUERY_TASKS.name,
+    "Search visible task titles with approximate text. Use query for smart-list filters such as `not done` or `list:inbox`. Omit text to browse tasks. Pass next_cursor back as cursor with the same text and query.",
+);
+pub static QUERY_TASKS: Tool<TaskQueryArgs> = Tool::new(
+    &ASSISTANT_TASK_QUERY,
+    ASSISTANT_TASK_QUERY.description,
+    &["query", "text", "limit", "cursor"],
 );
 pub static GET_TASK: Tool<GetTaskArgs> = Tool::new(
     &descriptor::GET_TASK,

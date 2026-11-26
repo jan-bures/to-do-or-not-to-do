@@ -135,15 +135,24 @@ pub fn select<'a, T>(
 where
     T: 'a,
 {
+    select_keyed(items, |item| keep(item).then(|| key(item)), after, n, stop)
+}
+
+pub(crate) fn select_keyed<'a, T>(
+    items: impl Iterator<Item = &'a T>,
+    key: impl Fn(&T) -> Option<OrderKey>,
+    after: Option<&OrderKey>,
+    n: usize,
+    stop: impl Fn() -> bool,
+) -> Result<Vec<(OrderKey, &'a T)>, Cancelled> {
     let mut heap: BinaryHeap<Entry<'a, T>> = BinaryHeap::with_capacity(n.saturating_add(1));
     for (i, item) in items.enumerate() {
         if i % TICK == 0 && stop() {
             return Err(Cancelled);
         }
-        if !keep(item) {
+        let Some(k) = key(item) else {
             continue;
-        }
-        let k = key(item);
+        };
         if after.is_some_and(|a| k <= *a) {
             continue;
         }

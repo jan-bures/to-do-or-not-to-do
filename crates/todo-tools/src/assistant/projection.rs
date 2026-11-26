@@ -1,8 +1,9 @@
+use super::{TaskQueryArgs, title_search::TitleSearch};
 use crate::args::{GetTaskArgs, PageArgs, QueryArgs};
 use crate::command::resolve_inbox;
 use crate::read::{
     Binding, InvalidCursor, MAX_DETAIL_CHILDREN, QueryError, decode_cursor, encode_cursor,
-    list_key, page_limit, parse_query, select, step_key,
+    list_key, page_limit, parse_query, select, select_keyed, step_key,
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -257,29 +258,74 @@ impl Projection {
         args: &QueryArgs,
         max_bytes: usize,
     ) -> Result<Page<TaskSummary<'_>>, ReadError> {
-        let query = parse_query(args.query.as_deref().unwrap_or_default())?;
-        let binding = Binding::new(&[
+        self.task_page(
+            args.query.as_deref(),
+            None,
+            args.cursor.as_deref(),
+            args.limit,
+            max_bytes,
+        )
+    }
+
+    pub fn find_tasks_within(
+        &self,
+        args: &TaskQueryArgs,
+        max_bytes: usize,
+    ) -> Result<Page<TaskSummary<'_>>, ReadError> {
+        self.task_page(
+            args.query.as_deref(),
+            args.text.as_deref(),
+            args.cursor.as_deref(),
+            args.limit,
+            max_bytes,
+        )
+    }
+
+    fn task_page(
+        &self,
+        query: Option<&str>,
+        text: Option<&str>,
+        cursor: Option<&str>,
+        limit: Option<usize>,
+        max_bytes: usize,
+    ) -> Result<Page<TaskSummary<'_>>, ReadError> {
+        let query = parse_query(query.unwrap_or_default())?;
+        let search = text.map(TitleSearch::new).transpose()?;
+        let query_key = query.to_string();
+        let day = self.ctx.today.to_string();
+        let offset = self.ctx.utc_offset_seconds().to_string();
+        let mut binding_parts = vec![
             "assistant_tasks",
             &self.scope_key,
-            &query.to_string(),
-            &self.ctx.today.to_string(),
-            &self.ctx.utc_offset_seconds().to_string(),
-        ]);
-        let after = cursor_id(args.cursor.as_deref(), &binding)?
+            &query_key,
+            &day,
+            &offset,
+        ];
+        binding_parts.extend(text);
+        let binding = Binding::new(&binding_parts);
+        let order_key = |task: &Task| {
+            let Some(search) = &search else {
+                return Some(query.order_key(&self.state, task));
+            };
+            let score = search.score(&task.title)?;
+            let mut order = query.order_key(&self.state, task);
+            order.0.insert(0, KeyPart(KeyValue::Int(score), false));
+            Some(order)
+        };
+        let after = cursor_id(cursor, &binding)?
             .map(|id| {
                 self.state
                     .tasks
                     .get(&id)
-                    .map(|t| query.order_key(&self.state, t))
+                    .and_then(order_key)
                     .ok_or(InvalidCursor)
             })
             .transpose()?;
-        let limit = page_limit(args.limit);
+        let limit = page_limit(limit);
         let matcher = query.matcher(&self.state, &self.ctx);
-        let selected = select(
+        let selected = select_keyed(
             self.state.tasks.values(),
-            |t| matcher.matches_fields(t),
-            |t| query.order_key(&self.state, t),
+            |t| matcher.matches_fields(t).then(|| order_key(t)).flatten(),
             after.as_ref(),
             limit + 1,
             || false,
