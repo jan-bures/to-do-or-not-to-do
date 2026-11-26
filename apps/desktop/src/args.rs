@@ -65,7 +65,6 @@ pub const FIXTURES: &[&str] = &[
     "ai-chatgpt-signed-in",
     "ai-chatgpt-model-picker",
     "ai-chatgpt-account",
-    "ai-chatgpt-consent",
     "ai-private-relay",
     "ai-proposal",
     "ai-pending",

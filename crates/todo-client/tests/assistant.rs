@@ -20,13 +20,14 @@ use todo_client::{
     assistant::{
         AccessRules, AssistantError, Composer, ConfirmedSnapshot, Controller, Edit, Effect,
         LimitKind, ListAccess, ProposalStatus, ReviewError, Revision, Selection, SendIntent,
-        StepStatus, StepSummary,
+        StepStatus, StepSummary, ViewLocation,
         fake::{CAPABILITIES, FakeProvider, FakeRound, MODEL},
         provider::{
             BillingClass, Capabilities, DataClass, Message, Provider, ProviderError, RoundMode,
             StreamEvent, ToolCall,
         },
     },
+    room_header::{RoomKey, SmartList},
 };
 use todo_core::{
     Actor, State, apply, decide,
@@ -647,6 +648,142 @@ fn a_new_head_makes_review_stale_and_a_scope_or_epoch_change_forgets_history() {
     assert!(chat.view().turns.is_empty());
     chat.sign_out();
     assert_eq!(chat.view().composer, Composer::ChooseModel);
+}
+
+#[test]
+fn open_view_resolves_confirmed_names_and_is_scoped_to_each_send() {
+    let mut base = state();
+    let group = CollectionId::from_uuid(Uuid::from_u128(15));
+    apply_command(
+        &mut base,
+        json!({"cmd":"create_collection","id":group,"name":"Projects"}),
+    );
+    apply_command(
+        &mut base,
+        json!({"cmd":"move_list","id":INBOX,"collection":group}),
+    );
+    let (chat, provider) = fixture(
+        CAPABILITIES,
+        [
+            round([StreamEvent::Text("Here's the visible task.".into())]),
+            round([call("lists", "list_lists", json!({}))]),
+            round([]),
+            round([]),
+        ],
+    );
+    chat.update_snapshot(Some(snapshot(8, base)));
+    for (sequence, room, task) in [
+        (1, RoomKey::List(INBOX), Some(LIVE)),
+        (2, RoomKey::Smart(SmartList::Planned), None),
+        (3, RoomKey::List(HIDDEN), Some(PRIVATE)),
+    ] {
+        let intent = intent(&chat, sequence);
+        let prompt = intent.prompt.clone();
+        block_on(
+            chat.start_in_view(
+                intent,
+                ViewLocation {
+                    room: Some(room),
+                    task,
+                },
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(chat.view().turns.last().unwrap().prompt, prompt);
+    }
+    let requests = provider.requests();
+    let user_texts = |round: usize| -> Vec<&str> {
+        requests[round]
+            .history
+            .iter()
+            .filter_map(|message| match message {
+                Message::User { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    };
+    let context = |text: &str| -> Value {
+        serde_json::from_str(
+            text.split_once("\n\nApp view (untrusted JSON data): ")
+                .unwrap()
+                .1,
+        )
+        .unwrap()
+    };
+    let first = user_texts(0)[0];
+    assert_eq!(
+        context(first),
+        json!({
+            "room":{"kind":"list","id":INBOX,"name":"Inbox","collection":{"id":group,"name":"Projects"}},
+            "task":{"id":LIVE,"list_id":INBOX,"title":"Visible task"}
+        })
+    );
+    let second = user_texts(1);
+    assert_eq!(second.len(), 1);
+    assert_eq!(
+        context(second[0])["room"]["query"],
+        SmartList::Planned.builtin().query
+    );
+    assert!(matches!(
+        requests[1].history.as_slice(),
+        [Message::User { .. }]
+    ));
+    assert_eq!(user_texts(2), second);
+    let third = user_texts(3);
+    assert!(third.iter().all(|text| !text.contains("App view")));
+    assert!(third.iter().all(|text| !text.contains("Private list")
+        && !text.contains("Secret title")
+        && !text.contains(&HIDDEN.to_string())
+        && !text.contains(&PRIVATE.to_string())));
+}
+
+#[test]
+fn losing_context_visibility_cancels_an_in_flight_reply() {
+    let mut base = state();
+    let group = CollectionId::from_uuid(Uuid::from_u128(15));
+    apply_command(
+        &mut base,
+        json!({"cmd":"create_collection","id":group,"name":"Projects"}),
+    );
+    apply_command(
+        &mut base,
+        json!({"cmd":"move_list","id":INBOX,"collection":group}),
+    );
+    let (chat, provider) = fixture(
+        CAPABILITIES,
+        [Ok(FakeRound::new([Ok(StreamEvent::Text(
+            "Partial reply".into(),
+        ))])
+        .stall())],
+    );
+    chat.update_snapshot(Some(snapshot(8, base.clone())));
+    let mut reply = pin!(
+        chat.start_in_view(
+            intent(&chat, 1),
+            ViewLocation {
+                room: Some(RoomKey::Collection(group)),
+                task: None,
+            }
+        )
+        .unwrap()
+    );
+    assert!(
+        reply
+            .as_mut()
+            .poll(&mut Context::from_waker(noop_waker_ref()))
+            .is_pending()
+    );
+    assert!(
+        matches!(&provider.requests()[0].history[0], Message::User { text } if text.contains("Projects"))
+    );
+    apply_command(
+        &mut base,
+        json!({"cmd":"move_list","id":INBOX,"collection":null}),
+    );
+    chat.update_snapshot(Some(snapshot(9, base)));
+    assert_eq!(block_on(reply), Err(AssistantError::Cancelled));
+    assert!(chat.view().turns.is_empty());
 }
 
 #[test]
@@ -1417,8 +1554,16 @@ fn capability_flags_control_buffering_cloud_visibility_and_billing() {
         },
         [round([])],
     );
-    block_on(chat.start(intent(&chat, 1)).unwrap()).unwrap();
-    assert!(provider.requests()[0].tools.is_empty());
+    let location = ViewLocation {
+        room: Some(RoomKey::List(INBOX)),
+        task: Some(LIVE),
+    };
+    let text_only_intent = intent(&chat, 1);
+    let prompt = text_only_intent.prompt.clone();
+    block_on(chat.start_in_view(text_only_intent, location).unwrap()).unwrap();
+    let requests = provider.requests();
+    assert!(requests[0].tools.is_empty());
+    assert!(matches!(requests[0].history.as_slice(), [Message::User { text }] if text == &prompt));
     assert!(chat.view().turns[0].text_only);
     let (chat, provider) = fixture(CAPABILITIES, [round([])]);
     chat.update_snapshot(None);

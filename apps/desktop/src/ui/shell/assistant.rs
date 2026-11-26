@@ -19,7 +19,7 @@ use todo_client::{
     CommandId, TrackedUndo,
     assistant::{
         Approval, ApprovalOutcome, AssistantError, AssistantView, Composer, Controller,
-        ProposalCard, ProposalStatus, SendIntent, TurnView,
+        ProposalCard, ProposalStatus, SendIntent, TurnView, ViewLocation,
         local::{Destination, MAX_RETRY_AFTER, Support, valid_model},
         provider::{Model, Provider, ProviderError},
     },
@@ -149,7 +149,6 @@ pub(super) struct Ai {
     settings_scroll: kit::ScrollPane,
     model_scroll: kit::ScrollPane,
     composer_scroll: kit::ScrollPane,
-    consent_scroll: kit::ScrollPane,
     sequence: u64,
     notice: Option<String>,
     step_details: BTreeSet<Uuid>,
@@ -184,7 +183,7 @@ impl Ai {
             &composer,
             window,
             |this, _, event, window, cx| match event {
-                InputEvent::Submit => this.send_ai_input(window, cx),
+                InputEvent::Submit => this.send_ai_input(cx),
                 InputEvent::Cancel => this.escape_ai(window, cx),
                 InputEvent::Changed => cx.notify(),
             },
@@ -247,7 +246,6 @@ impl Ai {
             settings_scroll: kit::ScrollPane::default(),
             model_scroll: kit::ScrollPane::default(),
             composer_scroll: kit::ScrollPane::default(),
-            consent_scroll: kit::ScrollPane::default(),
             sequence: 0,
             notice,
             step_details: BTreeSet::new(),
@@ -304,7 +302,7 @@ impl Ai {
     }
 
     pub(super) fn modal(&self) -> bool {
-        self.settings.is_some() || self.cloud.consent.is_some()
+        self.settings.is_some()
     }
 
     pub(super) fn focus_in(&self, window: &Window, cx: &App) -> bool {
@@ -556,9 +554,7 @@ impl ShellView {
     }
 
     pub(super) fn escape_ai(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.ai.cloud.consent.take().is_some() {
-            self.focus_ai(window, cx);
-        } else if let Some(setup) = self.ai.settings.as_mut() {
+        if let Some(setup) = self.ai.settings.as_mut() {
             if setup.pick_model {
                 setup.pick_model = false;
                 cx.notify();
@@ -580,16 +576,16 @@ impl ShellView {
         cx.notify();
     }
 
-    fn send_ai_input(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn send_ai_input(&mut self, cx: &mut Context<Self>) {
         let text = self.ai.composer.read(cx).content.to_string();
         self.send_ai(text, cx);
-        if self.ai.cloud.consent.is_some() {
-            let focus = self.ai.focus_handle("assistant-chatgpt-consent-cancel", cx);
-            window.focus(&focus, cx);
-        }
     }
 
     fn send_ai(&mut self, text: String, cx: &mut Context<Self>) {
+        let location = ViewLocation {
+            room: Some(model::shared_key(self.ui.room)),
+            task: self.ui.task,
+        };
         if self.ai.profile.uses_relay()
             && !text.trim().is_empty()
             && !self.ai.modal()
@@ -614,28 +610,42 @@ impl ShellView {
                 let result = work.await.unwrap_or(Err(ProviderError::Unavailable));
                 let _ = this.update(cx, |this, cx| {
                     this.ai.cloud.sending = false;
-                    if this.ai.stopped || !this.ai.open || this.ai.modal() || this.ai.profile.hosted() != route
-                        || this.ai.profile.model != model || this.ai.composer.read(cx).content.as_ref() != current_draft
-                    { return; }
+                    if this.ai.stopped
+                        || !this.ai.open
+                        || this.ai.modal()
+                        || this.ai.profile.hosted() != route
+                        || this.ai.profile.model != model
+                        || this.ai.composer.read(cx).content.as_ref() != current_draft
+                    {
+                        cx.notify();
+                        return;
+                    }
                     match result {
                         Ok(status) => {
                             this.apply_ai_relay_status(status, cx);
-                            if this.ai.controller.view().model.is_some() { this.send_ai_refreshed(text, cx); }
-                            else { this.ai.notice = Some("This model or account is no longer connected. Check AI settings.".into()); }
+                            if this.ai.profile.hosted() == route
+                                && this.ai.profile.model == model
+                                && this.ai.controller.view().model.is_some()
+                            {
+                                this.send_ai_refreshed(text, location, cx);
+                            } else {
+                                this.ai.notice = Some("This model or account is no longer connected. Check AI settings.".into());
+                            }
                         }
                         Err(err) => this.ai.notice = Some(route_problem(&this.ai.profile, err)),
                     }
                     cx.notify();
                 });
             }).detach();
+            cx.notify();
             return;
         }
         if !self.ai.profile.uses_relay() {
-            self.send_ai_refreshed(text, cx);
+            self.send_ai_refreshed(text, location, cx);
         }
     }
 
-    fn send_ai_refreshed(&mut self, text: String, cx: &mut Context<Self>) {
+    fn send_ai_refreshed(&mut self, text: String, location: ViewLocation, cx: &mut Context<Self>) {
         if text.trim().is_empty()
             || self.ai.blocked()
             || self.ai.modal()
@@ -656,7 +666,7 @@ impl ShellView {
         ) {
             return;
         }
-        if self.require_cloud_consent(&text, cx) {
+        if self.sync_chatgpt_access(&text, location, cx) {
             return;
         }
         if self.ai.review.zero
@@ -667,12 +677,15 @@ impl ShellView {
         }
         let clear_draft = self.ai.composer.read(cx).content.as_ref() == text;
         self.ai.sequence = self.ai.sequence.saturating_add(1);
-        let job = match self.ai.controller.start(SendIntent {
-            generation: view.generation,
-            sequence: self.ai.sequence,
-            prompt: text,
-            context: self.store.now().eval(),
-        }) {
+        let job = match self.ai.controller.start_in_view(
+            SendIntent {
+                generation: view.generation,
+                sequence: self.ai.sequence,
+                prompt: text,
+                context: self.store.now().eval(),
+            },
+            location,
+        ) {
             Ok(job) => job,
             Err(error) => {
                 self.ai.notice = Some(error.to_string());
