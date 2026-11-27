@@ -38,6 +38,7 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
       - run: bash .github/scripts/test-ci-changes.sh
+      - run: bash .github/scripts/test-pre-push.sh
       - name: Select jobs from the changed paths
         id: paths
         shell: bash

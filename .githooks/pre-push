@@ -2,27 +2,42 @@
 # Blocks pushes whose new commits (content, paths, messages, author/committer identities) contain
 # denylisted text or secrets. Reads "<local ref> <local sha> <remote ref> <remote sha>" lines on stdin.
 hooks="$(git rev-parse --show-toplevel)/.githooks"
+remote_url="$2"
 zero=0000000000000000000000000000000000000000
 status=0
+published=""
+looked_up=false
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [ "$local_sha" = "$zero" ] && continue          # branch deletion
   if [ "$remote_sha" = "$zero" ]; then
-    range="$local_sha"                            # new branch: scan its whole history
+    # Exclude commits the destination already publishes. Query the push URL so stale tracking
+    # refs or a different fetch URL cannot hide commits from the scan.
+    if [ "$looked_up" = false ]; then
+      looked_up=true
+      if tips=$(git ls-remote --refs --heads --tags -- "$remote_url" 2>/dev/null); then
+        published=$(printf '%s\n' "$tips" | awk 'NF >= 2 { print $1 "^{commit}" }' |
+          git cat-file --batch-check='%(objectname) %(objecttype)' |
+          awk '$2 == "commit" && !seen[$1]++ { print "^" $1 }')
+      fi
+    fi
+    # Each word in published is a caret-prefixed commit hash. An unknown or unavailable remote
+    # leaves the exclusion list empty, so the full history is checked.
+    set -- "$local_sha" $published
   else
-    range="$remote_sha..$local_sha"
+    set -- "$remote_sha..$local_sha"
   fi
   tmp="$(mktemp)"
   {
-    git log --format='%an <%ae>%n%cn <%ce>%n%B' "$range"
-    git log -p --no-color --format= "$range" | grep '^+' | grep -v '^+++'
-    git log --name-only --format= "$range"
+    git log --format='%an <%ae>%n%cn <%ce>%n%B' "$@"
+    git log -p --no-color --format= "$@" | grep '^+' | grep -v '^+++'
+    git log --name-only --format= "$@"
   } > "$tmp"
   sh "$hooks/leak-check.sh" "$tmp" "commits for $remote_ref" || status=1
   rm -f "$tmp"
 
   if command -v gitleaks > /dev/null 2>&1; then
-    gitleaks git --no-banner --redact --log-opts="$range" . || status=1
+    gitleaks git --no-banner --redact --log-opts="$*" . || status=1
   fi
 done
 
