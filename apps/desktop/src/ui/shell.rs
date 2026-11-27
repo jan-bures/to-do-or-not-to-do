@@ -1756,22 +1756,20 @@ impl ShellView {
         self.palette = theme::palette(self.theme, hue);
         self.ai.set_colors(&self.palette, cx);
         let colors = quick_add_colors(&self.palette);
-        for input in [
-            &self.quick_add,
-            &self.filter,
-            &self.edit.step,
-            &self.edit.link,
-        ] {
+        for input in [&self.quick_add, &self.filter, &self.edit.link] {
             input.update(cx, |i, cx| {
                 i.colors = colors;
                 cx.notify();
             });
         }
-        for area in [&self.edit.title, &self.edit.notes] {
+        for area in [&self.edit.title, &self.edit.notes, &self.edit.step] {
             area.update(cx, |a, cx| {
                 a.colors = colors;
                 cx.notify();
             });
+        }
+        if let Some(inline) = &self.inline {
+            inline.input.set_colors(colors, cx);
         }
     }
 
@@ -1827,7 +1825,7 @@ impl ShellView {
         if self.menu.is_some() {
             self.menu_focus.clone()
         } else if let Some(inline) = &self.inline {
-            inline.input.read(cx).focus_handle.clone()
+            inline.input.focus_handle(cx)
         } else if let Some(focus) = &self.preview_focus {
             focus.clone()
         } else if quick_add.content.is_empty() {
@@ -4569,7 +4567,7 @@ impl ShellView {
         } else if self
             .inline
             .as_ref()
-            .is_some_and(|i| on(&i.input.read(cx).focus_handle))
+            .is_some_and(|i| on(&i.input.focus_handle(cx)))
         {
             Focus::Rename
         } else if on(&self.menu_focus) {

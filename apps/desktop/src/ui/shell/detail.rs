@@ -24,7 +24,6 @@ use crate::model::activity::Mark;
 use crate::model::draft::Draft;
 use crate::model::files;
 use crate::model::hints::Stop;
-use crate::model::layout::Pane;
 use crate::model::menus::TagPage;
 use crate::model::{self, Detail, FieldEdit, FieldKind, commands, fit, quick_add};
 use crate::theme::{
@@ -96,7 +95,7 @@ pub(super) struct Editors {
     pub title: Entity<TextArea>,
     pub notes: Entity<TextArea>,
     pub notes_focus: FocusHandle,
-    pub step: Entity<TextInput>,
+    pub step: Entity<TextArea>,
     /// The field that adds a web link (L).
     pub link: Entity<TextInput>,
     /// The bulk due-date field while it is being edited.
@@ -118,7 +117,11 @@ impl Editors {
             a
         });
         let notes = cx.new(|cx| TextArea::new("Add notes", colors, cx));
-        let step = cx.new(|cx| TextInput::new("Add step", colors, cx));
+        let step = cx.new(|cx| {
+            let mut a = TextArea::new("Add step", colors, cx);
+            a.single = true;
+            a
+        });
         let link = cx.new(|cx| TextInput::new("Add a link", colors, cx));
         let mut subs = Vec::new();
         subs.push(cx.subscribe_in(
@@ -559,7 +562,6 @@ impl ShellView {
         i: usize,
         s: &model::StepRow,
         measure: gpui::Pixels,
-        wrap: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = self.palette;
@@ -570,13 +572,15 @@ impl ShellView {
             kit::checkbox(&p, false, component::GLYPH)
         };
         let group: SharedString = format!("step-{id}").into();
-        let title = match self.inline_for(InlineTarget::Step(id)) {
+        let editor = self.inline_for(InlineTarget::Step(id));
+        let editing = editor.is_some();
+        let title = match editor {
             Some(input) => div()
                 .flex_1()
                 .min_w_0()
                 .max_w(measure)
                 .style(ty::STEP)
-                .child(input)
+                .child(input.into_any_element())
                 .into_any_element(),
             None => {
                 let t = div()
@@ -584,7 +588,6 @@ impl ShellView {
                     .flex_1()
                     .min_w_0()
                     .max_w(measure)
-                    .when(!wrap, |d| d.truncate())
                     .style(ty::STEP)
                     .child(s.title.clone());
                 let t = if s.done {
@@ -614,9 +617,9 @@ impl ShellView {
             .group(group.clone())
             .relative()
             .min_h(px(desktop::STEP_ROW))
-            .when(wrap, |d| d.py(px(space::S1)))
+            .py(px(space::S1))
             .flex()
-            .items_center()
+            .items_start()
             .gap(px(space::S3))
             .px(px(desktop::DETAIL_PAD_X))
             .border_b_1()
@@ -624,6 +627,10 @@ impl ShellView {
             .child(
                 div()
                     .id(("step-check", i))
+                    .flex_none()
+                    .h(px(ty::STEP.line_height))
+                    .flex()
+                    .items_center()
                     .child(mark)
                     .on_click(cx.listener(move |this, _, _, cx| {
                         let cmd = commands::toggle_step(&this.store.view(), id);
@@ -635,42 +642,47 @@ impl ShellView {
                 div()
                     .ml_auto()
                     .flex_none()
+                    .h(px(ty::STEP.line_height))
+                    .flex()
+                    .items_center()
                     .style(ty::COUNT)
                     .text_color(p.ink_4)
                     .child(format!("{:02}", i + 1)),
             )
-            .child(
-                // Move and delete show over the step number on hover.
-                div()
-                    .absolute()
-                    .right(px(desktop::DETAIL_PAD_X - space::S1))
-                    .top_0()
-                    .bottom_0()
-                    .flex()
-                    .items_center()
-                    .bg(p.pane)
-                    .opacity(0.)
-                    .group_hover(group, |s| s.opacity(1.))
-                    .child(control("step-up", Icon::ChevronUp).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            let cmd = commands::nudge(&this.store.view(), id.into(), -1);
-                            this.step_command(cmd, cx);
-                        },
-                    )))
-                    .child(
-                        control("step-down", Icon::ChevronDown).on_click(cx.listener(
+            .when(!editing, |row| {
+                row.child(
+                    // Move and delete show over the step number on hover.
+                    div()
+                        .absolute()
+                        .right(px(desktop::DETAIL_PAD_X - space::S1))
+                        .top_0()
+                        .h(px(ty::STEP.line_height + 2. * space::S1))
+                        .flex()
+                        .items_center()
+                        .bg(p.pane)
+                        .opacity(0.)
+                        .group_hover(group, |s| s.opacity(1.))
+                        .child(control("step-up", Icon::ChevronUp).on_click(cx.listener(
                             move |this, _, _, cx| {
-                                let cmd = commands::nudge(&this.store.view(), id.into(), 1);
+                                let cmd = commands::nudge(&this.store.view(), id.into(), -1);
                                 this.step_command(cmd, cx);
                             },
-                        )),
-                    )
-                    .child(control("step-delete", Icon::TrashTwo).on_click(cx.listener(
-                        move |this, _, _, cx| {
-                            this.step_command(Some(commands::delete(id)), cx);
-                        },
-                    ))),
-            )
+                        )))
+                        .child(
+                            control("step-down", Icon::ChevronDown).on_click(cx.listener(
+                                move |this, _, _, cx| {
+                                    let cmd = commands::nudge(&this.store.view(), id.into(), 1);
+                                    this.step_command(cmd, cx);
+                                },
+                            )),
+                        )
+                        .child(control("step-delete", Icon::TrashTwo).on_click(cx.listener(
+                            move |this, _, _, cx| {
+                                this.step_command(Some(commands::delete(id)), cx);
+                            },
+                        ))),
+                )
+            })
     }
 
     fn detail(&self, d: &Detail, live: bool, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -908,15 +920,11 @@ impl ShellView {
                 + component::GLYPH
                 + 2. * space::S3
                 + 3. * STEP_CONTROL);
-        let wrap_steps = px(self.columns(window).width(Pane::Detail)) >= steps_width;
         let steps: Vec<AnyElement> = d
             .steps
             .iter()
             .enumerate()
-            .map(|(i, s)| {
-                self.step_row(i, s, step_measure, wrap_steps, cx)
-                    .into_any_element()
-            })
+            .map(|(i, s)| self.step_row(i, s, step_measure, cx).into_any_element())
             .collect();
         let fields: Vec<_> = d
             .fields
@@ -937,7 +945,7 @@ impl ShellView {
                         .min_w_0()
                         .style(ty::TAG)
                         .text_color(p.ink)
-                        .children(renaming.clone())
+                        .children(renaming.clone().map(|i| i.into_any_element()))
                         .into_any_element(),
                     _ if matches!(f.edit, Some(FieldEdit::Repeat | FieldEdit::Reminder))
                         && f.kind == FieldKind::Empty =>
@@ -1251,22 +1259,30 @@ impl ShellView {
                             .children(steps)
                             .child(
                                 div()
-                                    .h(px(desktop::STEP_ROW))
+                                    .min_h(px(desktop::STEP_ROW))
+                                    .py(px(space::S1))
                                     .flex()
-                                    .items_center()
+                                    .items_start()
                                     .gap(px(space::S3))
                                     .px(px(desktop::DETAIL_PAD_X))
                                     .style(ty::STEP)
                                     .text_color(p.ink_3)
-                                    .child(kit::icon(
-                                        Icon::Plus,
-                                        component::GLYPH,
-                                        if step_focused {
-                                            p.accent_strong
-                                        } else {
-                                            p.ink_3
-                                        },
-                                    ))
+                                    .child(
+                                        div()
+                                            .flex_none()
+                                            .h(px(ty::STEP.line_height))
+                                            .flex()
+                                            .items_center()
+                                            .child(kit::icon(
+                                                Icon::Plus,
+                                                component::GLYPH,
+                                                if step_focused {
+                                                    p.accent_strong
+                                                } else {
+                                                    p.ink_3
+                                                },
+                                            )),
+                                    )
                                     .child(
                                         div()
                                             .flex_1()
@@ -1276,7 +1292,13 @@ impl ShellView {
                                             .when(!live, |el| el.child("Add a step")),
                                     )
                                     .child(
-                                        div().ml_auto().flex_none().child(kit::kbd(&p, "Enter")),
+                                        div()
+                                            .ml_auto()
+                                            .flex_none()
+                                            .h(px(ty::STEP.line_height))
+                                            .flex()
+                                            .items_center()
+                                            .child(kit::kbd(&p, "Enter")),
                                     ),
                             ),
                     )

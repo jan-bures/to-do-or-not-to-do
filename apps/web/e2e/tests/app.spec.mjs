@@ -336,8 +336,8 @@ test("steps, important and My Day toggles work from the detail pane", async ({ p
   await expect(detail.locator(".d-caps .steps")).toContainText("2/5");
   await detail.locator(".step").nth(2).locator(".check").click();
   await expect(detail.locator(".d-caps .steps")).toContainText("3/5");
-  await detail.locator(".add-step input").fill("Book the room");
-  await detail.locator(".add-step input").press("Enter");
+  await detail.getByRole("textbox", { name: "Add step" }).fill("Book the room");
+  await detail.getByRole("textbox", { name: "Add step" }).press("Enter");
   await expect(detail.locator(".d-caps .steps")).toContainText("3/6");
   await detail.getByRole("button", { name: "My Day" }).click();
   await expect(row(page, "Prepare the November board update")).toHaveCount(0);
@@ -539,6 +539,16 @@ test("step titles can be renamed, reordered and restored after deletion", async 
   await input.fill("Discard this draft");
   await input.press("Escape");
   await expect(title).toHaveText(original);
+  await title.click();
+  const longStep = "Check the first draft with every team lead and record all remaining open questions before the review";
+  await input.fill(longStep);
+  const inputBox = await input.boundingBox();
+  expect(inputBox.height).toBeGreaterThan(36);
+  await input.press("Enter");
+  await expect(title).toHaveText(longStep);
+  await expect(title.locator("span")).toHaveCSS("white-space", "normal");
+  const titleBox = await title.boundingBox();
+  expect(titleBox.height).toBeGreaterThan(36);
   await title.click();
   await input.fill("Check the first draft");
   await input.press("Enter");

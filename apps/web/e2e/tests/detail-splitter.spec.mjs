@@ -177,7 +177,7 @@ test("a squeezed list stacks counts and aligns metadata under the title; wide pr
   const row = page.locator(".row").filter({ has: page.locator(".row-title", { hasText: /^Prepare the quarterly roadmap review/ }) });
   const meta = row.locator(".meta");
   const step = pane(page).getByRole("button", { name: /^Check the proposed milestones/ });
-  await expect(step.locator("span")).toHaveCSS("white-space", "nowrap");
+  await expect(step.locator("span")).toHaveCSS("white-space", "normal");
   await expect(page.locator(".title-row")).toHaveCSS("flex-direction", "row");
   expect((await meta.boundingBox()).width).toBeCloseTo((await row.locator(".row-title").boundingBox()).width);
 

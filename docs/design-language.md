@@ -243,8 +243,9 @@ whole logical pixels; the bar fades out over the same duration when neither hove
   keeps its default width and has no handle.
 - **Reading width:** In a wide detail pane, left-align the title, notes and step text within the normal
   pane padding. Cap their line length at **72 ch** (`desktop::DETAIL_TEXT_MEASURE`) in each text style.
-  Let long step titles wrap when there is room for that measure. Keep step progress and actions near
-  their text; fields, links and attachments can use the full width.
+  Step titles always wrap and display in full in the task detail pane (no ellipsis), both at rest and while
+  editing. Keep step progress and actions near their text; fields, links and attachments can use the full
+  width.
 - **Keys and focus:** Tab reaches the dividers, which expose their name and current width as vertical
   splitters. Left and Right move the divider in that direction by **8** px (**32** with Shift). Keyboard
   focus adds an `accent` line and the **3 px** `tint` ring, following the shared focus fade. Esc returns

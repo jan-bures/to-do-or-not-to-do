@@ -2699,7 +2699,7 @@ button:is([aria-pressed="false"], [aria-selected="false"]) > .picker-tick { visi
 .icon-button:disabled,
 .qa-input:disabled,
 .title-input:disabled,
-:is(.add-step, .add-link) input:disabled,
+:is(.add-step, .add-link) :is(input, textarea):disabled,
 textarea.notes:read-only {
   cursor: default;
 }
@@ -2917,7 +2917,7 @@ textarea.notes:read-only {
 }
 
 @media (width >= 1200px) {
-  .detail :is(.d-title, .title-input, .notes, .step-title, .step-input, .add-step input) {
+  .detail :is(.d-title, .title-input, .notes, .step-title, .step-input, .add-step textarea) {
     max-inline-size: var(--desktop-detail-text-measure);
   }
 
@@ -2927,28 +2927,6 @@ textarea.notes:read-only {
     max-inline-size: calc(var(--desktop-detail-text-measure)
       + var(--component-checkbox) - var(--space-1) + 2 * var(--space-3)
       + 3 * var(--component-button-small));
-  }
-
-  .detail .step {
-    height: auto;
-    min-height: var(--desktop-step-row);
-  }
-
-  .detail .step-title { container: step-title / inline-size; }
-
-  .detail .step-title > span {
-    display: block;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  /* As with media queries, a size query can't use var(): 72ch is the shared text measure. */
-  @container step-title (width >= 72ch) {
-    .detail .step-title > span {
-      padding-block: var(--space-1);
-      white-space: normal;
-      overflow-wrap: anywhere;
-    }
   }
 
   .detail .step-tail { margin-inline-start: auto; }
@@ -3032,15 +3010,20 @@ textarea.notes:read-only {
 
 .step {
   display: flex;
-  align-items: center;
+  align-items: flex-start;
   gap: var(--space-3);
-  height: var(--desktop-step-row);
+  min-height: var(--desktop-step-row);
+  padding-block: var(--hairline);
   border-bottom: var(--hairline) solid var(--color-line);
 }
 
 .check.small {
   width: calc(var(--component-checkbox) - var(--space-1));
   height: calc(var(--component-checkbox) - var(--space-1));
+}
+
+.step .check.small {
+  margin-top: calc(var(--space-1) + var(--space-1) / 2);
 }
 
 .step-title,
@@ -3052,9 +3035,20 @@ textarea.notes:read-only {
 
 .step-title {
   text-align: left;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  padding-block: var(--space-1);
+}
+
+.step-title > span {
+  display: block;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.step-input {
+  resize: none;
+  field-sizing: content;
+  overflow-wrap: anywhere;
+  padding: var(--space-1) var(--space-2);
 }
 
 .step-tail {
@@ -3102,29 +3096,47 @@ textarea.notes:read-only {
   display: flex;
   align-items: center;
   gap: var(--space-3);
-  height: var(--desktop-step-row);
+  min-height: var(--desktop-step-row);
   color: var(--color-ink-3);
 }
 
+.add-step {
+  align-items: flex-start;
+  padding-block: var(--hairline);
+}
+
 :is(.add-step, .add-link) .icon {
+  flex: none;
   width: var(--component-icon-small);
   height: var(--component-icon-small);
   margin: 0 calc(var(--space-1) / 2);
 }
 
-:is(.add-step, .add-link) input {
+.add-step .icon {
+  margin-top: calc(var(--space-1) + var(--space-1) / 2 + var(--hairline));
+}
+
+:is(.add-step, .add-link) :is(input, textarea) {
   flex: 1;
+  min-width: 0;
   border: 0;
   outline: 0;
   background: transparent;
   font: var(--text-step);
 }
 
-.add-step input:focus-visible {
+.add-step textarea {
+  padding-block: var(--space-1);
+  resize: none;
+  field-sizing: content;
+  overflow-wrap: anywhere;
+}
+
+.add-step textarea:focus-visible {
   box-shadow: none;
 }
 
-:is(.add-step, .add-link) input::placeholder {
+:is(.add-step, .add-link) :is(input, textarea)::placeholder {
   color: var(--color-ink-3);
 }
 
@@ -3272,6 +3284,10 @@ textarea.notes:read-only {
   background: var(--color-raised);
   color: var(--color-ink);
   min-height: var(--component-button-small);
+}
+
+.prop-edit,
+.prop-input {
   padding: 0 var(--space-2);
 }
 

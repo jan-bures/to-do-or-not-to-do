@@ -4,8 +4,9 @@
 //! every client follows (`docs/design-language.md`, *Sidebar order*).
 
 use gpui::{
-    ClickEvent, Context, Div, Entity, FontWeight, KeyDownEvent, MouseButton, MouseDownEvent, Role,
-    SharedString, Stateful, Subscription, Window, div, prelude::*, px,
+    AnyElement, App, ClickEvent, Context, Div, Entity, FocusHandle, FontWeight, KeyDownEvent,
+    MouseButton, MouseDownEvent, Role, SharedString, Stateful, Subscription, Window, div,
+    prelude::*, px,
 };
 use todo_client::sidebar_drag::{Row, Target};
 use todo_core::ids::{CollectionId, EntityId, ListId, StepId, TagId};
@@ -17,9 +18,10 @@ use crate::model::layout::{self, Pane};
 use crate::model::menus::Page;
 use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
-use crate::ui::input::{InputEvent, TextInput};
+use crate::ui::input::{InputColors, InputEvent, TextInput};
 use crate::ui::kit;
 use crate::ui::kit::QuietButton as _;
+use crate::ui::text_area::TextArea;
 
 /// Leading inset for top-level sidebar rows, leaving clear breathing room past the 3 px selection rail.
 const NAV_LEAD: f32 = space::S3;
@@ -49,10 +51,60 @@ impl InlineTarget {
     }
 }
 
+/// The editor backing an inline rename: single-line for sidebar/tag labels, wrapped for steps.
+#[derive(Clone)]
+pub(super) enum InlineEditor {
+    Line(Entity<TextInput>),
+    Wrap(Entity<TextArea>),
+}
+
+impl InlineEditor {
+    pub(super) fn entity_id(&self) -> gpui::EntityId {
+        match self {
+            Self::Line(i) => i.entity_id(),
+            Self::Wrap(a) => a.entity_id(),
+        }
+    }
+
+    pub(super) fn focus_handle(&self, cx: &App) -> FocusHandle {
+        match self {
+            Self::Line(i) => i.read(cx).focus_handle.clone(),
+            Self::Wrap(a) => a.read(cx).focus_handle.clone(),
+        }
+    }
+
+    pub(super) fn content(&self, cx: &App) -> SharedString {
+        match self {
+            Self::Line(i) => i.read(cx).content.clone(),
+            Self::Wrap(a) => a.read(cx).content.clone(),
+        }
+    }
+
+    pub(super) fn set_colors(&self, colors: InputColors, cx: &mut App) {
+        match self {
+            Self::Line(i) => i.update(cx, |i, cx| {
+                i.colors = colors;
+                cx.notify();
+            }),
+            Self::Wrap(a) => a.update(cx, |a, cx| {
+                a.colors = colors;
+                cx.notify();
+            }),
+        }
+    }
+
+    pub(super) fn into_any_element(self) -> AnyElement {
+        match self {
+            Self::Line(i) => i.into_any_element(),
+            Self::Wrap(a) => a.into_any_element(),
+        }
+    }
+}
+
 /// An inline rename in progress.
 pub(super) struct Inline {
     pub target: InlineTarget,
-    pub input: Entity<TextInput>,
+    pub input: InlineEditor,
     /// The text the editor started with: the name as drawn (`labels::one_line`). Only a change from it is
     /// saved, so opening and leaving the editor never rewrites a stored name.
     seed: String,
@@ -61,7 +113,8 @@ pub(super) struct Inline {
 }
 
 impl ShellView {
-    /// Starts renaming `target` in place, its current name selected, on one line.
+    /// Starts renaming `target` in place, its current name selected. Steps wrap in place; other labels stay
+    /// on one line.
     pub(super) fn start_inline(
         &mut self,
         target: InlineTarget,
@@ -72,29 +125,58 @@ impl ShellView {
         self.commit_inline(cx);
         let colors = quick_add_colors(&self.palette);
         let seed = labels::one_line(&text);
-        let input = cx.new(|cx| {
-            let mut i = TextInput::new("", colors, cx);
-            i.set_text(seed.clone(), cx);
-            i.select_everything(cx);
-            i
-        });
-        let events = cx.subscribe_in(
-            &input,
-            window,
-            |this, _, e: &InputEvent, window, cx| match e {
-                InputEvent::Submit => {
-                    this.commit_inline(cx);
-                    window.focus(&this.list_focus, cx);
-                }
-                InputEvent::Cancel => {
-                    this.inline = None;
-                    window.focus(&this.list_focus, cx);
-                    cx.notify();
-                }
-                InputEvent::Changed => {}
-            },
-        );
-        let handle = input.read(cx).focus_handle.clone();
+        let (input, events) =
+            if matches!(target, InlineTarget::Step(_)) {
+                let area = cx.new(|cx| {
+                    let mut a = TextArea::new("", colors, cx);
+                    a.single = true;
+                    a.set_text(seed.clone(), cx);
+                    a.select_everything(cx);
+                    a
+                });
+                let events = cx.subscribe_in(
+                    &area,
+                    window,
+                    |this, _, e: &InputEvent, window, cx| match e {
+                        InputEvent::Submit => {
+                            this.commit_inline(cx);
+                            window.focus(&this.list_focus, cx);
+                        }
+                        InputEvent::Cancel => {
+                            this.inline = None;
+                            window.focus(&this.list_focus, cx);
+                            cx.notify();
+                        }
+                        InputEvent::Changed => {}
+                    },
+                );
+                (InlineEditor::Wrap(area), events)
+            } else {
+                let input = cx.new(|cx| {
+                    let mut i = TextInput::new("", colors, cx);
+                    i.set_text(seed.clone(), cx);
+                    i.select_everything(cx);
+                    i
+                });
+                let events = cx.subscribe_in(
+                    &input,
+                    window,
+                    |this, _, e: &InputEvent, window, cx| match e {
+                        InputEvent::Submit => {
+                            this.commit_inline(cx);
+                            window.focus(&this.list_focus, cx);
+                        }
+                        InputEvent::Cancel => {
+                            this.inline = None;
+                            window.focus(&this.list_focus, cx);
+                            cx.notify();
+                        }
+                        InputEvent::Changed => {}
+                    },
+                );
+                (InlineEditor::Line(input), events)
+            };
+        let handle = input.focus_handle(cx);
         let blur = cx.on_blur(&handle, window, |this, _, cx| this.commit_inline(cx));
         window.focus(&handle, cx);
         self.inline = Some(Inline {
@@ -112,7 +194,7 @@ impl ShellView {
         let Some(inline) = self.inline.take() else {
             return;
         };
-        let text = inline.input.read(cx).content.to_string();
+        let text = inline.input.content(cx).to_string();
         match inline_command(&self.store.view(), inline.target, &inline.seed, &text) {
             Ok(Some(cmd)) => {
                 self.submit(vec![cmd]);
@@ -124,7 +206,7 @@ impl ShellView {
     }
 
     /// The inline editor, if `target` is being renamed.
-    pub(super) fn inline_for(&self, target: InlineTarget) -> Option<Entity<TextInput>> {
+    pub(super) fn inline_for(&self, target: InlineTarget) -> Option<InlineEditor> {
         self.inline
             .as_ref()
             .filter(|i| i.target == target)
@@ -322,7 +404,7 @@ impl ShellView {
                 .flex_1()
                 .min_w_0()
                 .text_color(p.ink)
-                .child(input)
+                .child(input.into_any_element())
                 .into_any_element(),
             None => div()
                 .flex_1()
@@ -662,7 +744,11 @@ impl ShellView {
             let (shown, angle) = self.motion.sidebar.group(cid, !c.collapsed, self.frame);
             let on = c.selected;
             let name = match self.inline_for(InlineTarget::Collection(cid)) {
-                Some(input) => div().flex_1().min_w_0().child(input).into_any_element(),
+                Some(input) => div()
+                    .flex_1()
+                    .min_w_0()
+                    .child(input.into_any_element())
+                    .into_any_element(),
                 None => div()
                     .flex_1()
                     .min_w_0()
@@ -1139,5 +1225,70 @@ mod tests {
             inline_command(&f.state, target, "docs", "  "),
             Err(commands::TagError::Empty)
         );
+    }
+
+    #[gpui::test]
+    fn step_inline_rename_uses_wrapping_editor_and_saves_on_enter(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| cx.bind_keys(crate::ui::text_area::key_bindings()));
+        let fixture = fixtures::by_name("detail-wide").expect("detail-wide fixture");
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let store = std::rc::Rc::new(crate::store::Store::fixture(&fixture));
+            let mut view = ShellView::new(store, fixture.ui, theme::Theme::Light, None, window, cx);
+            view.still();
+            view
+        });
+        let (step_id, step_title) = cx.update(|_, cx| {
+            let detail = shell.read(cx).shell.detail.as_ref().expect("detail");
+            let step = detail
+                .steps
+                .iter()
+                .max_by_key(|s| s.title.len())
+                .expect("long step");
+            (step.id, step.title.clone())
+        });
+        cx.update(|window, cx| {
+            shell.update(cx, |view, cx| {
+                view.start_inline(InlineTarget::Step(step_id), step_title.clone(), window, cx);
+            });
+        });
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            let inline = view.inline.as_ref().expect("inline editor");
+            assert!(matches!(inline.input, InlineEditor::Wrap(_)));
+            if let InlineEditor::Wrap(area) = &inline.input {
+                assert!(area.read(cx).single);
+                assert_eq!(area.read(cx).content, step_title);
+            }
+        });
+        cx.simulate_keystrokes("escape");
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(view.inline.is_none());
+            assert_eq!(view.store.view().steps[&step_id].title, step_title.as_ref());
+        });
+
+        cx.update(|window, cx| {
+            shell.update(cx, |view, cx| {
+                view.start_inline(InlineTarget::Step(step_id), step_title.clone(), window, cx);
+            });
+        });
+        cx.update(|_, cx| {
+            let area = match &shell.read(cx).inline.as_ref().expect("inline").input {
+                InlineEditor::Wrap(area) => area.clone(),
+                InlineEditor::Line(_) => panic!("step rename should use TextArea"),
+            };
+            area.update(cx, |a, cx| {
+                a.set_text("Need to look at when exactly session starts and ends", cx);
+            });
+        });
+        cx.simulate_keystrokes("enter");
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(view.inline.is_none());
+            assert_eq!(
+                view.store.view().steps[&step_id].title,
+                "Need to look at when exactly session starts and ends"
+            );
+        });
     }
 }

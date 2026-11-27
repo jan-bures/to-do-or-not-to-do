@@ -329,13 +329,15 @@ private fun StepLine(
             StepTitleField(step, actions, onDone = { onEdit(false) }, modifier = Modifier.weight(1f))
         } else {
             Box(
-                Modifier.weight(1f).heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Rename step") { onEdit(true) },
+                Modifier.weight(1f).heightIn(min = P.TOUCH.dp).clickable(onClickLabel = "Rename step") { onEdit(true) }
+                    .padding(vertical = S.S2.dp),
                 contentAlignment = Alignment.CenterStart,
             ) {
                 Label(
                     step.title,
                     Tokens.Type.STEP,
                     if (step.done) r.ink3 else r.ink,
+                    maxLines = Int.MAX_VALUE,
                     decoration = if (step.done) TextDecoration.LineThrough else null,
                 )
             }
@@ -374,7 +376,6 @@ private fun StepTitleField(step: StepRow, actions: Actions, onDone: () -> Unit, 
                 focused = it.isFocused
             },
         textStyle = Tokens.Type.STEP.style(r.ink),
-        singleLine = true,
         cursorBrush = SolidColor(r.accent),
         keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
         keyboardActions = KeyboardActions(onDone = { commit() }),
@@ -689,7 +690,7 @@ private fun AddStep(task: String, actions: Actions) {
     fun submit() = draft.submit { title, done -> actions.addStep(task, title, done) }
     Column(Modifier.fillMaxWidth().hairline(r.line)) {
         Row(
-            Modifier.fillMaxWidth().height(P.TOUCH.dp),
+            Modifier.fillMaxWidth().heightIn(min = P.TOUCH.dp),
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(S.S3.dp),
         ) {
@@ -698,10 +699,16 @@ private fun AddStep(task: String, actions: Actions) {
             }
             BasicTextField(
                 value = draft.text,
-                onValueChange = draft::edit,
-                modifier = Modifier.weight(1f).semantics { contentDescription = "Add step" },
+                onValueChange = {
+                    if ('\n' in it) {
+                        draft.edit(it)
+                        submit()
+                    } else {
+                        draft.edit(it)
+                    }
+                },
+                modifier = Modifier.weight(1f).padding(vertical = S.S2.dp).semantics { contentDescription = "Add step" },
                 textStyle = Tokens.Type.STEP.style(r.ink),
-                singleLine = true,
                 cursorBrush = SolidColor(r.accent),
                 keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences, imeAction = ImeAction.Done),
                 keyboardActions = KeyboardActions(onDone = { submit() }),

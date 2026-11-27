@@ -3344,7 +3344,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
     });
     let editing = RwSignal::new(false);
     let draft = Draft::new(title, editing);
-    let input = NodeRef::<html::Input>::new();
+    let input = NodeRef::<html::Textarea>::new();
     let focus_title = move || {
         platform::focus(&format!("step-title-{id}"));
     };
@@ -3375,7 +3375,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
         }
     };
     view! {
-        <li class="step" class:done=done>
+        <li class="step" class:done=done class:editing=move || editing.get()>
             <button class="check small" type="button" role="checkbox"
                 disabled=move || c.read_only() aria-checked=move || done().to_string()
                 aria-label=move || format!("Step {}", index() + 1)
@@ -3386,9 +3386,9 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
                 <button type="button" class="step-title" id=format!("step-title-{id}") title="Rename step"
                     disabled=move || c.read_only() on:click=move |_| editing.set(true)><span>{move || title.get()}</span></button>
             }>
-                <input class="step-input" type="text" node_ref=input aria-label="Step title"
+                <textarea class="step-input" rows="1" node_ref=input aria-label="Step title"
                     disabled=move || c.read_only() prop:value=move || draft.text.get()
-                    on:input=move |ev| draft.input(event_target_value(&ev))
+                    on:input=move |ev| draft.input(event_target_value(&ev).replace(['\r', '\n'], " "))
                     on:blur=move |_| finish(true)
                     on:keydown=move |ev| {
                         if !ev.is_composing() && matches!(ev.key().as_str(), "Enter" | "Escape") {
@@ -3670,29 +3670,40 @@ fn AddStep(id: TaskId) -> impl IntoView {
     let value = RwSignal::new(String::new());
     c.drafts
         .watch(move || value.with_untracked(|text| !text.is_empty()));
+    let submit_step = move || {
+        let title = value.get_untracked();
+        if let Some(cmd) = intent::add_step(id, &title, backend::new_uuid)
+            && c.submit(cmd)
+        {
+            value.set(String::new());
+        }
+    };
     view! {
         <form
             class="add-step"
             on:submit=move |ev| {
                 ev.prevent_default();
-                let title = value.get_untracked();
-                if let Some(cmd) = intent::add_step(id, &title, backend::new_uuid)
-                    && c.submit(cmd)
-                {
-                    value.set(String::new());
-                }
+                submit_step();
             }
         >
             {icon(Icon::Plus)}
-            <input
-                type="text"
+            <textarea
                 id="add-step"
+                rows="1"
                 placeholder="Add step"
                 aria-label="Add step"
                 disabled=move || c.read_only()
                 autocomplete="off"
                 prop:value=move || value.get()
-                on:input=move |ev| value.set(event_target_value(&ev))
+                on:input=move |ev| value.set(event_target_value(&ev).replace(['\r', '\n'], " "))
+                on:keydown=move |ev| {
+                    if !ev.is_composing() && ev.key() == "Enter" {
+                        ev.prevent_default();
+                        if !ev.repeat() {
+                            submit_step();
+                        }
+                    }
+                }
             />
         </form>
     }

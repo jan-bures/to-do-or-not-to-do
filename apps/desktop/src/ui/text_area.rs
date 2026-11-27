@@ -176,11 +176,23 @@ impl TextArea {
     /// Replaces the content (a different task was selected, or the notes changed elsewhere) and puts the
     /// caret at its end.
     pub fn set_text(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.content = text.into();
+        let text = text.into();
+        self.content = if self.single { one_line(text) } else { text };
         let end = self.content.len();
         self.selected_range = end..end;
         self.selection_reversed = false;
         self.marked_range = None;
+        cx.notify();
+    }
+
+    pub fn reset(&mut self, window: &Window, cx: &mut Context<Self>) {
+        self.content = "".into();
+        self.selected_range = 0..0;
+        self.selection_reversed = false;
+        self.marked_range = None;
+        self.layout = None;
+        self.is_selecting = false;
+        window.notify_text_input_changed(&self.focus_handle);
         cx.notify();
     }
 
@@ -541,6 +553,13 @@ impl EntityInputHandler for TextArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let single_text;
+        let new_text = if self.single {
+            single_text = crate::model::labels::one_line(new_text);
+            single_text.as_str()
+        } else {
+            new_text
+        };
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -565,6 +584,13 @@ impl EntityInputHandler for TextArea {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let single_text;
+        let new_text = if self.single {
+            single_text = crate::model::labels::one_line(new_text);
+            single_text.as_str()
+        } else {
+            new_text
+        };
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -765,22 +791,28 @@ impl Element for AreaElement {
         let mut quads = Vec::new();
         let cursor = if sel.is_empty() || area.content.is_empty() {
             let at = layout.position(area.cursor_offset());
+            let max_x = (bounds.size.width - px(1.5)).max(Pixels::ZERO);
             Some(fill(
-                Bounds::new(bounds.origin + at, size(px(1.5), line_height)),
+                Bounds::new(
+                    bounds.origin + point(at.x.min(max_x), at.y),
+                    size(px(1.5), line_height),
+                ),
                 colors.caret,
             ))
         } else {
             let (a, b) = (layout.position(sel.start), layout.position(sel.end));
             let o = bounds.origin;
             let w = bounds.size.width;
+            let ax = a.x.min(w);
+            let bx = b.x.min(w);
             if a.y == b.y {
                 quads.push(fill(
-                    Bounds::from_corners(o + a, o + point(b.x, b.y + line_height)),
+                    Bounds::from_corners(o + point(ax, a.y), o + point(bx, b.y + line_height)),
                     colors.selection,
                 ));
             } else {
                 quads.push(fill(
-                    Bounds::from_corners(o + a, o + point(w, a.y + line_height)),
+                    Bounds::from_corners(o + point(ax, a.y), o + point(w, a.y + line_height)),
                     colors.selection,
                 ));
                 if b.y > a.y + line_height {
@@ -793,7 +825,7 @@ impl Element for AreaElement {
                     ));
                 }
                 quads.push(fill(
-                    Bounds::from_corners(o + point(px(0.), b.y), o + point(b.x, b.y + line_height)),
+                    Bounds::from_corners(o + point(px(0.), b.y), o + point(bx, b.y + line_height)),
                     colors.selection,
                 ));
             }
@@ -863,6 +895,7 @@ impl Render for TextArea {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .w_full()
+            .min_w_0()
             .key_context("TextArea")
             .track_focus(&self.focus_handle(cx))
             .cursor(CursorStyle::IBeam)
@@ -900,6 +933,17 @@ impl Focusable for TextArea {
     }
 }
 
+fn one_line(text: SharedString) -> SharedString {
+    if text
+        .chars()
+        .any(|c| c.is_control() || matches!(c, '\u{2028}' | '\u{2029}'))
+    {
+        crate::model::labels::one_line(&text).into()
+    } else {
+        text
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -929,5 +973,62 @@ mod tests {
         window.update(|area, _, _| assert_eq!(area.content.as_ref(), "One Two words"));
         window.simulate_keystrokes("ctrl-right ctrl-backspace");
         window.update(|area, _, _| assert_eq!(area.content.as_ref(), "One words"));
+    }
+
+    #[test]
+    fn single_paragraph_area_wraps_long_text_and_keeps_one_line_on_set_and_replace() {
+        struct NarrowHost {
+            area: Entity<TextArea>,
+        }
+        impl Render for NarrowHost {
+            fn render(
+                &mut self,
+                _window: &mut Window,
+                _cx: &mut Context<Self>,
+            ) -> impl IntoElement {
+                div().w(px(220.)).child(self.area.clone())
+            }
+        }
+        let mut app = gpui::TestApp::new();
+        app.update(|cx| cx.bind_keys(key_bindings()));
+        let mut area_entity = None;
+        let mut window = app.open_window(|window, cx| {
+            use crate::theme::{self, Theme};
+            let colors = crate::ui::shell::quick_add_colors(&theme::palette(
+                Theme::Light,
+                theme::hues::MY_DAY,
+            ));
+            let area = cx.new(|cx| {
+                let mut area = TextArea::new("Add step", colors, cx);
+                area.single = true;
+                area.set_text(
+                    "Need to look at when exactly session starts and ends\nacross every client",
+                    cx,
+                );
+                area.select_everything(cx);
+                area
+            });
+            let focus = area.read(cx).focus_handle.clone();
+            window.focus(&focus, cx);
+            area_entity = Some(area.clone());
+            NarrowHost { area }
+        });
+        window.draw();
+        let area = area_entity.expect("area");
+        window.update(|_, _, cx| {
+            let area = area.read(cx);
+            assert_eq!(
+                area.content.as_ref(),
+                "Need to look at when exactly session starts and ends across every client"
+            );
+            let layout = area.layout.as_ref().expect("layout");
+            assert_eq!(layout.paragraphs.len(), 1);
+            assert!(
+                !layout.paragraphs[0].line.wrap_boundaries().is_empty(),
+                "long single-paragraph text must wrap inside a narrow container"
+            );
+            assert!(layout.bounds.size.width <= px(220.));
+            assert!(layout.bounds.size.height > layout.line_height);
+        });
     }
 }
