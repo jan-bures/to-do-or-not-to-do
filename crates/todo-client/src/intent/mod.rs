@@ -569,6 +569,41 @@ pub fn nudge(state: &State, id: EntityId, by: i32) -> Option<Command> {
     Some(Command::Reorder { id, placement })
 }
 
+/// Moves a live step before (`after == false`) or after (`after == true`) another live step on the
+/// same task. Returns `None` when either step isn't live on the same task or when dropping there
+/// leaves the step's order unchanged.
+pub fn reorder_step(state: &State, source: StepId, target: StepId, after: bool) -> Option<Command> {
+    let s = state.steps.get(&source)?;
+    let t = state.steps.get(&target)?;
+    if !state.is_live(source.into()) || !state.is_live(target.into()) || s.task != t.task {
+        return None;
+    }
+    let scope = state.scope_of(source.into())?;
+    let order: Vec<StepId> = state
+        .siblings(scope)
+        .into_iter()
+        .filter_map(|(_, id)| match id {
+            EntityId::Step(step) if state.is_live(id) => Some(step),
+            _ => None,
+        })
+        .collect();
+    let from = order.iter().position(|&id| id == source)?;
+    let target_idx = order.iter().position(|&id| id == target)?;
+    let insert_idx = target_idx + usize::from(after);
+    if insert_idx == from || insert_idx == from + 1 {
+        return None;
+    }
+    let placement = if after {
+        Placement::After(target.into())
+    } else {
+        Placement::Before(target.into())
+    };
+    Some(Command::Reorder {
+        id: source.into(),
+        placement,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1239,5 +1274,54 @@ mod tests {
             list_groups(&w.state),
             [(Some(work), vec![office]), (None, vec![loose])]
         );
+    }
+
+    #[test]
+    fn reorder_step_moves_a_step_and_skips_no_op_slots() {
+        let mut w = World::new();
+        let list = w.list("Work");
+        let task = TaskId::from_uuid(w.id());
+        w.run(Command::CreateTask(Box::new(NewTask::new(
+            task, list, "Plan",
+        ))));
+        let other = TaskId::from_uuid(w.id());
+        w.run(Command::CreateTask(Box::new(NewTask::new(
+            other, list, "Other",
+        ))));
+        let mut add_step_id = |t: TaskId, title: &str| {
+            let id = w.id();
+            w.run(add_step(t, title, || id).expect("step"));
+            StepId::from_uuid(id)
+        };
+        let a = add_step_id(task, "A");
+        let b = add_step_id(task, "B");
+        let c = add_step_id(task, "C");
+        let foreign = add_step_id(other, "Foreign");
+        let order = |s: &State| -> Vec<StepId> {
+            s.siblings(todo_core::state::Scope::Steps(task))
+                .into_iter()
+                .filter_map(|(_, id)| match id {
+                    EntityId::Step(step) if s.is_live(id) => Some(step),
+                    _ => None,
+                })
+                .collect()
+        };
+        assert_eq!(order(&w.state), [a, b, c]);
+
+        // Self, adjacent no-op slots, and foreign tasks return None.
+        assert!(reorder_step(&w.state, a, a, false).is_none());
+        assert!(reorder_step(&w.state, a, a, true).is_none());
+        assert!(reorder_step(&w.state, a, b, false).is_none());
+        assert!(reorder_step(&w.state, b, a, true).is_none());
+        assert!(reorder_step(&w.state, b, c, false).is_none());
+        assert!(reorder_step(&w.state, a, foreign, true).is_none());
+
+        // Drag A after C -> [B, C, A].
+        w.run(reorder_step(&w.state, a, c, true).expect("move after c"));
+        assert_eq!(order(&w.state), [b, c, a]);
+
+        // Drag A before B -> [A, B, C].
+        w.run(reorder_step(&w.state, a, b, false).expect("move before b"));
+        assert_eq!(order(&w.state), [a, b, c]);
     }
 }

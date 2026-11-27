@@ -154,8 +154,8 @@ fun DetailPane(
             Modifier.weight(1f).fillMaxWidth().verticalScroll(rememberScrollState())
                 .padding(start = S.S6.dp, end = S.S6.dp, top = S.S4.dp + S.S1.dp / 2),
         ) {
-            Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
-                Box(Modifier.size(P.COL_CHECK.dp, Tokens.Type.DETAIL_TITLE_PHONE.lineHeight.dp), contentAlignment = Alignment.Center) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
+                Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
                     Check(detail.done, { actions.setDone(detail.id, it, generation, row = false) }, detail.title)
                 }
                 TitleField(detail, actions, Modifier.weight(1f))

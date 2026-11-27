@@ -20,22 +20,28 @@ test("manual header toggle collapses to a compact bar, persists across reload, a
   const expand = page.getByRole("button", { name: "Expand header", exact: true });
   await expect(expand).toBeVisible();
   await expect(head).toHaveClass(/\bcollapsed\b/);
+  await expect.poll(async () => (await head.boundingBox()).height).toBeLessThan(60);
   const collapsedHeight = (await head.boundingBox()).height;
-  expect(collapsedHeight).toBeLessThan(60);
   expect(expandedHeight - collapsedHeight).toBeGreaterThan(80);
   await expect(page.locator(".room-head .compact-progress")).toBeVisible();
 
-  // Collapsed header matches the detail top bar height, and row checkboxes center on the row.
+  // Collapsed header matches the detail top bar height, and row controls center on the row.
   await page.locator(".row .row-title").first().click();
   await expect(page.locator(".detail-top")).toBeVisible();
-  const [headBox, detailTopBox, checkBox, gripBox] = await Promise.all([
-    head.boundingBox(),
-    page.locator(".detail-top").boundingBox(),
+  await expect.poll(async () => {
+    const [headBox, detailTopBox] = await Promise.all([
+      head.boundingBox(),
+      page.locator(".detail-top").boundingBox(),
+    ]);
+    return Math.abs(headBox.height - detailTopBox.height);
+  }).toBeLessThanOrEqual(0.5);
+  const [checkBox, gripBox, importantBox] = await Promise.all([
     page.locator(".row > .check").first().boundingBox(),
     page.locator(".row .task-drag-grip").first().boundingBox(),
+    page.locator(".row .row-important").first().boundingBox(),
   ]);
-  expect(Math.abs(headBox.height - detailTopBox.height)).toBeLessThanOrEqual(0.5);
   expect(Math.abs((checkBox.y + checkBox.height / 2) - (gripBox.y + gripBox.height / 2))).toBeLessThanOrEqual(1);
+  expect(Math.abs((importantBox.y + importantBox.height / 2) - (gripBox.y + gripBox.height / 2))).toBeLessThanOrEqual(1);
 
   // Persists across rooms and reloads.
   await page.locator(".sidebar").getByRole("link", { name: /^Work/ }).click();
@@ -103,13 +109,17 @@ test("collapsed header works on finished day and phone viewports", async ({ page
   await expect(page.locator(".room-head.finished")).toBeVisible();
   await page.getByRole("button", { name: "Collapse header", exact: true }).click();
   await expect(page.locator(".room-head.finished")).toHaveClass(/\bcollapsed\b/);
-  expect((await page.locator(".room-head.finished").boundingBox()).height).toBeLessThan(60);
+  await expect
+    .poll(async () => (await page.locator(".room-head.finished").boundingBox())?.height ?? 999)
+    .toBeLessThan(60);
   await page.getByRole("button", { name: "Expand header", exact: true }).click();
 
   await page.setViewportSize(PHONE);
   await open(page);
   await page.getByRole("button", { name: "Collapse header", exact: true }).click();
   await expect(page.locator(".room-head")).toHaveClass(/\bcollapsed\b/);
-  expect((await page.locator(".room-head").boundingBox()).height).toBeLessThan(60);
+  await expect
+    .poll(async () => (await page.locator(".room-head").boundingBox())?.height ?? 999)
+    .toBeLessThan(60);
   await w.check();
 });

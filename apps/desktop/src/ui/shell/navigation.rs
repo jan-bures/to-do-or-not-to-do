@@ -103,6 +103,7 @@ impl ShellView {
             return;
         };
         self.cancel_task_drag(cx);
+        self.cancel_step_drag(cx);
         self.multi.clear();
         let revealed = self.ui.select_room(&state, location.room);
         self.ui.task = location.task;

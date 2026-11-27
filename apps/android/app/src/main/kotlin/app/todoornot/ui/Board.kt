@@ -388,9 +388,10 @@ private fun BoardCard(task: TaskRow, stage: WorkflowStage, state: UiState, actio
         .padding(vertical = S.S2.dp, horizontal = S.S1.dp),
     ) {
         Check(motion.checked(task.id) ?: task.done, { actions.setDone(task.id, it, state.generation) }, task.title,
+            modifier = Modifier.align(Alignment.CenterStart),
             overdue = task.due?.tone == DueTone.OVERDUE, enabled = canEdit, look = look, onWash = selected)
         val important = task.priority == 3.toUByte()
-        Column(Modifier.fillMaxWidth().padding(start = P.TOUCH.dp - S.S2.dp, top = S.S2.dp, end = S.S2.dp),
+        Column(Modifier.fillMaxWidth().padding(start = P.TOUCH.dp - S.S2.dp, top = S.S1.dp, bottom = S.S1.dp, end = S.S2.dp),
             verticalArrangement = Arrangement.spacedBy(S.S2.dp)) {
             Label(task.title, Tokens.Type.NAV, if (task.done || origin) r.ink3 else r.ink,
                 Modifier.padding(end = if (important) P.TOUCH.dp - S.S3.dp else 0.dp), maxLines = 2,

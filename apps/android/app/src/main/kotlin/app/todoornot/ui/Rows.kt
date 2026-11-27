@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
@@ -71,8 +72,8 @@ fun TaskRowView(
     val l = look ?: RowLook.rest(task.done)
     val live = !l.gone && !inert
     val titleLine = Tokens.Type.TASK_TITLE_PHONE.lineHeight.dp
-    val contentHeight = maxOf(titleLine + S.S1.dp + metaLine, P.TOUCH.dp)
-    val bottom = (P.ROW.dp - P.ROW_PAD_TOP.dp - contentHeight).coerceAtLeast(0.dp)
+    val hasMeta = (task.chip == null && task.visibleStage() != null) ||
+        task.due != null || task.chip != null || task.fromMail || task.steps != null || task.tags.isNotEmpty()
     val m = modifier
         .rowMotion(look)
         .then(if (inert) Modifier.clearAndSetSemantics { } else Modifier)
@@ -82,9 +83,9 @@ fun TaskRowView(
         .semantics { this.selected = selected }
         .hairline(r.line)
         .combinedClickable(enabled = live, onClick = onOpen, onLongClickLabel = longClickLabel, onLongClick = onActions)
-        .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = P.ROW_PAD_TOP.dp, bottom = bottom)
-    Row(m, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
-        Box(Modifier.size(P.COL_CHECK.dp, titleLine), contentAlignment = Alignment.Center) {
+        .padding(start = P.ROW_PAD_LEFT.dp, end = P.ROW_PAD_RIGHT.dp, top = S.S2.dp, bottom = S.S2.dp)
+    Row(m, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(S.S3.dp)) {
+        Box(Modifier.width(P.COL_CHECK.dp), contentAlignment = Alignment.Center) {
             Check(
                 done = checked,
                 onToggle = onCheck,
@@ -111,11 +112,13 @@ fun TaskRowView(
                     }
                 }
             }
-            Spacer(Modifier.height(S.S1.dp))
-            MetaLine(task, quietInk)
+            if (hasMeta) {
+                Spacer(Modifier.height(S.S1.dp))
+                MetaLine(task, quietInk)
+            }
         }
         TaskToggleButton(TaskToggle.IMPORTANT, task.priority == IMPORTANT, enabled = live && !selecting,
-            label = "Important: ${task.title}", alignment = Alignment.TopCenter, onChange = onImportant)
+            label = "Important: ${task.title}", alignment = Alignment.Center, onChange = onImportant)
         dragHandle?.invoke()
     }
 }

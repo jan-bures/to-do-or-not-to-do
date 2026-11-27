@@ -19,6 +19,7 @@ mod quick_pickers;
 mod reminders;
 mod sidebar;
 mod sidebar_drag;
+mod step_drag;
 mod task_drag;
 mod timeline;
 mod trash;
@@ -278,6 +279,7 @@ pub struct ShellView {
     multi: todo_client::selection::Selection,
     task_drag: Option<task_drag::Gesture>,
     task_settle: Option<task_drag::Settle>,
+    step_drag: Option<step_drag::Gesture>,
     sidebar_drag: Option<sidebar_drag::Gesture>,
     sidebar_eat_release: bool,
     sidebar_row_foci: HashMap<RoomKey, FocusHandle>,
@@ -311,6 +313,7 @@ pub struct ShellView {
     /// Where each task row in the room was last painted: a task's menu opened from the keyboard hangs
     /// under its row.
     row_bounds: Rc<RefCell<HashMap<TaskId, Bounds<Pixels>>>>,
+    step_bounds: Rc<RefCell<HashMap<todo_core::ids::StepId, Bounds<Pixels>>>>,
     /// Where each list and collection row in the sidebar was last painted: a screenshot fixture opens
     /// its context menu there, as a right-click would.
     nav_bounds: Rc<RefCell<HashMap<RoomKey, Bounds<Pixels>>>>,
@@ -526,6 +529,7 @@ impl ShellView {
             rows: UniformListScrollHandle::new(),
             multi: todo_client::selection::Selection::default(),
             task_drag: None,
+            step_drag: None,
             sidebar_drag: None,
             sidebar_eat_release: false,
             sidebar_row_foci: HashMap::new(),
@@ -550,6 +554,7 @@ impl ShellView {
             menu_scroll: kit::ScrollPane::default(),
             menu_dropped: false,
             row_bounds: Rc::default(),
+            step_bounds: Rc::default(),
             nav_bounds: Rc::default(),
             probes: Rc::default(),
             new_focus: cx.focus_handle(),
@@ -2000,6 +2005,7 @@ impl ShellView {
 
     pub fn select_room(&mut self, room: RoomKey, cx: &mut Context<Self>) {
         self.cancel_task_drag(cx);
+        self.cancel_step_drag(cx);
         self.cancel_sidebar_drag(cx);
         if !self.commit_edits(cx) && self.ui.room != room {
             self.keep_unsaved(cx);
@@ -2023,6 +2029,7 @@ impl ShellView {
     }
 
     fn select_task(&mut self, id: Option<TaskId>, cx: &mut Context<Self>) {
+        self.cancel_step_drag(cx);
         if self.preview_task(id, cx) && !self.ui.compact {
             self.record_location();
         }
@@ -2979,10 +2986,43 @@ impl ShellView {
         let current_h = mix(expanded_h, compact_h, collapse).max(compact_h);
         let expanded_alpha = (1. - collapse / 0.55).clamp(0., 1.);
         let compact_alpha = ((collapse - 0.45) / 0.55).clamp(0., 1.);
-        let drift = if self.pace().reduced {
+        let reduced = self.pace().reduced;
+        let expanded_y = if reduced {
             0.
         } else {
-            -space::S2 * (1. - expanded_alpha)
+            -space::S3 * (1. - expanded_alpha)
+        };
+        let compact_y = if reduced {
+            0.
+        } else {
+            space::S2 * (1. - compact_alpha)
+        };
+        // Avoid duplicate stateful element IDs while both layers crossfade by giving the
+        // transitioning compact bar a non-interactive clone when the expanded header still owns them.
+        let compact_layer = if expanded_alpha > 0. {
+            div()
+                .relative()
+                .h(px(desktop::COMPACT_HEADER))
+                .px(px(desktop::LIST_PAD_X))
+                .flex()
+                .items_center()
+                .gap(px(space::S3))
+                .bg(sky_bg)
+                .child(
+                    div()
+                        .flex_1()
+                        .min_w_0()
+                        .whitespace_nowrap()
+                        .text_ellipsis()
+                        .style(ty::ROOM_TITLE_BAR)
+                        .text_color(title_ink)
+                        .child(room.title.clone()),
+                )
+                .when(!self.columns(window).counts_under_title(), |bar| {
+                    bar.child(div().flex_none().child(self.summary(true)))
+                })
+        } else {
+            self.compact_header_bar(sky_bg, title_ink, ink_3, look, window, cx)
         };
         div()
             .relative()
@@ -2996,17 +3036,17 @@ impl ShellView {
                         .absolute()
                         .left_0()
                         .right_0()
-                        .top(px(drift))
+                        .top(px(expanded_y))
                         .opacity(expanded_alpha),
                 )
             })
             .when(compact_alpha > 0., |d| {
                 d.child(
-                    self.compact_header_bar(sky_bg, title_ink, ink_3, look, window, cx)
+                    compact_layer
                         .absolute()
                         .left_0()
                         .right_0()
-                        .bottom(px(elevation::HAIRLINE))
+                        .bottom(px(elevation::HAIRLINE - compact_y))
                         .opacity(compact_alpha),
                 )
             })
@@ -3272,7 +3312,7 @@ impl ShellView {
         room: f32,
         mark: Option<(f32, AnyElement)>,
         window: &Window,
-    ) -> Div {
+    ) -> Option<Div> {
         let t = p.theme;
         let with_collection = match chips {
             Chips::None => None,
@@ -3311,6 +3351,15 @@ impl ShellView {
             &items,
             more_width,
         );
+        let has_meta = fit.chip.zip(with_collection).is_some()
+            || mark.is_some()
+            || steps.as_ref().is_some_and(|_| fit.meter || fit.count)
+            || fit.mail
+            || fit.tags.shown > 0
+            || fit.tags.more > 0;
+        if !has_meta {
+            return None;
+        }
         let tag = |s: SharedString, ink| {
             div()
                 .flex_none()
@@ -3319,43 +3368,45 @@ impl ShellView {
                 .text_color(ink)
                 .child(s)
         };
-        div()
-            .flex()
-            .items_center()
-            .gap(px(items.gap))
-            .h(px(component::CHIP))
-            .mt(px(desktop::ROW_LINE_GAP))
-            .when_some(fit.chip.zip(with_collection), |m, (width, w)| {
-                m.child(kit::chip(t, &task.list, w).w(px(width)))
-            })
-            .children(mark.map(|(_, mark)| mark))
-            .when_some(
-                steps.filter(|_| fit.meter || fit.count),
-                |m, (d, n, label)| {
-                    m.child(
-                        div()
-                            .flex()
-                            .flex_none()
-                            .items_center()
-                            .gap(px(component::META_GAP))
-                            .text_color(p.ink_3)
-                            .style(count_style)
-                            .when(fit.meter, |s| s.child(kit::meter(p, d, n)))
-                            .when(fit.count, |s| s.child(label)),
-                    )
-                },
-            )
-            .when(fit.mail, |m| {
-                m.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3))
-            })
-            .children(
-                task.tags[..fit.tags.shown]
-                    .iter()
-                    .map(|item| tag(item.label.clone(), theme::list_colors(t, item.hue).ink)),
-            )
-            .when(fit.tags.more > 0, |m| {
-                m.child(tag(fit::more_label(fit.tags.more).into(), p.ink_3))
-            })
+        Some(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(items.gap))
+                .h(px(component::CHIP))
+                .mt(px(desktop::ROW_LINE_GAP))
+                .when_some(fit.chip.zip(with_collection), |m, (width, w)| {
+                    m.child(kit::chip(t, &task.list, w).w(px(width)))
+                })
+                .children(mark.map(|(_, mark)| mark))
+                .when_some(
+                    steps.filter(|_| fit.meter || fit.count),
+                    |m, (d, n, label)| {
+                        m.child(
+                            div()
+                                .flex()
+                                .flex_none()
+                                .items_center()
+                                .gap(px(component::META_GAP))
+                                .text_color(p.ink_3)
+                                .style(count_style)
+                                .when(fit.meter, |s| s.child(kit::meter(p, d, n)))
+                                .when(fit.count, |s| s.child(label)),
+                        )
+                    },
+                )
+                .when(fit.mail, |m| {
+                    m.child(kit::icon(Icon::Mail, component::ICON_SMALL, p.ink_3))
+                })
+                .children(
+                    task.tags[..fit.tags.shown]
+                        .iter()
+                        .map(|item| tag(item.label.clone(), theme::list_colors(t, item.hue).ink)),
+                )
+                .when(fit.tags.more > 0, |m| {
+                    m.child(tag(fit::more_label(fit.tags.more).into(), p.ink_3))
+                }),
+        )
     }
 
     fn row(
@@ -3422,23 +3473,7 @@ impl ShellView {
             )
         });
         let meta = Self::meta(p, task, chips, meta_width, mark, window);
-        let (meta, compact_meta) = if meta_width > title_width {
-            // The trailing columns occupy only the title line. Fit metadata under them when
-            // docked detail leaves the room too narrow for the regular layout.
-            (
-                None,
-                Some(
-                    meta.absolute()
-                        .left(px(desktop::LIST_PAD_X
-                            + desktop::COL_CHECK
-                            + desktop::ROW_GAP))
-                        .top(px(desktop::ROW_PAD_TOP + ty::TASK_TITLE.line_height))
-                        .w(px(meta_width)),
-                ),
-            )
-        } else {
-            (Some(meta), None)
-        };
+        let compact_two_line = meta.is_some() && meta_width > title_width;
         let check = match look {
             Some(l) => kit::checkbox_at(
                 p,
@@ -3453,9 +3488,6 @@ impl ShellView {
         let check = div()
             .id(SharedString::from(format!("check-{id}")))
             .flex_none()
-            .mt(px(
-                (desktop::ROW - desktop::COL_CHECK) / 2. - desktop::ROW_PAD_TOP
-            ))
             .child(check)
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
@@ -3473,6 +3505,76 @@ impl ShellView {
             &task.title,
             look.unwrap_or(RowLook::rest(task.done)),
         );
+        let agent_col = show_agent.then(|| {
+            div().w(px(desktop::COL_AGENT)).flex_none().children(
+                task.agent
+                    .map(|a| kit::agent_mark(t, a, component::AGENT_MARK)),
+            )
+        });
+        let priority_col = show_priority.then(|| {
+            div()
+                .id(SharedString::from(format!("priority-{id}")))
+                .w(px(desktop::COL_PRIORITY))
+                .flex_none()
+                .flex()
+                .justify_center()
+                .child(kit::priority(p, task.priority))
+                .when_some(room, |el, room| {
+                    el.on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        if this.row_can_act(room, id)
+                            && !this.modified_task_click(id, click.modifiers(), cx)
+                        {
+                            this.cycle_priority(id, cx);
+                        }
+                    }))
+                })
+        });
+        let due_col = div()
+            .when(full_due, |d| d.w(px(due_width)))
+            .flex_none()
+            .flex()
+            .justify_end()
+            .child(Self::due(p, &task.due));
+        let star_col = {
+            let on = task.priority == 3;
+            div()
+                .id(SharedString::from(format!("important-{id}")))
+                .flex_none()
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(component::ICON_BUTTON))
+                .rounded(px(radius::BUTTON))
+                .child(self.task_glyph(p, id, Icon::Star, on, component::ICON))
+                .when_some(room, |el, room| {
+                    el.cursor_pointer()
+                        .quiet_button(*p)
+                        .role(gpui::Role::Button)
+                        .aria_label(format!("Important: {}", task.title))
+                        .aria_toggled(if on {
+                            gpui::Toggled::True
+                        } else {
+                            gpui::Toggled::False
+                        })
+                        .tooltip(kit::tooltip(
+                            *p,
+                            if on {
+                                "Remove importance"
+                            } else {
+                                "Mark as important"
+                            },
+                        ))
+                        .on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            if this.row_can_act(room, id)
+                                && !this.modified_task_click(id, click.modifiers(), cx)
+                            {
+                                this.toggle_task_glyph(id, Icon::Star, cx);
+                            }
+                        }))
+                })
+        };
         let row = div()
             .id(SharedString::from(format!("task-{id}")))
             .relative()
@@ -3480,14 +3582,36 @@ impl ShellView {
             .h(px(desktop::ROW))
             .flex_none()
             .flex()
-            .items_start()
+            .items_center()
             .gap(px(desktop::ROW_GAP))
-            .pt(px(desktop::ROW_PAD_TOP))
             .px(px(desktop::LIST_PAD_X))
             .border_b_1()
             .border_color(p.line)
-            .child(check)
-            .child(
+            .child(check);
+        let row = if compact_two_line {
+            // The trailing columns occupy only the title line. Fit metadata under them when
+            // docked detail leaves the room too narrow for the regular layout.
+            row.child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .child(
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(desktop::ROW_GAP))
+                            .child(div().flex_1().min_w_0().child(title))
+                            .children(agent_col)
+                            .children(priority_col)
+                            .child(due_col)
+                            .child(star_col),
+                    )
+                    .children(meta),
+            )
+        } else {
+            row.child(
                 div()
                     .flex_1()
                     .min_w_0()
@@ -3496,120 +3620,45 @@ impl ShellView {
                     .child(title)
                     .children(meta),
             )
-            .children(compact_meta)
-            .when(show_agent, |row| {
-                row.child(
-                    div().w(px(desktop::COL_AGENT)).flex_none().children(
-                        task.agent
-                            .map(|a| kit::agent_mark(t, a, component::AGENT_MARK)),
-                    ),
-                )
-            })
-            .when(show_priority, |row| {
-                row.child(
-                    div()
-                        .id(SharedString::from(format!("priority-{id}")))
-                        .w(px(desktop::COL_PRIORITY))
-                        .flex_none()
-                        .flex()
-                        .justify_center()
-                        .child(kit::priority(p, task.priority))
-                        .when_some(room, |el, room| {
-                            el.on_click(cx.listener(
-                                move |this, click: &gpui::ClickEvent, _, cx| {
-                                    cx.stop_propagation();
-                                    if this.row_can_act(room, id)
-                                        && !this.modified_task_click(id, click.modifiers(), cx)
-                                    {
-                                        this.cycle_priority(id, cx);
-                                    }
-                                },
-                            ))
-                        }),
-                )
-            })
-            .child(
-                div()
-                    .when(full_due, |d| d.w(px(due_width)))
-                    .flex_none()
-                    .flex()
-                    .justify_end()
-                    .child(Self::due(p, &task.due)),
-            )
-            .child({
-                let on = task.priority == 3;
-                div()
-                    .id(SharedString::from(format!("important-{id}")))
-                    .flex_none()
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(component::ICON_BUTTON))
-                    .mt(px((component::CHIP - component::ICON_BUTTON) / 2.))
-                    .rounded(px(radius::BUTTON))
-                    .child(self.task_glyph(p, id, Icon::Star, on, component::ICON))
-                    .when_some(room, |el, room| {
-                        el.cursor_pointer()
-                            .quiet_button(*p)
-                            .role(gpui::Role::Button)
-                            .aria_label(format!("Important: {}", task.title))
-                            .aria_toggled(if on {
-                                gpui::Toggled::True
-                            } else {
-                                gpui::Toggled::False
-                            })
-                            .tooltip(kit::tooltip(
-                                *p,
-                                if on {
-                                    "Remove importance"
-                                } else {
-                                    "Mark as important"
-                                },
-                            ))
-                            .on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                if this.row_can_act(room, id)
-                                    && !this.modified_task_click(id, click.modifiers(), cx)
-                                {
-                                    this.toggle_task_glyph(id, Icon::Star, cx);
-                                }
-                            }))
-                    })
-            })
-            .when_some(room, |el, room| {
-                el.on_click(
-                    cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
-                        if this.row_can_act(room, id) {
-                            window.focus(&this.list_focus, cx);
-                            if !this.modified_task_click(id, event.modifiers(), cx) {
-                                this.select_task(Some(id), cx);
-                                if this.ui.compact && event.click_count() >= 2 {
-                                    this.show_task_in_main(id, cx);
-                                }
+            .children(agent_col)
+            .children(priority_col)
+            .child(due_col)
+            .child(star_col)
+        };
+        let row = row.when_some(room, |el, room| {
+            el.on_click(
+                cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {
+                    if this.row_can_act(room, id) {
+                        window.focus(&this.list_focus, cx);
+                        if !this.modified_task_click(id, event.modifiers(), cx) {
+                            this.select_task(Some(id), cx);
+                            if this.ui.compact && event.click_count() >= 2 {
+                                this.show_task_in_main(id, cx);
                             }
                         }
-                    }),
-                )
-                // Right-click: the task's context menu, at the pointer. The row isn't selected.
-                .on_mouse_down(
-                    MouseButton::Right,
-                    cx.listener(move |this, e: &MouseDownEvent, window, cx| {
-                        if this.row_can_act(room, id) && this.multi.cursor().is_none() {
-                            cx.stop_propagation();
-                            let kind = MenuKind::Task {
-                                id,
-                                page: TaskPage::Main,
-                            };
-                            this.open_menu(kind, Some(e.position), None, window, cx);
-                        }
-                    }),
-                )
-                .when(!self.ui.compact || self.manual_list().is_some(), |el| {
-                    el.child(self.drag_handle(id, room, task.title.clone(), cx))
-                })
-                // Where it is, so a menu opened from the keyboard can hang under it.
-                .child(self.row_bounds_probe(id))
-            });
+                    }
+                }),
+            )
+            // Right-click: the task's context menu, at the pointer. The row isn't selected.
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |this, e: &MouseDownEvent, window, cx| {
+                    if this.row_can_act(room, id) && this.multi.cursor().is_none() {
+                        cx.stop_propagation();
+                        let kind = MenuKind::Task {
+                            id,
+                            page: TaskPage::Main,
+                        };
+                        this.open_menu(kind, Some(e.position), None, window, cx);
+                    }
+                }),
+            )
+            .when(!self.ui.compact || self.manual_list().is_some(), |el| {
+                el.child(self.drag_handle(id, room, task.title.clone(), cx))
+            })
+            // Where it is, so a menu opened from the keyboard can hang under it.
+            .child(self.row_bounds_probe(id))
+        });
         // The row a context menu is open on keeps the hover look while the menu is up.
         let menu_target = self
             .menu
@@ -4057,7 +4106,7 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &Escape, window, cx| {
-                        if this.cancel_task_drag(cx) {
+                        if this.cancel_task_drag(cx) || this.cancel_step_drag(cx) {
                             return;
                         }
                         if this.multi.cursor().is_some() {
@@ -5049,11 +5098,13 @@ impl Render for ShellView {
         self.drive_ai_flash(window);
         self.drive_email_drop(window, cx);
         self.drive_task_drag(window);
+        self.drive_step_drag(window);
         self.drive_sidebar_drag(window, cx);
         self.drive_board(window);
         self.drive_timeline(window);
         self.board.clear_geometry();
         self.row_bounds.borrow_mut().clear();
+        self.step_bounds.borrow_mut().clear();
         self.task_toggles
             .retain(|_, a| self.frame.saturating_sub(a.start) < a.span);
         if !self.task_toggles.is_empty() {
@@ -5252,11 +5303,13 @@ impl Render for ShellView {
             .child(self.press_counter(cx))
             .child(self.history_mouse(cx))
             .child(self.drag_events(cx))
+            .child(self.step_drag_events(cx))
             .child(self.sidebar_drag_events(cx))
             .child(self.board_capture(cx))
             .child(self.timeline_capture(cx))
             .children(self.timeline_preview(window))
             .children(self.drag_preview(window))
+            .children(self.step_drag_preview(window))
             .children(self.sidebar_lift(window))
             .children(self.board_preview(window, cx))
             .children(self.confirmation_scrim())

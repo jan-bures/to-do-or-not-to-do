@@ -344,7 +344,7 @@ impl ShellView {
         cx.notify();
     }
 
-    fn step_command(&mut self, cmd: Option<todo_core::Command>, cx: &mut Context<Self>) {
+    pub(super) fn step_command(&mut self, cmd: Option<todo_core::Command>, cx: &mut Context<Self>) {
         if let Some(cmd) = cmd {
             self.submit(vec![cmd]);
         }
@@ -560,8 +560,10 @@ impl ShellView {
     fn step_row(
         &self,
         i: usize,
+        task: TaskId,
         s: &model::StepRow,
         measure: gpui::Pixels,
+        can_reorder: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let p = self.palette;
@@ -574,6 +576,7 @@ impl ShellView {
         let group: SharedString = format!("step-{id}").into();
         let editor = self.inline_for(InlineTarget::Step(id));
         let editing = editor.is_some();
+        let dragging = self.step_drag_active();
         let title = match editor {
             Some(input) => div()
                 .flex_1()
@@ -602,33 +605,37 @@ impl ShellView {
                 .into_any_element()
             }
         };
-        let control = |key: &'static str, icon: Icon| {
-            div()
-                .id((key, i))
-                .size(px(STEP_CONTROL))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(radius::SM))
-                .quiet_button(p)
-                .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
-        };
+        let delete = div()
+            .id(("step-delete", i))
+            .size(px(STEP_CONTROL))
+            .flex()
+            .items_center()
+            .justify_center()
+            .rounded(px(radius::SM))
+            .quiet_button(p)
+            .tooltip(kit::tooltip(p, "Delete step"))
+            .child(kit::icon(Icon::TrashTwo, component::ICON_SMALL, p.ink_3))
+            .on_click(cx.listener(move |this, _, _, cx| {
+                this.step_command(Some(commands::delete(id)), cx);
+            }));
         div()
             .group(group.clone())
             .relative()
             .min_h(px(desktop::STEP_ROW))
             .py(px(space::S1))
             .flex()
-            .items_start()
+            .items_center()
             .gap(px(space::S3))
             .px(px(desktop::DETAIL_PAD_X))
             .border_b_1()
             .border_color(p.line)
+            .when(self.step_lifted(id), |row| {
+                row.opacity(1. - elevation::DROP_WASH_ALPHA)
+            })
             .child(
                 div()
                     .id(("step-check", i))
                     .flex_none()
-                    .h(px(ty::STEP.line_height))
                     .flex()
                     .items_center()
                     .child(mark)
@@ -642,45 +649,41 @@ impl ShellView {
                 div()
                     .ml_auto()
                     .flex_none()
-                    .h(px(ty::STEP.line_height))
-                    .flex()
-                    .items_center()
                     .style(ty::COUNT)
                     .text_color(p.ink_4)
                     .child(format!("{:02}", i + 1)),
             )
-            .when(!editing, |row| {
+            .when(can_reorder && !editing, |row| {
+                row.child(self.step_drag_handle(id, task, s.title.clone(), cx))
+            })
+            .child(self.step_bounds_probe(id))
+            .when(!editing && !dragging, |row| {
                 row.child(
-                    // Move and delete show over the step number on hover.
+                    // Delete shows over the step number on hover.
                     div()
                         .absolute()
                         .right(px(desktop::DETAIL_PAD_X - space::S1))
                         .top_0()
-                        .h(px(ty::STEP.line_height + 2. * space::S1))
+                        .bottom_0()
                         .flex()
                         .items_center()
                         .bg(p.pane)
                         .opacity(0.)
                         .group_hover(group, |s| s.opacity(1.))
-                        .child(control("step-up", Icon::ChevronUp).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                let cmd = commands::nudge(&this.store.view(), id.into(), -1);
-                                this.step_command(cmd, cx);
-                            },
-                        )))
-                        .child(
-                            control("step-down", Icon::ChevronDown).on_click(cx.listener(
-                                move |this, _, _, cx| {
-                                    let cmd = commands::nudge(&this.store.view(), id.into(), 1);
-                                    this.step_command(cmd, cx);
-                                },
-                            )),
-                        )
-                        .child(control("step-delete", Icon::TrashTwo).on_click(cx.listener(
-                            move |this, _, _, cx| {
-                                this.step_command(Some(commands::delete(id)), cx);
-                            },
-                        ))),
+                        .child(delete),
+                )
+            })
+            .when_some(self.step_drag_slot(id), |row, after| {
+                row.child(
+                    div()
+                        .absolute()
+                        .left(px(desktop::DETAIL_PAD_X))
+                        .right(px(desktop::DETAIL_PAD_X))
+                        .when(after, |line| line.bottom_0())
+                        .when(!after, |line| line.top_0())
+                        .h(px(elevation::SELECTION_BAR))
+                        .rounded(px(radius::BUTTON))
+                        .bg(p.accent_strong),
                 )
             })
     }
@@ -913,18 +916,19 @@ impl ShellView {
             .child(kit::kbd(&p, if link_focused { "Enter" } else { "L" }))
             .when(live, |d| d.child(self.probe("link-field")));
         let step_measure = prose_width(window, ty::STEP);
-        // Keep the progress and step actions near the text on wide panes, leaving room for them
+        // Keep the progress and step action near the text on wide panes, leaving room for them
         // beyond the longest title line. This group uses the same left inset as Notes and Fields.
         let steps_width = step_measure
-            + px(2. * desktop::DETAIL_PAD_X
-                + component::GLYPH
-                + 2. * space::S3
-                + 3. * STEP_CONTROL);
+            + px(2. * desktop::DETAIL_PAD_X + component::GLYPH + 2. * space::S3 + STEP_CONTROL);
+        let can_reorder = live && d.steps.len() > 1;
         let steps: Vec<AnyElement> = d
             .steps
             .iter()
             .enumerate()
-            .map(|(i, s)| self.step_row(i, s, step_measure, cx).into_any_element())
+            .map(|(i, s)| {
+                self.step_row(i, task, s, step_measure, can_reorder, cx)
+                    .into_any_element()
+            })
             .collect();
         let fields: Vec<_> = d
             .fields
@@ -1187,12 +1191,12 @@ impl ShellView {
                             .child(
                                 div()
                                     .flex()
-                                    .items_start()
+                                    .items_center()
                                     .gap(px(space::S3))
                                     .child(
                                         div()
                                             .id("detail-check")
-                                            .pt(px(space::S1))
+                                            .flex_none()
                                             .child(if d.done {
                                                 kit::checked(&p, false, component::CHECKBOX + 2.)
                                             } else {
@@ -1262,27 +1266,20 @@ impl ShellView {
                                     .min_h(px(desktop::STEP_ROW))
                                     .py(px(space::S1))
                                     .flex()
-                                    .items_start()
+                                    .items_center()
                                     .gap(px(space::S3))
                                     .px(px(desktop::DETAIL_PAD_X))
                                     .style(ty::STEP)
                                     .text_color(p.ink_3)
-                                    .child(
-                                        div()
-                                            .flex_none()
-                                            .h(px(ty::STEP.line_height))
-                                            .flex()
-                                            .items_center()
-                                            .child(kit::icon(
-                                                Icon::Plus,
-                                                component::GLYPH,
-                                                if step_focused {
-                                                    p.accent_strong
-                                                } else {
-                                                    p.ink_3
-                                                },
-                                            )),
-                                    )
+                                    .child(kit::icon(
+                                        Icon::Plus,
+                                        component::GLYPH,
+                                        if step_focused {
+                                            p.accent_strong
+                                        } else {
+                                            p.ink_3
+                                        },
+                                    ))
                                     .child(
                                         div()
                                             .flex_1()
@@ -1292,13 +1289,7 @@ impl ShellView {
                                             .when(!live, |el| el.child("Add a step")),
                                     )
                                     .child(
-                                        div()
-                                            .ml_auto()
-                                            .flex_none()
-                                            .h(px(ty::STEP.line_height))
-                                            .flex()
-                                            .items_center()
-                                            .child(kit::kbd(&p, "Enter")),
+                                        div().ml_auto().flex_none().child(kit::kbd(&p, "Enter")),
                                     ),
                             ),
                     )

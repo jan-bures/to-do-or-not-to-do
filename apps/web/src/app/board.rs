@@ -846,23 +846,25 @@ fn Card(id: TaskId, stage: QueryStatus) -> impl IntoView {
             <div class="board-card" class:done=move || done || phase.get().is_some() class:completing=move || phase.get() == Some(Phase::Hold)
                 class:overdue=overdue class:selected=move || c.row_selected(id)
                 class:bulk-selected=move || c.multi.with(|s| s.contains(id))>
-                <div class="board-card-head">
-                    <button type="button" class="check" role="checkbox" aria-checked=move || (done || phase.get().is_some()).to_string()
-                        aria-label=move || format!("{} “{}”", if done { "Reopen" } else { "Complete" }, title.get())
-                        disabled=move || c.read_only() || phase.get().is_some()
-                        on:click=move |ev| { ev.stop_propagation(); if !c.modified_task_click(id, &ev) { toggle(); } }>{tick_svg()}</button>
-                    <button type="button" class="board-title" id=format!("row-{id}") title=move || title.get()
-                        aria-current=move || (c.selected.get() == Some(id)).then_some("true")
-                        aria-pressed=move || c.multi_active().then(|| c.multi.with(|s| s.contains(id).to_string()))
-                        on:focus=move |_| aim(c, id)>{move || title.get()}</button>
-                    <button type="button" class="icon-button task-toggle important-toggle board-important"
-                        aria-label=move || format!("Important: {}", title.get()) aria-pressed=move || important().to_string()
-                        disabled=move || c.read_only() || phase.get().is_some()
-                        on:click=move |ev| { ev.stop_propagation(); if !c.modified_task_click(id, &ev) { c.submit_intent(|s| todo_client::intent::toggle_important(s, id)); } }>
-                        {toggle_icon(Icon::Star, Icon::StarFilled)}
-                    </button>
+                <button type="button" class="check" role="checkbox" aria-checked=move || (done || phase.get().is_some()).to_string()
+                    aria-label=move || format!("{} “{}”", if done { "Reopen" } else { "Complete" }, title.get())
+                    disabled=move || c.read_only() || phase.get().is_some()
+                    on:click=move |ev| { ev.stop_propagation(); if !c.modified_task_click(id, &ev) { toggle(); } }>{tick_svg()}</button>
+                <div class="board-card-body">
+                    <div class="board-card-head">
+                        <button type="button" class="board-title" id=format!("row-{id}") title=move || title.get()
+                            aria-current=move || (c.selected.get() == Some(id)).then_some("true")
+                            aria-pressed=move || c.multi_active().then(|| c.multi.with(|s| s.contains(id).to_string()))
+                            on:focus=move |_| aim(c, id)>{move || title.get()}</button>
+                        <button type="button" class="icon-button task-toggle important-toggle board-important"
+                            aria-label=move || format!("Important: {}", title.get()) aria-pressed=move || important().to_string()
+                            disabled=move || c.read_only() || phase.get().is_some()
+                            on:click=move |ev| { ev.stop_propagation(); if !c.modified_task_click(id, &ev) { c.submit_intent(|s| todo_client::intent::toggle_important(s, id)); } }>
+                            {toggle_icon(Icon::Star, Icon::StarFilled)}
+                        </button>
+                    </div>
+                    {move || row.get().map(|r| metadata(r, completed.get()))}
                 </div>
-                {move || row.get().map(|r| metadata(r, completed.get()))}
                 <span class="board-grip" title="Drag card" aria-hidden="true">{icon(Icon::GripVertical)}</span>
             </div>
         </article>
@@ -936,8 +938,11 @@ fn Lift() -> impl IntoView {
     view! {
         <div class="board-card board-lift" node_ref=node aria-hidden="true" hidden=move || !c.board_ui.dragging()>
             {move || row.get().map(|r| view! {
-                <div class="board-card-head"><span class="check">{tick_svg()}</span><span class="board-title">{r.title.clone()}</span></div>
-                {let completed = r.done.then(|| completed_label(c, r.id)).flatten(); metadata(r, completed)}
+                <span class="check">{tick_svg()}</span>
+                <div class="board-card-body">
+                    <div class="board-card-head"><span class="board-title">{r.title.clone()}</span></div>
+                    {let completed = r.done.then(|| completed_label(c, r.id)).flatten(); metadata(r, completed)}
+                </div>
             })}
         </div>
     }

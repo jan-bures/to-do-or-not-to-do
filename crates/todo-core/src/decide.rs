@@ -1112,6 +1112,33 @@ impl<'a> Decider<'a> {
                         (*id).into(),
                         vec![FieldChange::CompletedAt(Change::new(s.completed_at, new))],
                     );
+                    if done
+                        && let Some(t) = self.state.tasks.get(&s.task)
+                        && self.state.is_live(t.id.into())
+                        && !t.is_done()
+                        && t.status != WorkflowStatus::InProgress
+                        && self
+                            .state
+                            .lists
+                            .get(&t.list)
+                            .is_some_and(|l| l.features.workflow)
+                    {
+                        let live_steps = self
+                            .state
+                            .steps
+                            .values()
+                            .filter(|step| step.task == t.id && self.state.is_live(step.id.into()))
+                            .count();
+                        if live_steps >= 2 {
+                            self.update_task(
+                                t,
+                                vec![FieldChange::Status(Change::new(
+                                    t.status,
+                                    WorkflowStatus::InProgress,
+                                ))],
+                            );
+                        }
+                    }
                 }
             }
             C::CreateTag {

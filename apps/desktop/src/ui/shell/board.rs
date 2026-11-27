@@ -1114,32 +1114,10 @@ impl ShellView {
             .text_color(super::theme::mix(p.ink, p.ink_3, look.strike))
             .when(look.strike > 0., |d| d.line_through())
             .child(row.title.clone());
-        let layout = div()
+        let head = div()
             .flex()
             .items_start()
             .gap(px(space::S2))
-            .child(
-                div()
-                    .id("card-check")
-                    .flex_none()
-                    .child(check)
-                    .when(stage.is_some(), |d| {
-                        d.cursor_pointer()
-                            .role(Role::Button)
-                            .aria_label(if row.done {
-                                "Reopen task"
-                            } else {
-                                "Complete task"
-                            })
-                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
-                                cx.stop_propagation();
-                                if !this.modified_task_click(id, e.modifiers(), cx) {
-                                    this.toggle_complete(id, cx);
-                                }
-                            }))
-                    }),
-            )
             .child(text)
             .when(!row.done && (star || stage.is_some()), |d| {
                 d.child(
@@ -1172,6 +1150,43 @@ impl ShellView {
                 )
             });
         let meta = self.board_metadata(row, &p, width, window);
+        let content = div()
+            .flex()
+            .items_center()
+            .gap(px(space::S2))
+            .opacity(if placeholder { 0. } else { 1. })
+            .child(
+                div()
+                    .id("card-check")
+                    .flex_none()
+                    .child(check)
+                    .when(stage.is_some(), |d| {
+                        d.cursor_pointer()
+                            .role(Role::Button)
+                            .aria_label(if row.done {
+                                "Reopen task"
+                            } else {
+                                "Complete task"
+                            })
+                            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                            .on_click(cx.listener(move |this, e: &ClickEvent, _, cx| {
+                                cx.stop_propagation();
+                                if !this.modified_task_click(id, e.modifiers(), cx) {
+                                    this.toggle_complete(id, cx);
+                                }
+                            }))
+                    }),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .flex()
+                    .flex_col()
+                    .gap(px(board::CARD_GAP))
+                    .child(head)
+                    .children(meta),
+            );
         let mut card = div()
             .id(SharedString::from(format!("card-{id}")))
             .group("board-card")
@@ -1179,7 +1194,6 @@ impl ShellView {
             .flex_none()
             .flex()
             .flex_col()
-            .gap(px(board::CARD_GAP))
             .p(px(board::CARD_PAD))
             .bg(if selected || placeholder {
                 p.wash
@@ -1196,8 +1210,7 @@ impl ShellView {
                 p.line
             })
             .when(lifted, |d| d.shadow(kit::overlay_shadow(&p)))
-            .child(layout.opacity(if placeholder { 0. } else { 1. }))
-            .children(meta.map(|m| m.opacity(if placeholder { 0. } else { 1. })))
+            .child(content)
             .when((selected || bulk) && !placeholder, |d| {
                 d.child(kit::leading_rail(p.accent_strong, elevation::SELECTION_BAR))
             });
@@ -1358,7 +1371,6 @@ impl ShellView {
             || row.agent.is_some();
         has_fields.then(|| {
             div()
-                .pl(px(indent))
                 .flex()
                 .items_center()
                 .gap(px(space::S1))

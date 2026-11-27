@@ -553,13 +553,20 @@ test("step titles can be renamed, reordered and restored after deletion", async 
   await input.fill("Check the first draft");
   await input.press("Enter");
   await expect(title).toHaveText("Check the first draft");
-  await expect(steps.first().getByRole("button", { name: "Move step 1 up" })).toBeDisabled();
-  await steps.first().getByRole("button", { name: "Move step 1 down" }).click();
+  // Dragging the step grip reorders steps (no up/down buttons).
+  const grip = steps.first().locator(".step-drag-grip");
+  const gripBox = await grip.boundingBox();
+  const secondBox = await steps.nth(1).boundingBox();
+  await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(secondBox.x + secondBox.width / 2, secondBox.y + secondBox.height - 2, { steps: 6 });
+  await page.mouse.up();
   await expect(steps.nth(1).locator(".step-title")).toHaveText("Check the first draft");
-  await expect(steps.nth(1).getByRole("button", { name: "Move step 2 down" })).toBeFocused();
-  await steps.nth(1).getByRole("button", { name: "Move step 2 up" }).click();
+  // Keyboard Alt+ArrowUp moves it back.
+  await steps.nth(1).locator(".step-title").focus();
+  await page.keyboard.press("Alt+ArrowUp");
   await expect(title).toHaveText("Check the first draft");
-  await expect(steps.first().getByRole("button", { name: "Move step 1 up" })).toBeFocused();
+  await expect(title).toBeFocused();
   const remove = steps.first().getByRole("button", { name: "Delete step 1" });
   await remove.click();
   await expect(steps).toHaveCount(4);

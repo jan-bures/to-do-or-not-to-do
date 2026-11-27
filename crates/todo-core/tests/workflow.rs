@@ -319,3 +319,65 @@ fn status_and_start_queries_use_effective_stages_and_order() {
     }
     assert!(Query::parse("status>=todo").is_err());
 }
+
+#[test]
+fn completing_a_step_moves_a_multi_step_task_to_in_progress_on_board_lists() {
+    let mut w = World::new();
+    let board = w.list(None, "Sprint");
+    w.run(Command::UpdateList {
+        id: board,
+        name: None,
+        color: None,
+        features: Some(ListFeaturesPatch {
+            workflow: Some(true),
+            ..ListFeaturesPatch::default()
+        }),
+    });
+    let add_step = |w: &mut World, task, title: &str| {
+        let id = w.ids.step();
+        w.run(Command::CreateStep {
+            id,
+            task,
+            title: title.into(),
+            placement: Placement::Last,
+        });
+        id
+    };
+    let multi = w.task(board, "Ship feature");
+    let s1 = add_step(&mut w, multi, "First");
+    let _s2 = add_step(&mut w, multi, "Second");
+    assert_eq!(w.state.tasks[&multi].status, WorkflowStatus::Todo);
+
+    let events = w.run(Command::CompleteStep { id: s1 });
+    assert!(w.state.steps[&s1].completed_at.is_some());
+    assert_eq!(w.state.tasks[&multi].status, WorkflowStatus::InProgress);
+
+    // Undoing restores both the step and the original status.
+    w.undo_group(&events).unwrap();
+    assert!(w.state.steps[&s1].completed_at.is_none());
+    assert_eq!(w.state.tasks[&multi].status, WorkflowStatus::Todo);
+
+    // Backlog tasks move to InProgress too.
+    let backlog = w.ids.task();
+    let mut b = NewTask::new(backlog, board, "Backlog item");
+    b.status = WorkflowStatus::Backlog;
+    w.run(Command::CreateTask(Box::new(b)));
+    let b1 = add_step(&mut w, backlog, "One");
+    let _b2 = add_step(&mut w, backlog, "Two");
+    w.run(Command::CompleteStep { id: b1 });
+    assert_eq!(w.state.tasks[&backlog].status, WorkflowStatus::InProgress);
+
+    // A single-step task on a board list stays Todo.
+    let single = w.task(board, "Single step");
+    let only = add_step(&mut w, single, "Only");
+    w.run(Command::CompleteStep { id: only });
+    assert_eq!(w.state.tasks[&single].status, WorkflowStatus::Todo);
+
+    // A multi-step task on a list without a board stays Todo.
+    let plain = w.list(None, "Plain");
+    let plain_task = w.task(plain, "Plain multi");
+    let p1 = add_step(&mut w, plain_task, "A");
+    let _p2 = add_step(&mut w, plain_task, "B");
+    w.run(Command::CompleteStep { id: p1 });
+    assert_eq!(w.state.tasks[&plain_task].status, WorkflowStatus::Todo);
+}

@@ -93,7 +93,7 @@ impl EditKind {
             // Undoing it withdraws the link: Ctrl+Z right after adding one takes that one back.
             Command::AddLink { id, .. } => (id.into(), Self::AddLink),
             Command::Reorder {
-                id: id @ EntityId::Task(_),
+                id: id @ (EntityId::Task(_) | EntityId::Step(_)),
                 ..
             } => (id, Self::Move),
             _ => return None,
@@ -204,6 +204,11 @@ impl EditKind {
                 .get(&id)
                 .zip(after.tasks.get(&id))
                 .is_some_and(|(old, new)| old.list != new.list || old.position != new.position),
+            (Self::Move, EntityId::Step(id)) => before
+                .steps
+                .get(&id)
+                .zip(after.steps.get(&id))
+                .is_some_and(|(old, new)| old.position != new.position),
             (Self::ReorderRoom, EntityId::Collection(id)) => before
                 .collections
                 .get(&id)
@@ -868,10 +873,16 @@ impl ShellView {
                     div()
                         .absolute()
                         .bottom_0()
-                        .left_0()
-                        .w(gpui::relative(look.left))
+                        .left(px(radius::TOAST))
+                        .right(px(radius::TOAST))
                         .h(px(desktop::TOAST_COUNTDOWN))
-                        .bg(p.toast_ink_2),
+                        .child(
+                            div()
+                                .w(gpui::relative(look.left))
+                                .h_full()
+                                .rounded_full()
+                                .bg(p.toast_ink_2),
+                        ),
                 ),
         )
     }

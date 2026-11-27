@@ -21,6 +21,7 @@ mod reminder_alerts;
 mod repeat;
 mod room_actions;
 mod sidebar_drag;
+mod step_drag;
 mod tags;
 mod task_actions;
 mod task_drag;
@@ -148,6 +149,7 @@ pub struct Ctx {
     device_settings_open: RwSignal<bool>,
     task_actions: task_actions::Controls,
     task_drag: RwSignal<Option<task_drag::Gesture>>,
+    step_drag: RwSignal<Option<step_drag::Gesture>>,
     sidebar_drag: RwSignal<Option<sidebar_drag::Gesture>>,
     sidebar_click_blocked: RwSignal<bool>,
     board_ui: board::Ui,
@@ -416,6 +418,7 @@ impl Ctx {
 
     fn reset_room_controls(self) {
         self.cancel_task_drag();
+        self.cancel_step_drag();
         self.cancel_sidebar_drag();
         self.board_ui.reset_view();
         self.timeline_ui.reset();
@@ -781,6 +784,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         device_settings_open: RwSignal::new(false),
         task_actions: task_actions::Controls::new(),
         task_drag: RwSignal::new(None),
+        step_drag: RwSignal::new(None),
         sidebar_drag: RwSignal::new(None),
         sidebar_click_blocked: RwSignal::new(false),
         board_ui: board::Ui::new(),
@@ -865,6 +869,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
     let _keys = window_event_listener(leptos::ev::keydown, move |ev| on_key(c, &ev));
     let _drag_blur = window_event_listener(leptos::ev::blur, move |_| {
         c.cancel_task_drag();
+        c.cancel_step_drag();
         c.cancel_sidebar_drag();
         c.timeline_ui.cancel();
     });
@@ -1014,6 +1019,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         <task_actions::Overlays/>
         <workflow::StatusPopover/>
         <task_drag::Lift/>
+        <step_drag::Lift/>
         <sidebar_drag::Lift/>
         <bulk::DueDialog/>
         <assistant::Settings/>
@@ -1114,10 +1120,15 @@ fn on_key(c: Ctx, ev: &leptos::ev::KeyboardEvent) {
         return;
     }
     if untrack(|| {
-        c.sidebar_active() || c.drag_active() || c.board_ui.dragging() || c.timeline_ui.dragging()
+        c.sidebar_active()
+            || c.drag_active()
+            || c.step_drag_active()
+            || c.board_ui.dragging()
+            || c.timeline_ui.dragging()
     }) {
         if key == "escape" {
             c.cancel_task_drag();
+            c.cancel_step_drag();
             c.board_ui.cancel();
             c.timeline_ui.cancel();
             ev.prevent_default();
@@ -2257,9 +2268,16 @@ fn RoomPane() -> impl IntoView {
 }
 
 #[component]
-fn HeaderCollapseToggle() -> impl IntoView {
+fn HeaderCollapseToggle(#[prop(default = true)] for_expanded: bool) -> impl IntoView {
     let c = ctx();
     let collapsed = move || c.header_collapsed.get();
+    let active = move || {
+        if for_expanded {
+            !collapsed()
+        } else {
+            collapsed()
+        }
+    };
     let label = move || {
         if collapsed() {
             "Expand header"
@@ -2270,7 +2288,7 @@ fn HeaderCollapseToggle() -> impl IntoView {
     view! {
         <button
             type="button"
-            id="header-toggle"
+            id=move || active().then_some("header-toggle")
             class="icon-button header-toggle"
             aria-label=label
             title=label
@@ -2406,25 +2424,60 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
         (total > 0).then(|| Landscape::progress(done, total))
     });
     let views = move || c.room_features.with(|f| f.workflow || f.timeline);
+    let collapsed = move || c.header_collapsed.get();
     view! {
-        <header class="room-head" class:collapsed=move || c.header_collapsed.get()>
-            <div class="head-text">
-                <div class="eyebrow" class:has-views=views>
-                    <EyebrowLine/>
-                    <div class="eyebrow-actions">
-                        <Show when=views>
-                            <workflow::Switcher/><room_actions::RoomMenuButton/>
-                        </Show>
-                        <HeaderCollapseToggle/>
+        <header class="room-head" class:collapsed=collapsed>
+            <div class="room-head-expanded" aria-hidden=move || collapsed().to_string() inert=collapsed>
+                <div class="room-head-expanded-inner">
+                    <div class="head-text">
+                        <div class="eyebrow" class:has-views=views>
+                            <EyebrowLine/>
+                            <div class="eyebrow-actions">
+                                <Show when=views>
+                                    <workflow::Switcher/><room_actions::RoomMenuButton/>
+                                </Show>
+                                <HeaderCollapseToggle/>
+                            </div>
+                        </div>
+                        <div class="title-row">
+                            <div class="room-title-group">
+                                <h1
+                                    id=move || (!collapsed()).then_some("room-title")
+                                    class="room-head-expanded-title"
+                                    class:room-title=move || !collapsed()
+                                    tabindex="-1"
+                                >{move || c.view_room.with(|r| r.title.clone())}</h1>
+                                <Show when=move || !views()><room_actions::RoomMenuButton/></Show>
+                            </div>
+                            <RoomSummary/>
+                        </div>
                     </div>
-                </div>
-                <div class="title-row">
-                    <div class="room-title-group"><RoomTitle/><Show when=move || !views()><room_actions::RoomMenuButton/></Show></div>
-                    <RoomSummary/>
+                    <LandscapeStrip counts=counts width=width/>
                 </div>
             </div>
-            <LandscapeStrip counts=counts width=width/>
-            <CompactProgressBar progress=progress/>
+            <div class="room-head-compact" aria-hidden=move || (!collapsed()).to_string() inert=move || !collapsed()>
+                <div class="room-head-compact-inner">
+                    <div class="room-head-compact-bar">
+                        <div class="room-title-group">
+                            <h1
+                                id=move || collapsed().then_some("room-title")
+                                class="room-head-compact-title"
+                                class:room-title=collapsed
+                                tabindex="-1"
+                            >{move || c.view_room.with(|r| r.title.clone())}</h1>
+                            <Show when=move || !views()><room_actions::RoomMenuButton/></Show>
+                        </div>
+                        <RoomSummary class="compact-bar-summary"/>
+                        <div class="eyebrow-actions">
+                            <Show when=views>
+                                <workflow::Switcher/><room_actions::RoomMenuButton/>
+                            </Show>
+                            <HeaderCollapseToggle for_expanded=false/>
+                        </div>
+                        <CompactProgressBar progress=progress/>
+                    </div>
+                </div>
+            </div>
         </header>
     }
 }
@@ -2445,12 +2498,6 @@ fn EyebrowLine() -> impl IntoView {
             {details.into_iter().map(|m| view! { <span class="eyebrow-meta">{m}</span> }).collect_view()}
         }
     }
-}
-
-#[component]
-fn RoomTitle() -> impl IntoView {
-    let c = ctx();
-    view! { <h1 id="room-title" class="room-title" tabindex="-1">{move || c.view_room.with(|r| r.title.clone())}</h1> }
 }
 
 /// The slim landscape, measured to its width. The sun eases along the arc when the count changes.
@@ -2955,37 +3002,72 @@ fn ToastView(#[prop(optional)] in_drawer: bool) -> impl IntoView {
 fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
     let progress = Signal::derive(|| Some(1.0_f32));
+    let collapsed = move || c.header_collapsed.get();
+    let summary = move |class: &'static str| {
+        view! {
+            <p class=class>
+                {move || c.view_room.with(|r| format!("{} of {} done", r.header.progress_done, r.header.progress_total))}
+                <span class="dot-sep">"·"</span>
+                <span class="finished-clear fig">"all clear"</span>
+            </p>
+        }
+    };
     view! {
-        <header class="room-head finished" class:collapsed=move || c.header_collapsed.get() data-theme="dark" data-room-hue="my-day">
-            <div class="head-text">
-                <div class="eyebrow">
-                    <EyebrowLine/>
-                    <div class="eyebrow-actions">
-                        <HeaderCollapseToggle/>
+        <header class="room-head finished" class:collapsed=collapsed data-theme="dark" data-room-hue="my-day">
+            <div class="room-head-expanded" aria-hidden=move || collapsed().to_string() inert=collapsed>
+                <div class="room-head-expanded-inner">
+                    <div class="head-text">
+                        <div class="eyebrow">
+                            <EyebrowLine/>
+                            <div class="eyebrow-actions">
+                                <HeaderCollapseToggle/>
+                            </div>
+                        </div>
+                        <div class="title-row">
+                            <div class="room-title-group">
+                                <h1
+                                    id=move || (!collapsed()).then_some("room-title")
+                                    class="room-head-expanded-title"
+                                    class:room-title=move || !collapsed()
+                                    tabindex="-1"
+                                >{move || c.view_room.with(|r| r.title.clone())}</h1>
+                            </div>
+                            {summary("summary")}
+                        </div>
                     </div>
-                </div>
-                <div class="title-row">
-                    <div class="room-title-group"><RoomTitle/></div>
-                    <p class="summary">
-                        {move || c.view_room.with(|r| format!("{} of {} done", r.header.progress_done, r.header.progress_total))}
-                        <span class="dot-sep">"·"</span>
-                        <span class="finished-clear fig">"all clear"</span>
-                    </p>
+                    <div
+                        class="landscape tall"
+                        inner_html=move || {
+                            let w = width.get();
+                            #[allow(clippy::cast_possible_truncation)]
+                            if w > 0.0 {
+                                landscape::svg(w as f32, Sky::Finished, 1.0, 1)
+                            } else {
+                                String::new()
+                            }
+                        }
+                    ></div>
                 </div>
             </div>
-            <div
-                class="landscape tall"
-                inner_html=move || {
-                    let w = width.get();
-                    #[allow(clippy::cast_possible_truncation)]
-                    if w > 0.0 {
-                        landscape::svg(w as f32, Sky::Finished, 1.0, 1)
-                    } else {
-                        String::new()
-                    }
-                }
-            ></div>
-            <CompactProgressBar progress=progress/>
+            <div class="room-head-compact" aria-hidden=move || (!collapsed()).to_string() inert=move || !collapsed()>
+                <div class="room-head-compact-inner">
+                    <div class="room-head-compact-bar">
+                        <div class="room-title-group">
+                            <h1
+                                id=move || collapsed().then_some("room-title")
+                                class="room-head-compact-title"
+                                class:room-title=collapsed
+                                tabindex="-1"
+                            >{move || c.view_room.with(|r| r.title.clone())}</h1>
+                        </div>
+                        {summary("compact-bar-summary")}
+                        <div class="eyebrow-actions">
+                            <HeaderCollapseToggle for_expanded=false/>
+                        </div>
+                        <CompactProgressBar progress=progress/>
+                    </div>
+                </div>
+            </div>
         </header>
     }
 }
@@ -3189,7 +3271,7 @@ fn DetailBody(
             {move || d.get().map(|d| view! { <p class="stamps">{d.stamps.clone()}</p> })}
 
             <section class="d-section steps-section">
-                <DetailSteps detail=d/>
+                <DetailSteps task=id detail=d/>
                 <AddStep id=id/>
             </section>
 
@@ -3304,7 +3386,7 @@ fn DetailCheck(d: Detail) -> impl IntoView {
 }
 
 #[component]
-fn DetailSteps(detail: Memo<Option<Detail>>) -> impl IntoView {
+fn DetailSteps(task: TaskId, detail: Memo<Option<Detail>>) -> impl IntoView {
     let steps = Memo::new(move |_| {
         detail.with(|d| d.as_ref().map(|d| d.steps.clone()).unwrap_or_default())
     });
@@ -3320,14 +3402,14 @@ fn DetailSteps(detail: Memo<Option<Detail>>) -> impl IntoView {
         <ul class="step-rows">
             <For each=move || steps.with(|s| s.iter().map(|s| s.id).collect::<Vec<_>>())
                 key=|id| *id let:id>
-                <DetailStep id=id steps=steps/>
+                <DetailStep task=task id=id steps=steps/>
             </For>
         </ul>
     }
 }
 
 #[component]
-fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
+fn DetailStep(task: TaskId, id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
     let c = ctx();
     let step = Memo::new(move |_| {
         steps.with(|s| {
@@ -3366,16 +3448,20 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             input.select();
         }
     });
-    let arrow_id = move |by| format!("step-move-{id}-{by}");
-    let move_step = move |by| {
-        if let Some(cmd) = c.state.with_untracked(|s| intent::nudge(s, id.into(), by))
-            && c.submit_undoable(cmd, "Step moved.".into(), None)
-        {
-            request_animation_frame(move || platform::refocus_row(&arrow_id(by)));
-        }
-    };
+    let can_reorder = move || !c.read_only() && !editing.get() && steps.with(|s| s.len() > 1);
     view! {
-        <li class="step" class:done=done class:editing=move || editing.get()>
+        <li
+            class="step"
+            class:done=done
+            class:editing=move || editing.get()
+            class:step-dragging=move || c.step_dragging(id)
+            class:step-drop-before=move || c.step_drop_target(step_drag::Slot { row: id, after: false })
+            class:step-drop-after=move || c.step_drop_target(step_drag::Slot { row: id, after: true })
+            data-step-row=id.to_string()
+        >
+            <Show when=can_reorder>
+                <step_drag::Handle task=task id=id title=title/>
+            </Show>
             <button class="check small" type="button" role="checkbox"
                 disabled=move || c.read_only() aria-checked=move || done().to_string()
                 aria-label=move || format!("Step {}", index() + 1)
@@ -3384,7 +3470,26 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             </button>
             <Show when=move || editing.get() fallback=move || view! {
                 <button type="button" class="step-title" id=format!("step-title-{id}") title="Rename step"
-                    disabled=move || c.read_only() on:click=move |_| editing.set(true)><span>{move || title.get()}</span></button>
+                    aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"
+                    disabled=move || c.read_only()
+                    on:click=move |_| editing.set(true)
+                    on:keydown=move |ev| {
+                        if ev.alt_key() && !ev.ctrl_key() && !ev.shift_key() && !ev.meta_key() {
+                            match ev.key().as_str() {
+                                "ArrowUp" => {
+                                    ev.prevent_default();
+                                    ev.stop_propagation();
+                                    c.nudge_step(id, -1);
+                                }
+                                "ArrowDown" => {
+                                    ev.prevent_default();
+                                    ev.stop_propagation();
+                                    c.nudge_step(id, 1);
+                                }
+                                _ => {}
+                            }
+                        }
+                    }><span>{move || title.get()}</span></button>
             }>
                 <textarea class="step-input" rows="1" node_ref=input aria-label="Step title"
                     disabled=move || c.read_only() prop:value=move || draft.text.get()
@@ -3404,17 +3509,6 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
             <div class="step-tail">
                 <span class="step-n" aria-hidden="true">{move || format!("{:02}", index() + 1)}</span>
                 <div class="step-actions">
-                    // At a boundary the arrow stays focusable so a move to that edge keeps focus.
-                    <button class="icon-button" type="button" title="Move step up" id=arrow_id(-1)
-                        aria-label=move || format!("Move step {} up", index() + 1)
-                        disabled=move || c.read_only()
-                        aria-disabled=move || (index() == 0).then_some("true")
-                        on:click=move |_| move_step(-1)>{icon(Icon::ChevronUp)}</button>
-                    <button class="icon-button" type="button" title="Move step down" id=arrow_id(1)
-                        aria-label=move || format!("Move step {} down", index() + 1)
-                        disabled=move || c.read_only()
-                        aria-disabled=move || steps.with(|s| (index() + 1 >= s.len()).then_some("true"))
-                        on:click=move |_| move_step(1)>{icon(Icon::ChevronDown)}</button>
                     <button class="icon-button" type="button" title="Delete step"
                         aria-label=move || format!("Delete step {}", index() + 1)
                         disabled=move || c.read_only()
@@ -3426,6 +3520,7 @@ fn DetailStep(id: StepId, steps: Memo<Vec<model::StepView>>) -> impl IntoView {
                         }>{icon(Icon::TrashTwo)}</button>
                 </div>
             </div>
+            <span class="step-insertion-line" aria-hidden="true"></span>
         </li>
     }
 }
