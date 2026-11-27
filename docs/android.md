@@ -10,8 +10,10 @@ What the first version does:
 - **Pairing.** You type the server address (nothing is compiled in), and approve the phone with your passkey
   on any device. The QR and status sit above the bottom actions. Address and invite fields scroll above
   the keyboard. The device token is sealed with a key in the Android Keystore.
-- **Lists.** The bottom room pills show all siblings in a sideways-scrolling strip. Tap **Rooms** or
-  swipe up on the bottom bar to open the room switcher. Its pinned **Find a room…** field searches
+- **Lists.** The bottom room pills show all siblings in a sideways-scrolling strip. Tap **Rooms**,
+  swipe up on the bottom bar, or press system **Back** from a room to open the room switcher. Pull
+  down on the switcher (including from its scrolled-to-top list) or tap the scrim to return to the
+  room; pressing **Back** again at the switcher's top level closes the app. Its pinned **Find a room…** field searches
   names without regard to case or accents, including lists in folded collections. The six smart rooms
   sit above the filter; collections, loose lists, Activity, agents and Trash share the scrolling area.
   Collections fold with their chevron. **+ New → List** adds a list with a swatch and opens it.

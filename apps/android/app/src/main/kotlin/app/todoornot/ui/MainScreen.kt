@@ -347,6 +347,10 @@ private fun Screen(
                 val feed = state.activity
                 val fullBoard = paneWidth != null && state.board != null && detail == null && !showAi
                 val fullTimeline = paneWidth != null && separated == null && state.timeline != null && detail == null && !showAi
+                BackHandler(enabled = !sheetOpen) {
+                    focus.clearFocus()
+                    switcher = true
+                }
                 BackHandler(enabled = showAi && wide && !sheetOpen) { aiOpen = false }
                 @Composable
                 fun Chat(modifier: Modifier, handle: Modifier = Modifier, close: () -> Unit) {

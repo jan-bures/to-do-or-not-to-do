@@ -23,12 +23,20 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.Velocity
 import androidx.compose.animation.core.MutableTransitionState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -296,6 +304,130 @@ internal fun reducedMotion(): Boolean {
     return Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
 }
 
+private const val SHEET_DISMISS_FLING_DP = 360f
+
+/**
+ * Tracks a bottom sheet's vertical drag, both from its own surface/handle and from nested
+ * scrollable children once they reach the top. Positive values expand a tall sheet above its
+ * base height; negative values pull the sheet downward toward dismissal.
+ */
+@Stable
+internal class SheetDrag(
+    var tall: Boolean = false,
+    var roomToGrow: Float = 0f,
+    var dismissDistance: Float = 0f,
+    var dismissVelocity: Float = 0f,
+    var open: Boolean = true,
+    private val onDismiss: () -> Unit = {},
+) {
+    var expanded by mutableStateOf(false)
+        internal set
+    var drag by mutableFloatStateOf(0f)
+        internal set
+    var dragging by mutableStateOf(false)
+        internal set
+    private var dismissedAt by mutableStateOf<Float?>(null)
+    private var nestedDragging = false
+    private var childScrolled = false
+    private var nestedCeiling = 0f
+
+    val maxGrow: Float get() = if (tall) roomToGrow.coerceAtLeast(0f) else 0f
+
+    fun rest(tall: Boolean = this.tall, roomToGrow: Float = this.roomToGrow): Float =
+        dismissedAt ?: if (tall && expanded) roomToGrow.coerceAtLeast(0f) else 0f
+
+    fun startDirect(currentPosition: Float) {
+        if (!open) return
+        nestedDragging = false
+        childScrolled = false
+        drag = currentPosition.coerceAtMost(maxGrow)
+        dragging = true
+    }
+
+    fun onDirectDrag(dy: Float) {
+        if (!open || !dragging) return
+        drag = (drag - dy).coerceAtMost(maxGrow)
+    }
+
+    fun finishDirect(velocity: Float) {
+        if (!dragging) return
+        settle(velocity)
+    }
+
+    private fun settle(velocity: Float) {
+        val currentRest = if (tall && expanded) maxGrow else 0f
+        val flingDown = dismissVelocity > 0f && velocity >= dismissVelocity && drag < currentRest
+        val flingUp = dismissVelocity > 0f && velocity <= -dismissVelocity
+        val pastThreshold = drag < -dismissDistance && !flingUp
+        if (open && (pastThreshold || flingDown)) {
+            dismissedAt = drag
+            onDismiss()
+        } else if (tall) {
+            expanded = when {
+                flingUp && maxGrow > 0f -> true
+                dismissVelocity > 0f && velocity >= dismissVelocity && drag > 0f -> false
+                else -> maxGrow > 0f && drag >= maxGrow / 2f
+            }
+        }
+        dragging = false
+        nestedDragging = false
+        childScrolled = false
+    }
+
+    fun nestedScroll(currentPosition: () -> Float): NestedScrollConnection = object : NestedScrollConnection {
+        override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            if (!open || source != NestedScrollSource.UserInput) return Offset.Zero
+            // While the sheet is pulled down via nested scroll, pulling back up restores the sheet
+            // to its resting position before scrolling the inner content.
+            if (nestedDragging && available.y < 0f && drag < nestedCeiling) {
+                val next = (drag - available.y).coerceAtMost(nestedCeiling)
+                val consumedY = drag - next
+                drag = next
+                if (drag >= nestedCeiling) {
+                    dragging = false
+                    nestedDragging = false
+                }
+                return Offset(0f, consumedY)
+            }
+            return Offset.Zero
+        }
+
+        override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
+            if (!open || source != NestedScrollSource.UserInput) return Offset.Zero
+            if (consumed.y != 0f) childScrolled = true
+            // Only pull the sheet down when the scroll view was already at the top for this gesture,
+            // so scrolling back to the top of a list never accidentally closes the sheet.
+            if (available.y > 0f && !childScrolled) {
+                if (!nestedDragging) {
+                    drag = currentPosition().coerceAtMost(maxGrow)
+                    nestedCeiling = if (tall && expanded) maxGrow else 0f
+                    nestedDragging = true
+                    dragging = true
+                }
+                drag = (drag - available.y).coerceAtMost(nestedCeiling)
+                return Offset(0f, available.y)
+            }
+            return Offset.Zero
+        }
+
+        override suspend fun onPreFling(available: Velocity): Velocity {
+            val wasNested = nestedDragging
+            if (!wasNested) {
+                childScrolled = false
+                return Velocity.Zero
+            }
+            settle(available.y)
+            return Velocity(0f, available.y)
+        }
+
+        override suspend fun onPostFling(consumed: Velocity, available: Velocity): Velocity {
+            if (nestedDragging) settle(0f)
+            else childScrolled = false
+            return Velocity.Zero
+        }
+    }
+}
+
 /** Full-screen layer in the activity, so a task drag can stay captured while the switcher opens. */
 @Composable
 internal fun BottomSheet(
@@ -305,6 +437,7 @@ internal fun BottomSheet(
     color: Color = LocalDesign.current.room.raised,
     gestureReveal: Float? = null,
     defaultFraction: Float = Phone.SHEET_DEFAULT_FRACTION,
+    dismissOnBack: Boolean = true,
     content: @Composable ColumnScope.(OverlayState) -> Unit,
 ) {
     val overlay = rememberOverlay(onDismiss, atRest = LocalSheetAtRest.current)
@@ -315,7 +448,7 @@ internal fun BottomSheet(
     val keyboard = WindowInsets.isImeVisible
     val duration = if (reduced) 0 else M.PANEL
     val anchor = if (LocalSheetAtEnd.current) Alignment.BottomEnd else Alignment.BottomStart
-    BackHandler(onBack = overlay::close)
+    BackHandler(enabled = dismissOnBack, onBack = overlay::close)
     Box(Modifier.fillMaxSize(), contentAlignment = anchor) {
         AnimatedVisibility(overlay.shown, enter = fadeIn(tween(duration)), exit = fadeOut(tween(duration))) {
             Box(Modifier.fillMaxSize().graphicsLayer { alpha = if (gestureReveal == null) 1f else (gestureReveal / Phone.HEADER_REACH_EXPAND.dp.toPx()).coerceIn(0f, 1f) }
@@ -328,15 +461,24 @@ internal fun BottomSheet(
             // Fit the pinned actions and search results in the reduced space above the IME.
             val base = if (keyboard) viewport else viewport * defaultFraction
             val max = if (keyboard) viewport else viewport * Phone.SHEET_MAX_FRACTION
-            var expanded by remember { androidx.compose.runtime.mutableStateOf(false) }
-            var drag by remember(viewport) { mutableFloatStateOf(0f) }
-            var dragging by remember { androidx.compose.runtime.mutableStateOf(false) }
             val density = LocalDensity.current
-            val roomToGrow = with(density) { (max - base).toPx() }
-            val rest = if (!overlay.open && drag < 0f) drag else if (expanded) roomToGrow else 0f
-            val position by animateFloatAsState(if (dragging) drag else rest,
-                if (dragging) androidx.compose.animation.core.snap() else tween(duration, easing = M.EASE_STANDARD.cubic()),
+            val roomToGrow = with(density) { (max - base).toPx() }.coerceAtLeast(0f)
+            val dismissDistance = with(density) { Phone.BULK_STATUS_BAR.dp.toPx() }
+            val dismissVelocity = with(density) { SHEET_DISMISS_FLING_DP.dp.toPx() }
+            val sheetDrag = remember { SheetDrag(onDismiss = overlay::close) }
+            val rest = sheetDrag.rest(tall, roomToGrow)
+            val position by animateFloatAsState(if (sheetDrag.dragging) sheetDrag.drag else rest,
+                if (sheetDrag.dragging) androidx.compose.animation.core.snap() else tween(duration, easing = M.EASE_STANDARD.cubic()),
                 label = "sheet settle")
+            val currentPosition by rememberUpdatedState(position)
+            SideEffect {
+                sheetDrag.tall = tall
+                sheetDrag.roomToGrow = roomToGrow
+                sheetDrag.dismissDistance = dismissDistance
+                sheetDrag.dismissVelocity = dismissVelocity
+                sheetDrag.open = overlay.open
+            }
+            val nestedScroll = remember(sheetDrag) { sheetDrag.nestedScroll { currentPosition } }
             val basePx = with(density) { (if (tall) base else max).toPx() }
             val revealOffset by animateFloatAsState(if (gestureReveal == null) 0f else (basePx - gestureReveal).coerceAtLeast(0f),
                 if (gestureReveal != null) androidx.compose.animation.core.snap() else tween(duration, easing = M.EASE_ENTER.cubic()),
@@ -354,6 +496,14 @@ internal fun BottomSheet(
                     .then(if (tall) Modifier.height((base + delta.coerceAtLeast(0.dp)).coerceAtMost(max)) else Modifier.heightIn(max = max))
                     .clip(shape).background(color)
                     .then(if (d.dark) Modifier.border(Tokens.Elevation.HAIRLINE.dp, d.room.lineStrong, shape) else Modifier)
+                    .nestedScroll(nestedScroll)
+                    .draggable(
+                        rememberDraggableState { dy -> sheetDrag.onDirectDrag(dy) },
+                        orientation = Orientation.Vertical,
+                        enabled = overlay.open,
+                        onDragStarted = { sheetDrag.startDirect(currentPosition) },
+                        onDragStopped = { velocity -> sheetDrag.finishDirect(velocity) },
+                    )
                     .pointerInput(Unit) { // Keep taps on blank sheet space from reaching the scrim.
                         awaitEachGesture { awaitFirstDown(requireUnconsumed = false) }
                     }
@@ -366,16 +516,7 @@ internal fun BottomSheet(
                     }
                     .navigationBarsPadding(),
                 ) {
-                    Box(Modifier.fillMaxWidth().draggable(
-                        rememberDraggableState { dy -> drag = (drag - dy).coerceAtMost(if (tall) roomToGrow else 0f) },
-                        orientation = Orientation.Vertical,
-                        onDragStarted = { drag = position; dragging = true },
-                        onDragStopped = {
-                            if (drag < -with(density) { Phone.BULK_STATUS_BAR.dp.toPx() }) overlay.close()
-                            else if (tall) expanded = drag >= roomToGrow / 2
-                            dragging = false
-                        },
-                    ).padding(vertical = S.S2.dp), contentAlignment = Alignment.Center) {
+                    Box(Modifier.fillMaxWidth().padding(vertical = S.S2.dp), contentAlignment = Alignment.Center) {
                         Box(Modifier.size(Phone.SHEET_HANDLE_WIDTH.dp, S.S1.dp)
                             .background(d.room.lineStrong, RoundedCornerShape(Tokens.Radius.SM.dp)))
                     }

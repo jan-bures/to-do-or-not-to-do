@@ -134,7 +134,7 @@ internal fun BottomRoomSwitcherSheet(
     val settingsFocus = remember { FocusRequester() }
     var returning by remember { mutableStateOf(false) }
     BottomSheet(if (settings) "Settings" else "Room switcher", onDismiss, tall = !settings, color = if (settings) r.raised else r.canvas,
-        gestureReveal = gestureReveal) { overlay ->
+        gestureReveal = gestureReveal, dismissOnBack = false) { overlay ->
         fun back() { returning = true; settings = false }
         BackHandler(enabled = settings || namingList || filter.isNotEmpty()) {
             when {
