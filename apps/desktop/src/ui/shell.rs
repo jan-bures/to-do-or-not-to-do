@@ -26,7 +26,7 @@ mod undo;
 mod updates;
 mod workflow;
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -52,8 +52,8 @@ use crate::model::attachments::{Control as FileControl, file_controls};
 use crate::model::layout::{DetailPane, Pane, Width};
 use crate::model::menus::{Page, TagPage};
 use crate::model::motion::{
-    DetailMotion, Keep, Motion, Pace, RowLook, Toast, Track, Wake, anchored_scroll, lifts,
-    rows_rising_into,
+    DetailMotion, DuskLook, HeaderCollapse, HeaderToggle, Keep, Motion, Pace, RowLook, Toast,
+    Track, Wake, anchored_scroll, lifts, mix, rows_rising_into,
 };
 use crate::model::{
     self, Chips, Due, Eyebrow, RoomKey, Shell, TaskRow, Tomorrow, UiState, commands, fit, hints,
@@ -325,6 +325,12 @@ pub struct ShellView {
     sync_focus: FocusHandle,
     /// The room header's "more" button and the sidebar's account gear, which Tab reaches.
     room_menu_focus: FocusHandle,
+    /// The room header's collapse/expand button.
+    header_toggle_focus: FocusHandle,
+    /// Room header collapse state (persisted preference + scroll collapse) and animation.
+    header_collapse: HeaderCollapse,
+    /// Last measured height of the expanded room header, for smooth height transitions.
+    header_expanded_height: Rc<Cell<f32>>,
     repeat_focus: FocusHandle,
     due_focus: FocusHandle,
     detail_my_day_focus: FocusHandle,
@@ -495,6 +501,7 @@ impl ShellView {
         let painted_hue = shell.room.hue;
         let ai = assistant::Ai::new(&store, &palette, window, cx);
         let history = navigation::initial(&ui, &shell);
+        let header_collapsed = ui.header_collapsed;
         let mut this = Self {
             history,
             store,
@@ -549,6 +556,16 @@ impl ShellView {
             preview_focus: None,
             sync_focus: cx.focus_handle(),
             room_menu_focus: cx.focus_handle(),
+            header_toggle_focus: cx.focus_handle(),
+            header_collapse: HeaderCollapse::rest(header_collapsed),
+            header_expanded_height: Rc::new(Cell::new(
+                desktop::HEADER_PAD_TOP
+                    + desktop::EYEBROW
+                    + ty::ROOM_TITLE.line_height
+                    + space::S2
+                    + desktop::LANDSCAPE
+                    + elevation::HAIRLINE,
+            )),
             repeat_focus: cx.focus_handle(),
             due_focus: cx.focus_handle(),
             detail_my_day_focus: cx.focus_handle(),
@@ -598,6 +615,10 @@ impl ShellView {
         cx.on_focus(&this.undo_focus, window, |_, _, cx| cx.notify())
             .detach();
         cx.on_blur(&this.undo_focus, window, |_, _, cx| cx.notify())
+            .detach();
+        cx.on_focus(&this.header_toggle_focus, window, |_, _, cx| cx.notify())
+            .detach();
+        cx.on_blur(&this.header_toggle_focus, window, |_, _, cx| cx.notify())
             .detach();
         // A menu never stays open once the keyboard has gone elsewhere.
         cx.on_blur(&this.menu_focus, window, |this, window, cx| {
@@ -713,6 +734,8 @@ impl ShellView {
                 self.timeline.reset_view();
                 self.rows_bar
                     .reset_to_top(&self.rows.0.borrow().base_handle);
+                self.header_collapse
+                    .reset_scroll(self.now(), self.pace(), self.animate);
             }
             self.board.view_override = Some(view);
         }
@@ -938,6 +961,17 @@ impl ShellView {
             .retain(|&id, _| self.motion.sidebar.group(id, false, now).0 > 0.);
         self.measure_lifts();
         self.anchor_scroll();
+        if let Some((scroll_y, max_scroll, empty)) = self.scroll_metrics() {
+            let pace = self.pace();
+            self.header_collapse.observe_scroll(
+                scroll_y,
+                max_scroll,
+                empty,
+                now,
+                pace,
+                self.animate,
+            );
+        }
         if !self.animate {
             return;
         }
@@ -963,13 +997,15 @@ impl ShellView {
             },
         );
         self.activity.motion.prune(now);
-        let ring =
-            if self.undo_ring.moving(now) || self.settle_menu() || self.activity.motion.moving(now)
-            {
-                Wake::Frame
-            } else {
-                Wake::Idle
-            };
+        let ring = if self.undo_ring.moving(now)
+            || self.settle_menu()
+            || self.activity.motion.moving(now)
+            || self.header_collapse.moving(now)
+        {
+            Wake::Frame
+        } else {
+            Wake::Idle
+        };
         match self.motion.wake(now).or(self.toast.wake(now)).or(ring) {
             Wake::Idle => {}
             Wake::Frame => window.request_animation_frame(),
@@ -1747,6 +1783,8 @@ impl ShellView {
             .reset_to_top(&self.rows.0.borrow().base_handle);
         self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
         self.handover_bar.reset_to_top(&self.handover_scroll);
+        self.header_collapse
+            .reset_scroll(self.now(), self.pace(), self.animate);
         self.trash_selected = None;
     }
 
@@ -2318,6 +2356,7 @@ impl ShellView {
         self.animate = false;
         self.settle_detail();
         self.activity.motion.settle();
+        self.header_collapse.settle();
     }
 
     fn titlebar(&self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -2473,7 +2512,7 @@ impl ShellView {
         }
     }
 
-    fn summary(&self) -> Div {
+    fn summary(&self, compact: bool) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
         let (ink_2, _, line) = self.header_inks();
@@ -2490,7 +2529,7 @@ impl ShellView {
             .flex()
             .items_center()
             .gap(px(space::S2 + 2.))
-            .pb(px(space::S3))
+            .when(!compact, |d| d.pb(px(space::S3)))
             .style(ty::SUMMARY)
             .text_color(ink_2);
         let figure = |n: usize| {
@@ -2608,6 +2647,179 @@ impl ShellView {
         ))
     }
 
+    /// `(scroll_y, max_scroll, empty)` for the active vertical list scroller, or `None` for views
+    /// without a single vertical room scroller (Board, Timeline, pop-out).
+    fn scroll_metrics(&self) -> Option<(f32, f32, bool)> {
+        if self.ui.compact || self.on_board() || self.on_timeline() {
+            return None;
+        }
+        let read = |handle: &ScrollHandle, empty: bool| {
+            (
+                (-f32::from(handle.offset().y)).max(0.),
+                f32::from(handle.max_offset().y).max(0.),
+                empty,
+            )
+        };
+        if self.in_activity() {
+            Some(read(
+                &self.activity_scroll,
+                self.activity.feed.is_empty_feed(),
+            ))
+        } else if self.shell.room.handover().is_some() {
+            Some(read(&self.handover_scroll, false))
+        } else if self.shell.room.key == RoomKey::Trash {
+            let state = self.rows.0.borrow();
+            Some(read(&state.base_handle, self.shell.room.trash.is_empty()))
+        } else {
+            let state = self.rows.0.borrow();
+            Some(read(&state.base_handle, self.shell.row_count() == 0))
+        }
+    }
+
+    fn reset_active_list_scroll(&self) {
+        if self.in_activity() {
+            self.activity_bar.reset_to_top(&self.activity_scroll);
+        } else if self.shell.room.handover().is_some() {
+            self.handover_bar.reset_to_top(&self.handover_scroll);
+        } else {
+            self.rows_bar
+                .reset_to_top(&self.rows.0.borrow().base_handle);
+            self.rows.scroll_to_item(0, gpui::ScrollStrategy::Top);
+        }
+    }
+
+    fn toggle_header_collapse(&mut self, cx: &mut Context<Self>) {
+        let (now, pace) = (self.now(), self.pace());
+        match self.header_collapse.toggle(now, pace, self.animate) {
+            HeaderToggle::Pinned => {
+                self.ui.header_collapsed = true;
+                self.save_ui_preferences();
+            }
+            HeaderToggle::Unpinned => {
+                self.ui.header_collapsed = false;
+                self.save_ui_preferences();
+            }
+            HeaderToggle::ExpandedFromScroll => {
+                self.reset_active_list_scroll();
+            }
+        }
+        cx.notify();
+    }
+
+    fn header_toggle_button(&self, ink: Hsla, window: &Window, cx: &mut Context<Self>) -> Div {
+        let p = &self.palette;
+        let collapsed = self.header_collapse.is_collapsed();
+        let (icon, label) = if collapsed {
+            (Icon::ChevronDown, "Expand header")
+        } else {
+            (Icon::ChevronUp, "Collapse header")
+        };
+        let button = kit::toolbar_icon()
+            .id("header-toggle")
+            .track_focus(&self.header_toggle_focus)
+            .role(gpui::Role::Button)
+            .aria_label(label)
+            .tooltip(kit::tooltip(*p, label))
+            .quiet_button(*p)
+            .child(kit::icon(icon, component::ICON, ink))
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_header_collapse(cx)))
+            .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
+                if !e.keystroke.modifiers.modified()
+                    && matches!(e.keystroke.key.as_str(), "enter" | "space")
+                {
+                    cx.stop_propagation();
+                    if !e.is_held {
+                        this.toggle_header_collapse(cx);
+                    }
+                } else {
+                    this.control_key(e, window, cx);
+                }
+            }));
+        menu::ring(
+            p,
+            self.header_toggle_focus.is_focused(window),
+            radius::MD,
+            button,
+        )
+    }
+
+    fn compact_header_bar(
+        &self,
+        sky_bg: Hsla,
+        title_ink: Hsla,
+        ink_3: Hsla,
+        look: DuskLook,
+        window: &Window,
+        cx: &mut Context<Self>,
+    ) -> Div {
+        let p = &self.palette;
+        let dusk = theme::dusk(self.painted_hue);
+        let room = &self.shell.room;
+        let sun = self.motion.sun(self.frame);
+        let night = look.night_ink();
+        let track_color = theme::with_alpha(if night { dusk.sun } else { p.arc }, 0.30);
+        let fill_color = if night { dusk.sun } else { p.sun_ink };
+        let show_summary = !self.columns(window).counts_under_title();
+        let more = self.room_menu_button(ink_3, window, cx);
+        let toggle = self.header_toggle_button(ink_3, window, cx);
+        div()
+            .relative()
+            .h(px(desktop::COMPACT_HEADER))
+            .px(px(desktop::LIST_PAD_X))
+            .flex()
+            .items_center()
+            .gap(px(space::S3))
+            .bg(sky_bg)
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .whitespace_nowrap()
+                    .text_ellipsis()
+                    .style(ty::ROOM_TITLE_BAR)
+                    .text_color(title_ink)
+                    .child(room.title.clone()),
+            )
+            .when(show_summary, |bar| {
+                bar.child(div().flex_none().child(self.summary(true)))
+            })
+            .children(self.view_switcher(window, cx))
+            .child(
+                div()
+                    .flex_none()
+                    .flex()
+                    .items_center()
+                    .gap(px(space::S1))
+                    .mr(px(-space::S2))
+                    .children(more)
+                    .child(toggle),
+            )
+            .when_some(sun, |bar, progress| {
+                let progress = progress.clamp(0., 1.);
+                bar.child(
+                    gpui::canvas(
+                        |_, _, _| (),
+                        move |bounds, _, window, _| {
+                            window.paint_quad(gpui::fill(bounds, track_color));
+                            let travelled = bounds.size.width * progress;
+                            if travelled > px(0.) {
+                                let bar_bounds = gpui::Bounds::new(
+                                    bounds.origin,
+                                    gpui::size(travelled, bounds.size.height),
+                                );
+                                window.paint_quad(gpui::fill(bar_bounds, fill_color));
+                            }
+                        },
+                    )
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(desktop::COMPACT_PROGRESS_HEIGHT)),
+                )
+            })
+    }
+
     fn header(&self, window: &Window, cx: &mut Context<Self>) -> Div {
         let p = &self.palette;
         let room = &self.shell.room;
@@ -2627,6 +2839,15 @@ impl ShellView {
             sun_alpha: self.motion.sun_alpha(self.frame),
         };
         let (_, ink_3, _) = self.header_inks();
+        let collapse = self.header_collapse.fraction(self.frame);
+        if collapse >= 1. {
+            return div()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(self.compact_header_bar(sky_bg, title_ink, ink_3, look, window, cx))
+                .child(div().h(px(elevation::HAIRLINE)).bg(p.line));
+        }
         // Ellipsize in text layout rather than clipping both axes with `overflow_x_hidden`.
         let title_text = |text: SharedString| {
             div()
@@ -2676,8 +2897,10 @@ impl ShellView {
                     .opacity(swap.outgoing)
             }));
         let more = self.room_menu_button(ink_3, window, cx);
-        div()
-            .flex_none()
+        let toggle = self.header_toggle_button(ink_3, window, cx);
+        let height_probe = self.header_expanded_height.clone();
+        let expanded = div()
+            .relative()
             .flex()
             .flex_col()
             .bg(sky_bg)
@@ -2694,7 +2917,16 @@ impl ShellView {
                             .gap(px(space::S2))
                             .child(eyebrow)
                             .children(self.view_switcher(window, cx))
-                            .children(more.map(|d| d.flex_none().mr(px(-space::S2)))),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .items_center()
+                                    .gap(px(space::S1))
+                                    .mr(px(-space::S2))
+                                    .children(more)
+                                    .child(toggle),
+                            ),
                     )
                     .child(if self.columns(window).counts_under_title() {
                         // A narrow room can keep the whole line for the title, with counts below it.
@@ -2703,7 +2935,7 @@ impl ShellView {
                             .flex_col()
                             .gap(px(space::S2))
                             .child(title)
-                            .child(self.summary())
+                            .child(self.summary(false))
                     } else {
                         div()
                             .flex()
@@ -2711,7 +2943,7 @@ impl ShellView {
                             .justify_between()
                             .gap(px(space::S6))
                             .child(title)
-                            .child(div().flex_none().child(self.summary()))
+                            .child(div().flex_none().child(self.summary(false)))
                     }),
             )
             // The finished scene's rings reach past the strip; the header ends at its bottom edge.
@@ -2721,8 +2953,74 @@ impl ShellView {
                 dusk,
                 self.motion.sun(self.frame),
                 blend,
-            )))
-            .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
+            )));
+        if collapse <= 0. {
+            return div()
+                .relative()
+                .flex_none()
+                .flex()
+                .flex_col()
+                .child(expanded)
+                .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
+                .child(
+                    gpui::canvas(
+                        move |bounds, _, _| {
+                            let h = f32::from(bounds.size.height);
+                            if h > desktop::COMPACT_HEADER {
+                                height_probe.set(h);
+                            }
+                        },
+                        |_, _, _, _| {},
+                    )
+                    .absolute()
+                    .inset_0(),
+                );
+        }
+        let expanded_h = self.header_expanded_height.get();
+        let compact_h = desktop::COMPACT_HEADER + elevation::HAIRLINE;
+        let current_h = mix(expanded_h, compact_h, collapse).max(compact_h);
+        let expanded_alpha = (1. - collapse / 0.55).clamp(0., 1.);
+        let compact_alpha = ((collapse - 0.45) / 0.55).clamp(0., 1.);
+        let drift = if self.pace().reduced {
+            0.
+        } else {
+            -space::S2 * (1. - expanded_alpha)
+        };
+        div()
+            .relative()
+            .flex_none()
+            .h(px(current_h))
+            .overflow_hidden()
+            .bg(sky_bg)
+            .when(expanded_alpha > 0., |d| {
+                d.child(
+                    expanded
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .top(px(drift))
+                        .opacity(expanded_alpha),
+                )
+            })
+            .when(compact_alpha > 0., |d| {
+                d.child(
+                    self.compact_header_bar(sky_bg, title_ink, ink_3, look, window, cx)
+                        .absolute()
+                        .left_0()
+                        .right_0()
+                        .bottom(px(elevation::HAIRLINE))
+                        .opacity(compact_alpha),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .left_0()
+                    .right_0()
+                    .bottom_0()
+                    .h(px(elevation::HAIRLINE))
+                    .bg(p.line),
+            )
     }
 
     fn quick_add_field(&self, window: &Window, cx: &mut Context<Self>) -> Div {
@@ -3157,6 +3455,9 @@ impl ShellView {
         let check = div()
             .id(SharedString::from(format!("check-{id}")))
             .flex_none()
+            .mt(px(
+                (desktop::ROW - desktop::COL_CHECK) / 2. - desktop::ROW_PAD_TOP
+            ))
             .child(check)
             .when_some(room, |el, room| {
                 el.on_click(cx.listener(move |this, click: &gpui::ClickEvent, _, cx| {
@@ -3696,12 +3997,21 @@ impl ShellView {
                         }
                     }))
                     .on_action(cx.listener(|this, _: &PreviousTask, window, cx| {
+                        let at_top = this
+                            .scroll_metrics()
+                            .is_some_and(|(scroll_y, _, _)| scroll_y <= 0.5);
                         if this.in_activity() {
                             this.feed_input(FeedInput::Previous, false, window, cx);
                         } else if this.shell.room.key == RoomKey::Trash {
                             this.trash_step(-1, cx);
                         } else {
+                            let was_first = this.shell.selected_task == Some(0);
                             this.move_selection(-1, cx);
+                            if was_first && at_top && this.header_collapse.is_scrolled() {
+                                let (now, pace) = (this.now(), this.pace());
+                                this.header_collapse.reset_scroll(now, pace, this.animate);
+                                cx.notify();
+                            }
                         }
                     }))
                     .on_action(cx.listener(|this, _: &SelectAllTasks, _, cx| {
@@ -4267,6 +4577,7 @@ impl ShellView {
         } else if on(&self.activity_filter_focus)
             || on(&self.activity_refresh_focus)
             || on(&self.activity_more_focus)
+            || on(&self.header_toggle_focus)
             || on(&self.attachment_ui.add)
             || self.bulk_focus.iter().any(on)
             || self.attachment_ui.rows.values().any(on)
@@ -4535,6 +4846,7 @@ impl ShellView {
             Stop::Undo => &self.undo_focus,
             Stop::Bulk(index) => &self.bulk_focus[index],
             Stop::RoomMenu => &self.room_menu_focus,
+            Stop::HeaderToggle => &self.header_toggle_focus,
             Stop::View(i) => &self.workflow.view[i],
             Stop::Timeline(i) => &self.timeline.focus[i],
             Stop::QuickStatus => &self.workflow.quick,
@@ -4590,6 +4902,7 @@ impl ShellView {
             }
             Stop::Bulk(index) => self.bulk_stop(index),
             Stop::RoomMenu => self.has_room_menu(),
+            Stop::HeaderToggle => !self.ui.compact,
             Stop::View(i) => {
                 (self.shell.room.features.workflow || self.shell.room.features.timeline)
                     && model::workflow::available(
@@ -4883,7 +5196,41 @@ impl Render for ShellView {
                                     .flex_col()
                                     .child(self.header(window, cx))
                                     .child(quick_add)
-                                    .child(room_body)
+                                    .child(
+                                        div()
+                                            .id("room-body-scroll")
+                                            .flex_1()
+                                            .min_h_0()
+                                            .flex()
+                                            .flex_col()
+                                            .on_scroll(cx.listener(
+                                                |this, e: &gpui::ScrollEvent, _, cx| {
+                                                    let Some((scroll_y, max_scroll, empty)) =
+                                                        this.scroll_metrics()
+                                                    else {
+                                                        return;
+                                                    };
+                                                    if empty {
+                                                        return;
+                                                    }
+                                                    let dy = f32::from(
+                                                        e.delta.pixel_delta(px(desktop::ROW)).y,
+                                                    );
+                                                    let (now, pace) = (this.now(), this.pace());
+                                                    if this.header_collapse.on_wheel(
+                                                        dy,
+                                                        scroll_y,
+                                                        max_scroll,
+                                                        now,
+                                                        pace,
+                                                        this.animate,
+                                                    ) {
+                                                        cx.notify();
+                                                    }
+                                                },
+                                            ))
+                                            .child(room_body),
+                                    )
                                     .children(overlay.into_iter().flatten()),
                             )
                             .children(self.bulk_bar(window, cx))
@@ -5134,5 +5481,62 @@ mod tests {
             next.child(todo_core::ids::TaskId::from_uuid(uuid::Uuid::nil())),
             None
         );
+    }
+
+    #[gpui::test]
+    fn header_collapse_toggles_and_persists_across_room_switches(cx: &mut gpui::TestAppContext) {
+        use std::rc::Rc;
+
+        use crate::model::{RoomKey, Smart};
+        use crate::store::Store;
+        use crate::theme;
+
+        cx.update(|cx| cx.bind_keys(super::key_bindings()));
+        let f = fixtures::my_day();
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let mut view = super::ShellView::new(
+                Rc::new(Store::fixture(&f)),
+                f.ui,
+                theme::Theme::Light,
+                None,
+                window,
+                cx,
+            );
+            view.still();
+            view
+        });
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(!view.ui.header_collapsed);
+            assert!(!view.header_collapse.is_collapsed());
+        });
+        cx.update(|_, cx| {
+            shell.update(cx, |view, cx| view.toggle_header_collapse(cx));
+        });
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(view.ui.header_collapsed);
+            assert!(view.header_collapse.is_collapsed());
+        });
+        // Switching rooms preserves the manually pinned compact header.
+        cx.update(|_, cx| {
+            shell.update(cx, |view, cx| {
+                view.select_room(RoomKey::Smart(Smart::All), cx);
+            });
+        });
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(view.ui.header_collapsed);
+            assert!(view.header_collapse.is_collapsed());
+        });
+        // Toggling again unpins and restores the expanded hero.
+        cx.update(|_, cx| {
+            shell.update(cx, |view, cx| view.toggle_header_collapse(cx));
+        });
+        cx.update(|_, cx| {
+            let view = shell.read(cx);
+            assert!(!view.ui.header_collapsed);
+            assert!(!view.header_collapse.is_collapsed());
+        });
     }
 }

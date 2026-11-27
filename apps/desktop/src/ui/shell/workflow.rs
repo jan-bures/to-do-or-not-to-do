@@ -158,6 +158,8 @@ impl ShellView {
         self.multi.clear();
         self.rows_bar
             .reset_to_top(&self.rows.0.borrow().base_handle);
+        self.header_collapse
+            .reset_scroll(self.now(), self.pace(), self.animate);
         // Preserve open detail, but seed the Board cursor from the selected task when possible.
         if let Some(id) = self.ui.task {
             self.aim_board_cursor(id);

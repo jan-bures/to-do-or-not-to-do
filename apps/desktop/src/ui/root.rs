@@ -341,6 +341,7 @@ impl RootView {
             board_done: prefs.board_done,
             timeline: prefs.timeline,
             panes: prefs.panes,
+            header_collapsed: prefs.header_collapsed,
             ..UiState::default()
         };
         session.start();

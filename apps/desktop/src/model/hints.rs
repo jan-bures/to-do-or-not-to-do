@@ -73,6 +73,8 @@ pub enum Stop {
     Undo,
     /// The room header's "more" button, in rooms that have a menu.
     RoomMenu,
+    /// The room header's collapse/expand button.
+    HeaderToggle,
     View(usize),
     Timeline(usize),
     QuickInput,
@@ -137,7 +139,7 @@ pub const QUICK_ADD_STOPS: [Stop; 9] = [
 /// there now (Undo without its toast, the room's button in a room without a menu, the detail divider
 /// without a docked detail pane, the sync line with nothing refused) is skipped. A new stop takes its
 /// place in this table; nothing else changes.
-pub const TAB_ORDER: [Stop; 52] = [
+pub const TAB_ORDER: [Stop; 53] = [
     Stop::SidebarSplitter,
     Stop::List,
     Stop::Bulk(0),
@@ -153,6 +155,7 @@ pub const TAB_ORDER: [Stop; 52] = [
     Stop::View(1),
     Stop::View(2),
     Stop::RoomMenu,
+    Stop::HeaderToggle,
     Stop::Timeline(0),
     Stop::Timeline(1),
     Stop::Timeline(2),
@@ -219,6 +222,7 @@ pub fn reveal(stop: Stop) -> Option<(ScrollPane, &'static str)> {
         | Stop::Undo
         | Stop::Bulk(_)
         | Stop::RoomMenu
+        | Stop::HeaderToggle
         | Stop::View(_)
         | Stop::Timeline(_)
         | Stop::QuickInput
@@ -677,6 +681,7 @@ mod tests {
                 View(1),
                 View(2),
                 RoomMenu,
+                HeaderToggle,
                 Timeline(0),
                 Timeline(1),
                 Timeline(2),
@@ -759,6 +764,7 @@ mod tests {
                 Timeline(2),
                 Timeline(1),
                 Timeline(0),
+                HeaderToggle,
                 RoomMenu,
                 View(2),
                 View(1),
@@ -798,6 +804,7 @@ mod tests {
                     | Bulk(_)
                     | View(_)
                     | Timeline(_)
+                    | HeaderToggle
                     | UpdateIndicator
             ) || QUICK_ADD_STOPS.contains(&s)
         };
@@ -1032,6 +1039,7 @@ mod tests {
             round(List, true, activity),
             [
                 RoomMenu,
+                HeaderToggle,
                 ActivityFilter,
                 ActivityRefresh,
                 ActivityMore,
@@ -1050,6 +1058,7 @@ mod tests {
                 Account,
                 New,
                 ActivityRefresh,
+                HeaderToggle,
                 RoomMenu,
                 List
             ]

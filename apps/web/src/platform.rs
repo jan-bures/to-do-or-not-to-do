@@ -80,6 +80,27 @@ pub fn is_fold_key(key: Option<&str>) -> bool {
 }
 
 const DATE_FORMAT_KEY: &str = "todo-date-format";
+const HEADER_COLLAPSED_KEY: &str = "todo-header-collapsed";
+
+pub fn load_header_collapsed() -> bool {
+    local_storage()
+        .and_then(|storage| storage.get_item(HEADER_COLLAPSED_KEY).ok().flatten())
+        .is_some_and(|v| v == "1")
+}
+
+pub fn save_header_collapsed(collapsed: bool) {
+    if let Some(storage) = local_storage() {
+        let _ = if collapsed {
+            storage.set_item(HEADER_COLLAPSED_KEY, "1")
+        } else {
+            storage.remove_item(HEADER_COLLAPSED_KEY)
+        };
+    }
+}
+
+pub fn is_header_collapsed_key(key: Option<&str>) -> bool {
+    key.is_none_or(|key| key == HEADER_COLLAPSED_KEY)
+}
 
 pub fn load_date_format() -> todo_client::date_format::DateFormat {
     local_storage()

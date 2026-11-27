@@ -141,6 +141,11 @@ pub fn by_name(name: &str) -> Option<Fixture> {
             f.ui.task = None;
             Some(f)
         }
+        "collapsed-header" => {
+            let mut f = my_day();
+            f.ui.header_collapsed = true;
+            Some(f)
+        }
         "work" => Some(work()),
         "list-status" | "list-settings" | "board" | "board-detail" | "timeline"
         | "timeline-month" | "timeline-tray" | "timeline-planned" => Some(workflow_room(name)),

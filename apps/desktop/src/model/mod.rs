@@ -283,6 +283,8 @@ pub struct UiState {
     pub timeline: timeline::Preferences,
     /// Device-local preferred widths of the main window's side panes.
     pub panes: layout::PaneWidths,
+    /// Device-local preference to keep the room header collapsed to its compact bar.
+    pub header_collapsed: bool,
 }
 
 impl UiState {

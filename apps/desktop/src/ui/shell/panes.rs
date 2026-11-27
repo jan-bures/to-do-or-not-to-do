@@ -119,6 +119,7 @@ impl ShellView {
                 board_done: self.ui.board_done.clone(),
                 timeline: self.ui.timeline,
                 panes: self.ui.panes,
+                header_collapsed: self.ui.header_collapsed,
             })
         {
             tracing::warn!("couldn't save window preferences: {e}");

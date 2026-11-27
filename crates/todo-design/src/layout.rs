@@ -222,6 +222,10 @@ pub mod desktop {
     pub const EYEBROW: f32 = 28.0;
     /// Height of the landscape strip under the header.
     pub const LANDSCAPE: f32 = 48.0;
+    /// Height of the collapsed room header bar on desktop and web (matches [`DETAIL_TOP`]).
+    pub const COMPACT_HEADER: f32 = 48.0;
+    /// Horizon progress hairline height along the bottom edge of the compact header.
+    pub const COMPACT_PROGRESS_HEIGHT: f32 = 2.0;
     /// Quick-add height.
     pub const QUICK_ADD: f32 = 44.0;
     /// Vertical margin around the quick-add.
@@ -302,7 +306,7 @@ pub mod desktop {
     pub const AI_SETTINGS_WIDTH: f32 = 520.0;
 
     /// Every metric, for the exports.
-    pub const ALL: [(&str, f32); 65] = [
+    pub const ALL: [(&str, f32); 67] = [
         ("sidebar", SIDEBAR),
         ("sidebar-min", SIDEBAR_MIN),
         ("sidebar-max", SIDEBAR_MAX),
@@ -330,6 +334,8 @@ pub mod desktop {
         ("header-pad-top", HEADER_PAD_TOP),
         ("eyebrow", EYEBROW),
         ("landscape", LANDSCAPE),
+        ("compact-header", COMPACT_HEADER),
+        ("compact-progress-height", COMPACT_PROGRESS_HEIGHT),
         ("quick-add", QUICK_ADD),
         ("quick-add-margin", QUICK_ADD_MARGIN),
         ("quick-add-popup-width", QUICK_ADD_POPUP_WIDTH),

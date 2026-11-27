@@ -164,6 +164,7 @@ pub struct Ctx {
     narrow: RwSignal<bool>,
     detail_modal: Memo<bool>,
     collapsed: RwSignal<BTreeSet<CollectionId>>,
+    header_collapsed: RwSignal<bool>,
     new_room: RwSignal<Option<NewRoomKind>>,
     drafts: updates::Drafts,
     filter_open: RwSignal<bool>,
@@ -373,6 +374,12 @@ impl Ctx {
 
     fn toggle_fold(self, id: CollectionId) {
         self.fold(id, !self.collapsed.with_untracked(|ids| ids.contains(&id)));
+    }
+
+    fn toggle_header_collapsed(self) {
+        let next = !self.header_collapsed.get_untracked();
+        self.header_collapsed.set(next);
+        platform::save_header_collapsed(next);
     }
 
     fn show_toast(self, text: String, undo: bool) {
@@ -790,6 +797,7 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
         narrow,
         detail_modal,
         collapsed: RwSignal::new(platform::load_folded().unwrap_or_default()),
+        header_collapsed: RwSignal::new(platform::load_header_collapsed()),
         new_room: RwSignal::new(None),
         drafts: updates::Drafts::new(),
         filter_open: RwSignal::new(false),
@@ -871,6 +879,9 @@ fn App(now: Now, live: bool, notice: Option<String>) -> impl IntoView {
             && let Some(ids) = platform::load_folded()
         {
             c.collapsed.set(ids);
+        }
+        if platform::is_header_collapsed_key(ev.key().as_deref()) {
+            c.header_collapsed.set(platform::load_header_collapsed());
         }
     });
 
@@ -2136,6 +2147,7 @@ fn RoomPane() -> impl IntoView {
     let drop = email_drop::Target::new(node);
     let width = RwSignal::new(0.0_f64);
     let reached_bottom = RwSignal::new(0u64);
+    let scrolled_past_head = RwSignal::new(false);
     node.on_load(move |el| {
         width.set(f64::from(el.client_width()));
         platform::observe_width(&el, move |w| {
@@ -2147,11 +2159,18 @@ fn RoomPane() -> impl IntoView {
         let room = c.room.get();
         if prev.is_some_and(|old| old != room) {
             drop.clear();
+            scrolled_past_head.set(false);
             if let Some(el) = node.get_untracked() {
                 el.set_scroll_top(0);
             }
         }
         room
+    });
+    Effect::new(move |_| {
+        let _ = c.room_view.get();
+        if c.header_collapsed.get() {
+            scrolled_past_head.set(false);
+        }
     });
     view! {
         <div class="room-frame">
@@ -2162,11 +2181,33 @@ fn RoomPane() -> impl IntoView {
                     c.room_actions.position_menu();
                     c.task_actions.position();
                     c.status_menu.position();
-                    if c.room.with_untracked(RoomId::is_activity) && let Some(el) = node.get_untracked() {
-                        let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
-                        // Scroll metrics are rounded; also start before the last row leaves the viewport.
-                        if remaining <= el.client_height() / 4 {
-                            reached_bottom.update(|n| *n += 1);
+                    if let Some(el) = node.get_untracked() {
+                        if c.header_collapsed.get_untracked() {
+                            if scrolled_past_head.get_untracked() {
+                                scrolled_past_head.set(false);
+                            }
+                        } else {
+                            let head_h = el
+                                .query_selector(".room-head")
+                                .ok()
+                                .flatten()
+                                .map_or(153, |h| h.client_height());
+                            let compact_h = todo_design::layout::desktop::COMPACT_HEADER as i32;
+                            let enter = (head_h - compact_h).max(40);
+                            let leave = (enter - 16).max(16);
+                            let top = el.scroll_top();
+                            let was = scrolled_past_head.get_untracked();
+                            let next = if was { top > leave } else { top >= enter };
+                            if next != was {
+                                scrolled_past_head.set(next);
+                            }
+                        }
+                        if c.room.with_untracked(RoomId::is_activity) {
+                            let remaining = el.scroll_height() - el.scroll_top() - el.client_height();
+                            // Scroll metrics are rounded; also start before the last row leaves the viewport.
+                            if remaining <= el.client_height() / 4 {
+                                reached_bottom.update(|n| *n += 1);
+                            }
                         }
                     }
                 }>
@@ -2209,7 +2250,145 @@ fn RoomPane() -> impl IntoView {
                     _ => Vec::new(),
                 }) key=Clone::clone children=move |agent| view! { <activity::Feed agent=agent reached_bottom=reached_bottom/> }/>
             </div>
+            <ScrollCompactBar visible=scrolled_past_head room_node=node/>
             <email_drop::Affordance target=drop c=c/>
+        </div>
+    }
+}
+
+#[component]
+fn HeaderCollapseToggle() -> impl IntoView {
+    let c = ctx();
+    let collapsed = move || c.header_collapsed.get();
+    let label = move || {
+        if collapsed() {
+            "Expand header"
+        } else {
+            "Collapse header"
+        }
+    };
+    view! {
+        <button
+            type="button"
+            id="header-toggle"
+            class="icon-button header-toggle"
+            aria-label=label
+            title=label
+            on:click=move |_| c.toggle_header_collapsed()
+        >
+            {move || icon(if collapsed() { Icon::ChevronDown } else { Icon::ChevronUp })}
+        </button>
+    }
+}
+
+#[component]
+fn CompactProgressBar(progress: Signal<Option<f32>>) -> impl IntoView {
+    view! {
+        <Show when=move || progress.get().is_some()>
+            <svg
+                class="compact-progress"
+                viewBox="0 0 1000 1"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+            >
+                <rect class="compact-progress-track" x="0" y="0" width="1000" height="1"/>
+                <rect
+                    class="compact-progress-fill"
+                    x="0"
+                    y="0"
+                    height="1"
+                    width=move || {
+                        let w = (progress.get().unwrap_or(0.0).clamp(0.0, 1.0) * 1000.0).round();
+                        format!("{w:.0}")
+                    }
+                />
+            </svg>
+        </Show>
+    }
+}
+
+#[component]
+fn RoomSummary(#[prop(default = "summary")] class: &'static str) -> impl IntoView {
+    let c = ctx();
+    view! {
+        <p class=class>
+            {move || match c.view_room.with(|r| r.header.summary) {
+                // History rooms keep no score.
+                Summary::None => ().into_any(),
+                empty @ Summary::Empty { .. } => {
+                    view! { <span class="fig">{empty.text()}</span> }.into_any()
+                }
+                Summary::Done { done } => view! { <b>{done}</b>" done" }.into_any(),
+                Summary::AllClear { done, total } => view! {
+                    <b>{done}</b>
+                    {format!(" of {total} done")}
+                    <span class="dot-sep">"·"</span>
+                    <span class="finished-clear fig">"all clear"</span>
+                }
+                    .into_any(),
+                Summary::Progress { done, total, open } => view! {
+                    <b>{done}</b>
+                    {format!(" of {total} done")}
+                    <span class="dot-sep">"·"</span>
+                    <span class="fig">{open}</span>
+                    " open"
+                }
+                    .into_any(),
+            }}
+        </p>
+    }
+}
+
+#[component]
+fn ScrollCompactBar(visible: RwSignal<bool>, room_node: NodeRef<html::Div>) -> impl IntoView {
+    let c = ctx();
+    let shown = move || visible.get() && !c.header_collapsed.get();
+    let progress = Signal::derive(move || {
+        if c.finished.get() {
+            Some(1.0)
+        } else {
+            c.view_room.with(|r| {
+                let total = r.header.progress_total;
+                (total > 0).then(|| Landscape::progress(r.header.progress_done, total))
+            })
+        }
+    });
+    let scroll_top = move |_| {
+        if let Some(el) = room_node.get_untracked() {
+            if platform::reduced_motion() {
+                el.set_scroll_top(0);
+            } else {
+                let opts = web_sys::ScrollToOptions::new();
+                opts.set_top(0.0);
+                opts.set_behavior(web_sys::ScrollBehavior::Smooth);
+                el.scroll_to_with_scroll_to_options(&opts);
+            }
+        }
+    };
+    view! {
+        <div
+            class="room-compact-bar"
+            class:visible=shown
+            class:finished=move || c.finished.get()
+            data-theme=move || c.finished.get().then_some("dark")
+            data-room-hue=move || c.finished.get().then_some("my-day")
+            aria-hidden=move || (!shown()).to_string()
+            inert=move || !shown()
+        >
+            <button type="button" class="compact-bar-title" on:click=scroll_top>
+                {move || c.view_room.with(|r| r.title.clone())}
+            </button>
+            <RoomSummary class="compact-bar-summary"/>
+            <button
+                type="button"
+                class="icon-button header-toggle"
+                aria-label="Expand header"
+                title="Expand header"
+                on:click=scroll_top
+            >
+                {icon(Icon::ChevronDown)}
+            </button>
+            <CompactProgressBar progress=progress/>
         </div>
     }
 }
@@ -2222,46 +2401,30 @@ fn RoomHeader(width: RwSignal<f64>) -> impl IntoView {
         c.view_room
             .with(|r| (r.header.progress_done, r.header.progress_total))
     });
+    let progress = Signal::derive(move || {
+        let (done, total) = counts.get();
+        (total > 0).then(|| Landscape::progress(done, total))
+    });
     let views = move || c.room_features.with(|f| f.workflow || f.timeline);
     view! {
-        <header class="room-head">
+        <header class="room-head" class:collapsed=move || c.header_collapsed.get()>
             <div class="head-text">
                 <div class="eyebrow" class:has-views=views>
                     <EyebrowLine/>
-                    <Show when=views>
-                        <div class="eyebrow-actions"><workflow::Switcher/><room_actions::RoomMenuButton/></div>
-                    </Show>
+                    <div class="eyebrow-actions">
+                        <Show when=views>
+                            <workflow::Switcher/><room_actions::RoomMenuButton/>
+                        </Show>
+                        <HeaderCollapseToggle/>
+                    </div>
                 </div>
                 <div class="title-row">
                     <div class="room-title-group"><RoomTitle/><Show when=move || !views()><room_actions::RoomMenuButton/></Show></div>
-                    <p class="summary">
-                        {move || match c.view_room.with(|r| r.header.summary) {
-                            // History rooms keep no score.
-                            Summary::None => ().into_any(),
-                            empty @ Summary::Empty { .. } => {
-                                view! { <span class="fig">{empty.text()}</span> }.into_any()
-                            }
-                            Summary::Done { done } => view! { <b>{done}</b>" done" }.into_any(),
-                            Summary::AllClear { done, total } => view! {
-                                <b>{done}</b>
-                                {format!(" of {total} done")}
-                                <span class="dot-sep">"·"</span>
-                                <span class="finished-clear fig">"all clear"</span>
-                            }
-                                .into_any(),
-                            Summary::Progress { done, total, open } => view! {
-                                <b>{done}</b>
-                                {format!(" of {total} done")}
-                                <span class="dot-sep">"·"</span>
-                                <span class="fig">{open}</span>
-                                " open"
-                            }
-                                .into_any(),
-                        }}
-                    </p>
+                    <RoomSummary/>
                 </div>
             </div>
             <LandscapeStrip counts=counts width=width/>
+            <CompactProgressBar progress=progress/>
         </header>
     }
 }
@@ -2791,14 +2954,18 @@ fn ToastView(#[prop(optional)] in_drawer: bool) -> impl IntoView {
 #[component]
 fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
     let c = ctx();
+    let progress = Signal::derive(|| Some(1.0_f32));
     view! {
-        <header class="room-head finished" data-theme="dark" data-room-hue="my-day">
+        <header class="room-head finished" class:collapsed=move || c.header_collapsed.get() data-theme="dark" data-room-hue="my-day">
             <div class="head-text">
                 <div class="eyebrow">
                     <EyebrowLine/>
+                    <div class="eyebrow-actions">
+                        <HeaderCollapseToggle/>
+                    </div>
                 </div>
                 <div class="title-row">
-                    <RoomTitle/>
+                    <div class="room-title-group"><RoomTitle/></div>
                     <p class="summary">
                         {move || c.view_room.with(|r| format!("{} of {} done", r.header.progress_done, r.header.progress_total))}
                         <span class="dot-sep">"·"</span>
@@ -2818,6 +2985,7 @@ fn FinishedHeader(width: RwSignal<f64>) -> impl IntoView {
                     }
                 }
             ></div>
+            <CompactProgressBar progress=progress/>
         </header>
     }
 }

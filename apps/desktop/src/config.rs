@@ -241,6 +241,7 @@ pub struct UiPreferences {
     pub date_format: todo_client::date_format::DateFormat,
     #[serde(deserialize_with = "read_pane_widths")]
     pub panes: PaneWidths,
+    pub header_collapsed: bool,
 }
 
 fn read_pane_widths<'de, D: serde::Deserializer<'de>>(de: D) -> Result<PaneWidths, D::Error> {
@@ -662,6 +663,7 @@ mod tests {
                 tray: true,
                 rail: false,
             },
+            header_collapsed: true,
         };
         data.save_ui(&prefs).expect("save preferences");
         assert_eq!(data.load_ui(), prefs);

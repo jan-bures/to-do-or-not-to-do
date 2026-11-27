@@ -206,6 +206,17 @@ of it (the shared `elevation::scrim`: room ink at 16% in light mode, black at 40
 Clicking the scrim or pressing Esc closes it. The room title keeps its full size, and the done and open counts
 move to a line of their own under it, so the title never gives way to them.
 
+**A collapsible desktop and web header** lets the list view show more tasks without losing room context.
+Scrolling down a list collapses the hero sky into a **48 px** (`desktop::COMPACT_HEADER`, matching the
+detail pane's top bar) bar in the room's
+`sky` (or `dusk.top` on a finished day) with the room title in `room-title-bar`, the summary (when the room is
+at least `desktop::LIST_MIN` wide), the view switcher and room options, and a **2 px**
+(`desktop::COMPACT_PROGRESS_HEIGHT`) horizon progress hairline (`sun-ink` over `arc` at 30%) directly above the
+bottom `line` hairline. Scrolling back to the top restores the full hero. A quiet chevron button at the trailing
+edge of the header also collapses or expands the hero directly, and remembers that preference locally on the
+device so short lists, Board and Timeline can keep the compact bar too. Transitions follow `PANEL` (200 ms,
+`STANDARD`), snapping under reduced motion.
+
 **A desktop pop-out** keeps just the room: its title in the 36 px caption bar, a slim sky and progress strip,
 quick-add, and the same task rows and Undo inset. Its keep-on-top toggle sits outside the drag area and
 shares the native caption buttons' hit size. The Lucide pin is outlined when off and filled with the room's

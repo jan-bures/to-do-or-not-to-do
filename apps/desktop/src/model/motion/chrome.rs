@@ -155,6 +155,162 @@ impl ScrollbarMotion {
     }
 }
 
+/// What clicking the room header's collapse/expand control did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HeaderToggle {
+    /// Pinned compact (persist `header_collapsed = true`).
+    Pinned,
+    /// Unpinned and expanded (persist `header_collapsed = false`).
+    Unpinned,
+    /// Expanded from a temporary scroll collapse; scroll the active list back to its top.
+    ExpandedFromScroll,
+}
+
+/// Collapse state and animation for the desktop room header: combines the user's persisted
+/// compact preference (`pinned`) with temporary scroll-driven collapse (`scrolled`).
+#[derive(Clone, Copy, Debug)]
+pub struct HeaderCollapse {
+    pinned: bool,
+    scrolled: bool,
+    last_scroll_y: f32,
+    track: Track,
+}
+
+impl Default for HeaderCollapse {
+    fn default() -> Self {
+        Self::rest(false)
+    }
+}
+
+impl HeaderCollapse {
+    pub fn rest(pinned: bool) -> Self {
+        Self {
+            pinned,
+            scrolled: false,
+            last_scroll_y: 0.,
+            track: Track::rest(f32::from(pinned)),
+        }
+    }
+
+    pub fn is_collapsed(&self) -> bool {
+        self.pinned || self.scrolled
+    }
+
+    pub fn is_scrolled(&self) -> bool {
+        !self.pinned && self.scrolled
+    }
+
+    pub fn fraction(&self, now: Duration) -> f32 {
+        self.track.at(now)
+    }
+
+    pub fn moving(&self, now: Duration) -> bool {
+        self.track.moving(now)
+    }
+
+    fn aim(&mut self, now: Duration, pace: Pace, animate: bool) {
+        let to = f32::from(self.is_collapsed());
+        if !animate {
+            self.track = Track::rest(to);
+        } else {
+            self.track
+                .aim(to, now, pace.movement(m::PANEL), m::STANDARD);
+        }
+    }
+
+    pub fn toggle(&mut self, now: Duration, pace: Pace, animate: bool) -> HeaderToggle {
+        let result = if !self.pinned && self.scrolled {
+            self.scrolled = false;
+            self.last_scroll_y = 0.;
+            HeaderToggle::ExpandedFromScroll
+        } else if self.pinned {
+            self.pinned = false;
+            self.scrolled = false;
+            HeaderToggle::Unpinned
+        } else {
+            self.pinned = true;
+            HeaderToggle::Pinned
+        };
+        self.aim(now, pace, animate);
+        result
+    }
+
+    /// Reacts to a vertical scroll wheel delta (`< 0` scrolls down, `> 0` scrolls up).
+    pub fn on_wheel(
+        &mut self,
+        delta_y: f32,
+        scroll_y: f32,
+        max_scroll: f32,
+        now: Duration,
+        pace: Pace,
+        animate: bool,
+    ) -> bool {
+        if self.pinned {
+            return false;
+        }
+        if delta_y < 0. && !self.scrolled && (max_scroll > 0. || scroll_y > 0.) {
+            self.scrolled = true;
+            self.aim(now, pace, animate);
+            true
+        } else if delta_y > 0. && self.scrolled && scroll_y <= 0.5 {
+            self.scrolled = false;
+            self.aim(now, pace, animate);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Reacts to programmatic scrolling (keyboard navigation, scrollbar drag) without bouncing
+    /// when collapsing shrinks a barely overflowing list back to `max_scroll == 0`.
+    pub fn observe_scroll(
+        &mut self,
+        scroll_y: f32,
+        max_scroll: f32,
+        empty: bool,
+        now: Duration,
+        pace: Pace,
+        animate: bool,
+    ) -> bool {
+        let prev = self.last_scroll_y;
+        self.last_scroll_y = scroll_y;
+        if self.pinned {
+            return false;
+        }
+        if empty {
+            if self.scrolled {
+                self.scrolled = false;
+                self.aim(now, pace, animate);
+                return true;
+            }
+            return false;
+        }
+        if !self.scrolled && scroll_y > 1. {
+            self.scrolled = true;
+            self.aim(now, pace, animate);
+            true
+        } else if self.scrolled && prev > 0.5 && scroll_y <= 0.5 && max_scroll > 0. {
+            self.scrolled = false;
+            self.aim(now, pace, animate);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Called on room or view switches: clears temporary scroll collapse while keeping `pinned`.
+    pub fn reset_scroll(&mut self, now: Duration, pace: Pace, animate: bool) {
+        self.scrolled = false;
+        self.last_scroll_y = 0.;
+        self.aim(now, pace, animate);
+    }
+
+    /// Snaps any in-flight transition to rest (for deterministic screenshot fixtures).
+    pub fn settle(&mut self) {
+        self.track = Track::rest(f32::from(self.is_collapsed()));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -234,5 +390,62 @@ mod tests {
         );
         assert_eq!(s.sample(due * 2, 0., false, true, pace).alpha, 1.);
         assert_eq!(s.sample(due * 2, 0., false, true, pace).wake, Wake::Idle);
+    }
+
+    #[test]
+    fn header_collapse_does_not_bounce_when_collapsing_removes_overflow() {
+        let mut h = HeaderCollapse::rest(false);
+        let pace = Pace::FULL;
+        let t0 = Duration::ZERO;
+        // Short list with no overflow: wheeling down keeps the hero expanded.
+        assert!(!h.on_wheel(-40., 0., 0., t0, pace, true));
+        assert!(!h.is_collapsed());
+
+        // Barely overflowing list (30 px): wheeling down collapses the header.
+        assert!(h.on_wheel(-40., 0., 30., t0, pace, true));
+        assert!(h.is_collapsed());
+        assert!(h.moving(millis(m::PANEL / 2)));
+        assert_eq!(h.fraction(millis(m::PANEL)), 1.);
+
+        // After collapsing, all rows fit (max_scroll == 0, scroll_y == 0): must NOT bounce open!
+        assert!(!h.observe_scroll(0., 0., false, millis(m::PANEL), pace, true));
+        assert!(h.is_collapsed());
+
+        // Wheeling up at the top restores the hero.
+        let t1 = millis(m::PANEL);
+        assert!(h.on_wheel(40., 0., 0., t1, pace, true));
+        assert!(!h.is_collapsed());
+        assert_eq!(h.fraction(t1 + millis(m::PANEL)), 0.);
+    }
+
+    #[test]
+    fn header_collapse_follows_scroll_drag_and_pin_toggle() {
+        let mut h = HeaderCollapse::rest(false);
+        let pace = Pace::FULL;
+        // Scrolling via keyboard/thumb drag collapses the header.
+        assert!(h.observe_scroll(40., 300., false, Duration::ZERO, pace, true));
+        assert!(h.is_scrolled());
+        // Returning to top while overflow still exists expands automatically.
+        let t1 = millis(m::PANEL);
+        assert!(h.observe_scroll(0., 300., false, t1, pace, true));
+        assert!(!h.is_collapsed());
+
+        // Expanding from scroll via the button signals scroll-to-top without pinning.
+        assert!(h.observe_scroll(120., 300., false, t1, pace, true));
+        assert_eq!(h.toggle(t1, pace, true), HeaderToggle::ExpandedFromScroll);
+        assert!(!h.is_collapsed());
+
+        // Toggling from expanded pins compact; scrolling up does not unpin it.
+        assert_eq!(h.toggle(t1, pace, true), HeaderToggle::Pinned);
+        assert!(h.is_collapsed());
+        assert!(!h.on_wheel(40., 0., 300., t1, pace, true));
+        h.reset_scroll(t1, pace, true);
+        assert!(h.is_collapsed());
+
+        // Toggling again unpins and snaps immediately under reduced motion.
+        assert_eq!(h.toggle(t1, Pace::REDUCED, true), HeaderToggle::Unpinned);
+        assert!(!h.is_collapsed());
+        assert_eq!(h.fraction(t1), 0.);
+        assert!(!h.moving(t1));
     }
 }

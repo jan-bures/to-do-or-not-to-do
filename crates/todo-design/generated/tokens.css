@@ -208,6 +208,8 @@
   --desktop-header-pad-top: 20px;
   --desktop-eyebrow: 28px;
   --desktop-landscape: 48px;
+  --desktop-compact-header: 48px;
+  --desktop-compact-progress-height: 2px;
   --desktop-quick-add: 44px;
   --desktop-quick-add-margin: 16px;
   --desktop-quick-add-popup-width: 640px;

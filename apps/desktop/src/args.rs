@@ -164,6 +164,7 @@ pub const FIXTURES: &[&str] = &[
     "attachments-list",
     "task-activity",
     "collapsed-collection",
+    "collapsed-header",
     "long-sidebar",
     "short-sidebar",
     "short-sidebar-new-list",
