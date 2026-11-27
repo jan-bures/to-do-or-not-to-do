@@ -17,7 +17,7 @@ use todo_client::intent::organize::actionable_task;
 use todo_core::ids::{CollectionId, EntityId, ListId, TaskId};
 
 use super::sidebar::InlineTarget;
-use super::{Notice, ShellEvent, ShellView};
+use super::{Notice, RoomKey, ShellEvent, ShellView};
 use crate::model::menus::reminder;
 use crate::model::menus::repeat::{self, Draft};
 use crate::model::menus::{self, Asked, Confirmed, MenuAction, MenuEntry, MenuItem, Page, TagPage};
@@ -27,6 +27,7 @@ use crate::theme::{
     self, Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty,
 };
 use crate::ui::kit;
+use crate::ui::kit::QuietButton as _;
 
 /// How many rows a menu shows before it scrolls (the list picker, a long "couldn't sync" list).
 const MENU_ROWS: f32 = 12.;
@@ -389,12 +390,25 @@ impl ShellView {
 
     /// The room's menu: Activity's (refresh, and whose changes it shows), or a task room's.
     fn room_entries(&self, state: &todo_core::State, page: Page) -> Vec<MenuEntry> {
+        let can_sort = !self.ui.compact && self.view() == todo_core::model::ListView::List;
+        if page == Page::Sort {
+            let room = self.shell.room.key;
+            return crate::model::shared_key(room)
+                .task_sort(state)
+                .filter(|_| can_sort && room.resolved(state) == room)
+                .map_or_else(Vec::new, |sort| menus::sort_menu(room, sort));
+        }
         match self.shell.room.key {
             crate::model::RoomKey::Activity(agent) if page == Page::Main => {
                 menus::activity_menu(&self.shell.sidebar.agents, agent)
             }
             room => {
                 let mut entries = menus::room_menu(state, room, self.ui.show_completed, page);
+                if !can_sort {
+                    entries.retain(
+                        |e| !matches!(e, MenuEntry::Item(i) if i.action == MenuAction::OpenSort),
+                    );
+                }
                 if self.on_board() {
                     entries.retain(|e| !matches!(e, MenuEntry::Item(i) if i.action == MenuAction::ToggleCompleted));
                 }
@@ -661,6 +675,7 @@ impl ShellView {
                 task,
                 page: TagPage::Edit(_),
             } => Some(MenuAction::AllTags(task)),
+            MenuKind::Room { page: Page::Sort } => Some(MenuAction::CloseSort),
             _ => None,
         };
         match key {
@@ -702,6 +717,9 @@ impl ShellView {
             }
             "escape" if menu.kind.settings() => {
                 self.run_menu_action(MenuAction::CloseListSettings, true, window, cx)
+            }
+            "escape" if menu.kind == (MenuKind::Room { page: Page::Sort }) => {
+                self.run_menu_action(MenuAction::CloseSort, true, window, cx)
             }
             "escape" if menu.kind == MenuKind::DateFormat => {
                 self.run_menu_action(MenuAction::CloseDateFormat, true, window, cx)
@@ -818,6 +836,26 @@ impl ShellView {
                     self.highlight(menus::index_of(&entries, "list-settings"));
                 } else if keyboard {
                     self.highlight_first();
+                }
+                return;
+            }
+            MenuAction::OpenSort | MenuAction::CloseSort => {
+                let page = if action == MenuAction::OpenSort {
+                    Page::Sort
+                } else {
+                    Page::Main
+                };
+                let kind = MenuKind::Room { page };
+                self.open_menu(kind, menu.at, menu.trigger, window, cx);
+                if keyboard {
+                    let key = if page == Page::Sort {
+                        crate::model::shared_key(self.shell.room.key)
+                            .task_sort(&self.store.view())
+                            .map_or("room-sort", menus::sort_key)
+                    } else {
+                        "room-sort"
+                    };
+                    self.highlight(menus::index_of(&self.menu_entries(kind), key));
                 }
                 return;
             }
@@ -1000,6 +1038,24 @@ impl ShellView {
                 self.ui.show_completed = !self.ui.show_completed;
                 self.refresh(cx);
             }
+            MenuAction::SetSort(sort) => {
+                let room = self.shell.room.key;
+                let id = match room {
+                    RoomKey::List(id) => id.into(),
+                    RoomKey::Collection(id) => id.into(),
+                    _ => return,
+                };
+                if crate::model::shared_key(room)
+                    .task_sort(&self.store.view())
+                    .is_some_and(|current| current != sort)
+                    && self.submit(vec![todo_core::Command::SetTaskSort { id, sort }])
+                {
+                    self.cancel_task_drag(cx);
+                    self.rows_bar
+                        .reset_to_top(&self.rows.0.borrow().base_handle);
+                }
+                self.refresh(cx);
+            }
             MenuAction::DeleteTag(id) => {
                 self.submit(vec![commands::delete(id)]);
                 self.refresh(cx);
@@ -1135,6 +1191,8 @@ impl ShellView {
             | MenuAction::RestartToUpdate
             | MenuAction::OpenListSettings
             | MenuAction::CloseListSettings
+            | MenuAction::OpenSort
+            | MenuAction::CloseSort
             | MenuAction::OpenDateFormat
             | MenuAction::CloseDateFormat
             | MenuAction::SetDateFormat(_)
@@ -1483,6 +1541,8 @@ impl ShellView {
             MenuKind::BulkMove => Some("Move selected tasks to…"),
             MenuKind::BulkStatus => Some("Set status for selected tasks"),
             MenuKind::New => Some("New"),
+            MenuKind::Room { page: Page::Sort } => Some("Sort open tasks by"),
+            MenuKind::Room { .. } => Some("Room options"),
             MenuKind::Account { confirm: false } => Some("Settings"),
             MenuKind::Updates => Some("Updates"),
             MenuKind::DateFormat => Some("Date format"),
@@ -1516,6 +1576,9 @@ impl ShellView {
                     .when(live && footer_menu.is_some(), |d| {
                         d.role(Role::MenuItem)
                             .aria_label(item.label.clone())
+                            .when(matches!(item.action, MenuAction::SetSort(_)), |d| {
+                                d.aria_selected(item.checked)
+                            })
                             .when(on(item), |d| d.aria_active_descendant())
                     })
                     .into_any_element(),
@@ -1682,11 +1745,11 @@ impl ShellView {
                                 .style(ty::BUTTON_SMALL)
                                 .child(b.label.clone())
                                 .when(live, |d| {
-                                    d.cursor_pointer().hover(|s| s.bg(p.hover)).on_click(
-                                        cx.listener(move |this, _, window, cx| {
+                                    d.quiet_button(p).on_click(cx.listener(
+                                        move |this, _, window, cx| {
                                             this.run_menu_action(action, false, window, cx)
-                                        }),
-                                    )
+                                        },
+                                    ))
                                 }),
                         );
                     }
@@ -1944,7 +2007,7 @@ impl ShellView {
             p.ink
         };
         let action = item.action;
-        let hover = if item.checked { p.tint } else { p.hover };
+        let focused_fill = if item.checked { p.tint } else { p.hover };
         let merge_choice = matches!(action, MenuAction::AskMerge(..));
         let tag_choice = matches!(action, MenuAction::ToggleTag(..)) && item.more.is_some();
         let identity = item.dot.map(|hue| theme::list_colors(self.theme, hue));
@@ -1967,7 +2030,7 @@ impl ShellView {
                 gpui::transparent_black()
             })
             .when(item.checked, |d| d.bg(p.wash))
-            .when(highlighted, |d| d.bg(hover))
+            .when(highlighted, |d| d.bg(focused_fill))
             .style(ty::NAV_SUB)
             .when(item.checked, |d| d.font_weight(gpui::FontWeight::SEMIBOLD))
             .text_color(ink)
@@ -2029,7 +2092,6 @@ impl ShellView {
             )
             // A second action behind a chevron (Right from the keyboard): a tag's own page.
             .children(item.more.map(|more| {
-                let wash = p.wash;
                 div()
                     .id(SharedString::from(format!("{}-more", item.key)))
                     // Shown on the row under the pointer or the keyboard, so the list stays calm.
@@ -2048,7 +2110,7 @@ impl ShellView {
                         p.ink_3,
                     ))
                     .when(live, |d| {
-                        d.hover(move |s| s.bg(wash)).on_click(cx.listener(
+                        d.quiet_button(*p).on_click(cx.listener(
                             move |this, e: &gpui::ClickEvent, window, cx| {
                                 cx.stop_propagation();
                                 let keyboard = e.mouse_position().is_none();
@@ -2058,7 +2120,7 @@ impl ShellView {
                     })
             }))
             .when(live, |d| {
-                d.hover(move |s| s.bg(hover)).on_click(cx.listener(
+                d.quiet_button(*p).on_click(cx.listener(
                     move |this, e: &gpui::ClickEvent, window, cx| {
                         let keyboard = e.mouse_position().is_none();
                         this.run_menu_action(action, keyboard, window, cx);
@@ -2329,6 +2391,41 @@ pub(super) fn ring<E: Styled + IntoElement>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[gpui::test]
+    fn keyboard_selects_a_collection_sort_from_the_room_menu(cx: &mut gpui::TestAppContext) {
+        use std::rc::Rc;
+        use todo_core::model::TaskSort;
+
+        let fixture = crate::fixtures::work();
+        cx.update(|cx| cx.bind_keys(super::super::key_bindings()));
+        let (shell, cx) = cx.add_window_view(|window, cx| {
+            let mut view = ShellView::new(
+                Rc::new(crate::store::Store::fixture(&fixture)),
+                fixture.ui.clone(),
+                crate::theme::Theme::Light,
+                None,
+                window,
+                cx,
+            );
+            view.still();
+            window.activate_window();
+            view
+        });
+        cx.update(|window, cx| window.focus(&shell.read(cx).room_menu_focus.clone(), cx));
+        for key in ["enter", "enter", "down", "enter"] {
+            cx.simulate_keystrokes(key);
+            cx.simulate_event(gpui::KeyUpEvent {
+                keystroke: gpui::Keystroke::parse(key).expect("key"),
+            });
+        }
+        cx.update(|window, cx| {
+            let view = shell.read(cx);
+            let room = crate::model::shared_key(view.shell.room.key);
+            assert_eq!(room.task_sort(&view.store.view()), Some(TaskSort::Oldest));
+            assert!(view.room_menu_focus.is_focused(window));
+        });
+    }
 
     #[test]
     fn clicking_an_open_menus_button_closes_it_and_leaves_it_closed() {

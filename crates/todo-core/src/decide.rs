@@ -14,7 +14,7 @@ use crate::event::{Change, Event, EventPayload, FieldChange};
 use crate::ids::{EntityId, EventId, ListId, ReminderId, StepId, TagId, TaskId};
 use crate::model::{
     AttachmentRef, Collection, Entity, Link, LinkKind, List, ListView, Reminder, Stamp, Step, Tag,
-    Task, Tombstone, WorkflowStatus,
+    Task, TaskSort, Tombstone, WorkflowStatus,
 };
 use crate::state::{Scope, State};
 use crate::time::{Date, Timestamp, add_days, days_between, shift_days};
@@ -874,6 +874,7 @@ impl<'a> Decider<'a> {
                         id: *id,
                         name,
                         color: col.clone(),
+                        task_sort: None,
                         position,
                         created: stamp,
                         deleted: None,
@@ -917,6 +918,7 @@ impl<'a> Decider<'a> {
                         name,
                         color: col.clone(),
                         features: Default::default(),
+                        task_sort: None,
                         position,
                         created: stamp,
                         deleted: None,
@@ -954,6 +956,20 @@ impl<'a> Decider<'a> {
                     }
                 }
                 self.update((*id).into(), ch);
+            }
+            C::SetTaskSort { id, sort } => {
+                self.require_live(*id)?;
+                let (old, default) = match id {
+                    EntityId::Collection(id) => {
+                        (self.state.collections[id].task_sort, TaskSort::Newest)
+                    }
+                    EntityId::List(id) => (self.state.lists[id].task_sort, TaskSort::Manual),
+                    _ => return Err(DomainError::invalid("id", "expected a collection or list")),
+                };
+                let new = (*sort != default).then_some(*sort);
+                if old != new {
+                    self.update(*id, vec![FieldChange::TaskSort(Change::new(old, new))]);
+                }
             }
             C::MoveList {
                 id,

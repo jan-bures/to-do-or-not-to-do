@@ -18,6 +18,7 @@ use todo_core::{
 };
 use todo_design::{layout::board, motion};
 
+use super::kit::QuietButton as _;
 use super::{
     RowLook, ShellView, component, desktop, elevation, kit, radius, space, ty, workflow::status_ink,
 };
@@ -787,8 +788,7 @@ impl ShellView {
                 .aria_label(format!("Expand Done: {} recent completions", rows.len()))
                 .aria_expanded(false)
                 .tooltip(kit::tooltip(p, "Expand Done"))
-                .cursor_pointer()
-                .hover(|d| d.bg(p.hover))
+                .quiet_button(p)
                 .child(kit::icon(icon, component::ICON, p.accent))
                 .child(
                     div()
@@ -799,7 +799,7 @@ impl ShellView {
                 .child(
                     div()
                         .style(ty::COUNT)
-                        .text_color(p.ink_3)
+                        .text_color(p.ink_2)
                         .child(rows.len().to_string()),
                 )
                 .child(kit::icon(Icon::ChevronLeft, component::ICON_SMALL, p.ink_3))
@@ -915,7 +915,12 @@ impl ShellView {
                             .aria_label("Collapse Done")
                             .aria_expanded(true)
                             .tooltip(kit::tooltip(p, "Collapse Done"))
-                            .cursor_pointer()
+                            .size(px(space::S5))
+                            .flex()
+                            .items_center()
+                            .justify_center()
+                            .rounded(px(radius::SM))
+                            .quiet_button(p)
                             .child(kit::icon(
                                 Icon::ChevronRight,
                                 component::ICON_SMALL,
@@ -946,9 +951,9 @@ impl ShellView {
                     .py(px(space::S2))
                     .style(ty::BUTTON_SMALL)
                     .text_color(p.accent_strong)
-                    .cursor_pointer()
                     .role(Role::Button)
-                    .hover(|s| s.bg(p.hover))
+                    .rounded(px(radius::MD))
+                    .quiet_button(p)
                     .child(format!("View all {total_done} in Completed →"))
                     .on_click(
                         cx.listener(|this, _, window, cx| this.show_board_completed(window, cx)),
@@ -1055,10 +1060,9 @@ impl ShellView {
                 .rounded(px(radius::MD))
                 .role(Role::Button)
                 .aria_label(label.clone())
-                .cursor_pointer()
-                .hover(|s| s.bg(p.hover))
+                .quiet_button(p)
                 .style(ty::NAV_SUB)
-                .text_color(p.ink_3)
+                .text_color(p.ink_2)
                 .child(kit::icon(
                     Icon::Plus,
                     component::ICON_SMALL,
@@ -1142,11 +1146,16 @@ impl ShellView {
                     div()
                         .id("card-star")
                         .flex_none()
+                        .size(px(space::S5))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(radius::SM))
                         .opacity(if star || cursor { 1. } else { 0. })
                         .group_hover("board-card", |s| s.opacity(1.))
                         .child(self.task_glyph(&p, id, Icon::Star, star, component::ICON_SMALL))
                         .when(stage.is_some(), |d| {
-                            d.cursor_pointer()
+                            d.quiet_button(p)
                                 .role(Role::Button)
                                 .aria_label("Important")
                                 .aria_toggled(if star {

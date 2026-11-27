@@ -20,6 +20,7 @@ use todo_core::{
 };
 use todo_design::{layout::timeline as geometry, motion};
 
+use super::kit::QuietButton as _;
 use super::{MenuKind, RoomKey, ShellView, component, desktop, elevation, kit, radius, space, ty};
 use crate::{
     model::{
@@ -720,7 +721,10 @@ impl ShellView {
             } else {
                 p.line_strong
             })
-            .hover(|d| d.bg(p.hover))
+            .when(matches!(i, RAIL | COMPLETED), |d| d.quiet_button(p))
+            .when(!matches!(i, RAIL | COMPLETED), |d| {
+                d.hover(|d| d.bg(p.hover))
+            })
             .on_click(cx.listener(move |this, _, window, cx| {
                 cx.stop_propagation();
                 this.timeline_control(i, window, cx);
@@ -1638,8 +1642,8 @@ impl ShellView {
             .gap(px(space::S2))
             .px(px(desktop::LIST_PAD_X))
             .style(ty::CAPS_LABEL)
-            .text_color(p.ink_3)
-            .hover(|d| d.bg(p.hover))
+            .text_color(p.ink_2)
+            .quiet_button(p)
             .child(div().min_w_0().truncate().child(format!(
                 "UNSCHEDULED · {}{}",
                 tasks.len(),
@@ -1835,7 +1839,7 @@ impl ShellView {
                         } else {
                             p.pane
                         })
-                        .text_color(p.ink_3)
+                        .text_color(p.ink_2)
                         .child(kit::icon(
                             if self.ui.show_completed {
                                 Icon::ChevronDown

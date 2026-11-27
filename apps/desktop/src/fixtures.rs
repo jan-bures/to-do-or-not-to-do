@@ -100,9 +100,14 @@ pub const PAIRING_CODE: &str = "KQ4M-7XWD";
 /// `pairing` is drawn by the pairing view and has no shell.
 pub fn by_name(name: &str) -> Option<Fixture> {
     match name {
-        "my-day" | "quick-add" | "caption-hover" | "caption-close-hover" => Some(my_day()),
+        "my-day"
+        | "quick-add"
+        | "caption-hover"
+        | "caption-close-hover"
+        | "detail-button-pressed" => Some(my_day()),
         "ai-empty"
         | "ai-unconfigured"
+        | "ai-button-hover"
         | "ai-typing"
         | "ai-markdown"
         | "ai-proposal"
@@ -184,6 +189,7 @@ pub fn by_name(name: &str) -> Option<Fixture> {
         // The menus, open at rest: the room's "more" menu in a list, the account menu and the detail
         // pane's priority picker (`ShellView::preview_menu` opens them).
         "room-menu" => Some(list_room()),
+        "collection-sort" => Some(work()),
         "account-menu"
         | "date-format"
         | "device-settings"

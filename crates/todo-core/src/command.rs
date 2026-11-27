@@ -6,7 +6,9 @@
 use crate::ids::{
     AttachmentId, CollectionId, EntityId, LinkId, ListId, ReminderId, StepId, TagId, TaskId,
 };
-use crate::model::{Entity, LinkKind, ListFeatures, ListView, Priority, Task, WorkflowStatus};
+use crate::model::{
+    Entity, LinkKind, ListFeatures, ListView, Priority, Task, TaskSort, WorkflowStatus,
+};
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
 use serde::{Deserialize, Serialize};
@@ -325,6 +327,13 @@ pub enum Command {
         /// Partial feature settings; omitted fields are left alone.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         features: Option<ListFeaturesPatch>,
+    },
+    /// Change the order of open tasks in a collection or list.
+    SetTaskSort {
+        /// The collection or list.
+        id: EntityId,
+        /// The selected order.
+        sort: TaskSort,
     },
     /// Move a list into another collection (or to the top level).
     MoveList {

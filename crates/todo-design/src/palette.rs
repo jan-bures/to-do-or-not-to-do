@@ -126,6 +126,10 @@ macro_rules! token_struct {
 const fn kebab(s: &'static str) -> &'static str {
     // Field names are short ASCII; the kebab form is looked up from a fixed table so it can stay `const`.
     match s.as_bytes() {
+        b"button_hover" => "button-hover",
+        b"button_pressed" => "button-pressed",
+        b"button_sun_ink" => "button-sun-ink",
+        b"button_important_fill" => "button-important-fill",
         b"line_strong" => "line-strong",
         b"ink_2" => "ink-2",
         b"ink_3" => "ink-3",
@@ -163,6 +167,14 @@ token_struct! {
         raised = h(0.998, 0.002), h(0.240, 0.016);
         /// Hover background.
         hover = h(0.972, 0.010), h(0.226, 0.016);
+        /// Hover fill for a borderless action button on desktop.
+        button_hover = h(0.927, 0.030), h(0.299, 0.030);
+        /// Pointer-down fill for a borderless action button on desktop.
+        button_pressed = h(0.897, 0.038), h(0.350, 0.038);
+        /// Sun toggle fill on desktop button surfaces.
+        button_sun_ink = fixed(0.560, 0.130, 62.0), fixed(0.810, 0.140, 72.0);
+        /// Important toggle fill on desktop button surfaces.
+        button_important_fill = fixed(0.580, 0.135, 87.0), fixed(0.835, 0.152, 91.0);
         /// The selected row, the active step, the quick-add parse strip.
         wash = h(0.952, 0.028), h(0.262, 0.030);
         /// A stronger wash for members of a multi-selection.
@@ -461,6 +473,36 @@ mod tests {
             assert!(Palette::NAMES.contains(&fg), "{fg}");
             for b in bgs {
                 assert!(Palette::NAMES.contains(b), "{b}");
+            }
+        }
+    }
+
+    #[test]
+    fn quiet_button_fills_are_distinct_and_keep_actions_legible() {
+        for theme in Theme::ALL {
+            for hue in 0..360 {
+                let p = palette(theme, f64::from(hue));
+                for surface in [p.pane, p.canvas, p.sky, p.wash] {
+                    assert!(
+                        p.button_hover.contrast(surface) >= 1.05,
+                        "{theme:?} hue {hue}"
+                    );
+                }
+                assert!(
+                    p.button_pressed.contrast(p.button_hover) >= 1.08,
+                    "{theme:?} hue {hue}"
+                );
+                for fill in [p.button_hover, p.button_pressed] {
+                    for text in [p.ink_2, p.accent_strong, p.danger_ink] {
+                        assert!(text.contrast(fill) >= 4.5, "{theme:?} hue {hue}");
+                    }
+                    for icon in [p.ink_3, p.button_sun_ink, p.button_important_fill] {
+                        assert!(
+                            icon.contrast(fill) >= 3.0,
+                            "{theme:?} hue {hue} {icon:?} against {fill:?}"
+                        );
+                    }
+                }
             }
         }
     }

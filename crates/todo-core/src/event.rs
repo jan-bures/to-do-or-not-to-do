@@ -6,7 +6,7 @@
 
 use crate::actor::Actor;
 use crate::ids::{CollectionId, EntityId, EventId, ListId, TagId, TaskId};
-use crate::model::{Entity, ListFeatures, Priority, Stamp, Tombstone, WorkflowStatus};
+use crate::model::{Entity, ListFeatures, Priority, Stamp, TaskSort, Tombstone, WorkflowStatus};
 use crate::ordering::PosKey;
 use crate::recurrence::Recurrence;
 use crate::time::{Date, Timestamp};
@@ -68,6 +68,8 @@ pub enum FieldChange {
     Status(Change<WorkflowStatus>),
     /// Optional capabilities and default view of a list.
     ListFeatures(Change<ListFeatures>),
+    /// Open-task order override of a collection or list.
+    TaskSort(Change<Option<TaskSort>>),
     /// Priority of a task.
     Priority(Change<Priority>),
     /// My Day date of a task.
@@ -128,6 +130,8 @@ pub enum FieldKey {
     Status,
     /// `features`
     ListFeatures,
+    /// `task_sort`
+    TaskSort,
     /// `priority`
     Priority,
     /// `my_day`
@@ -160,6 +164,7 @@ impl FieldChange {
             Self::StartDate(_) => FieldKey::StartDate,
             Self::Status(_) => FieldKey::Status,
             Self::ListFeatures(_) => FieldKey::ListFeatures,
+            Self::TaskSort(_) => FieldKey::TaskSort,
             Self::Priority(_) => FieldKey::Priority,
             Self::MyDay(_) => FieldKey::MyDay,
             Self::CompletedAt(_) => FieldKey::CompletedAt,
@@ -185,6 +190,7 @@ impl FieldChange {
             Self::StartDate(_) => "start_date",
             Self::Status(_) => "status",
             Self::ListFeatures(_) => "features",
+            Self::TaskSort(_) => "task_sort",
             Self::Priority(_) => "priority",
             Self::MyDay(_) => "my_day",
             Self::CompletedAt(_) => "completed_at",
@@ -213,6 +219,7 @@ impl FieldChange {
             Self::StartDate(c) => Self::StartDate(c.inverted()),
             Self::Status(c) => Self::Status(c.inverted()),
             Self::ListFeatures(c) => Self::ListFeatures(c.inverted()),
+            Self::TaskSort(c) => Self::TaskSort(c.inverted()),
             Self::Priority(c) => Self::Priority(c.inverted()),
             Self::MyDay(c) => Self::MyDay(c.inverted()),
             Self::CompletedAt(c) => Self::CompletedAt(c.inverted()),

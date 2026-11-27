@@ -6,7 +6,9 @@ mod scrollbar;
 pub use caption::{CaptionPreview, caption_button_tints, window_controls};
 pub use scrollbar::{SCROLLBAR_GUTTER, ScrollPane, Scrollbar};
 
-use gpui::{Div, Hsla, IntoElement, SharedString, Styled, Svg, Window, div, prelude::*, px, svg};
+use gpui::{
+    Div, Hsla, IntoElement, SharedString, Stateful, Styled, Svg, Window, div, prelude::*, px, svg,
+};
 
 use crate::assets::{glyph_path, icon_path};
 use crate::model::ListRef;
@@ -14,6 +16,30 @@ use crate::theme::{
     self, Agent, Glyph, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius,
     space, ty,
 };
+
+/// Interaction styling shared by enabled borderless action buttons.
+pub trait QuietButton {
+    fn quiet_button(self, palette: Palette) -> Self;
+}
+
+impl QuietButton for Stateful<Div> {
+    fn quiet_button(self, palette: Palette) -> Self {
+        self.cursor_pointer()
+            .hover(move |s| s.bg(palette.button_hover))
+            .active(move |s| s.bg(palette.button_pressed))
+    }
+}
+
+/// The hit target of a toolbar icon button.
+pub fn toolbar_icon() -> Div {
+    div()
+        .size(px(component::ICON_BUTTON))
+        .flex_none()
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded(px(radius::MD))
+}
 
 /// A Lucide icon, tinted like text. `size` is `component::ICON` (18) in toolbars and rows and
 /// `component::ICON_SMALL` (14) in chips and metadata.
@@ -28,8 +54,8 @@ pub fn icon(icon: Icon, size: f32, color: Hsla) -> Svg {
 /// The active ink shared by task toggles and their menu equivalents.
 pub fn task_toggle_fill(p: &Palette, glyph: Icon) -> Option<Hsla> {
     match glyph {
-        Icon::SunFilled => Some(p.sun_ink),
-        Icon::StarFilled => Some(p.important_fill),
+        Icon::SunFilled => Some(p.button_sun_ink),
+        Icon::StarFilled => Some(p.button_important_fill),
         _ => None,
     }
 }

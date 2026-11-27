@@ -5,6 +5,7 @@ mod markdown;
 
 use super::*;
 use crate::theme::Agent;
+use crate::ui::kit::QuietButton as _;
 use gpui::Role;
 use std::sync::Arc;
 use todo_client::assistant::{
@@ -139,6 +140,18 @@ impl ShellView {
             .on_click(cx.listener(move |this, _, window, cx| f(this, window, cx)))
     }
 
+    fn ai_quiet_action(
+        &self,
+        id: impl Into<SharedString>,
+        contents: Div,
+        enabled: bool,
+        f: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
+        cx: &mut Context<Self>,
+    ) -> Stateful<Div> {
+        self.ai_clickable(id, contents.rounded(px(radius::MD)), enabled, f, cx)
+            .when(enabled, |d| d.quiet_button(self.palette))
+    }
+
     fn ai_button(
         &self,
         id: impl Into<SharedString>,
@@ -151,13 +164,17 @@ impl ShellView {
         let p = self.palette;
         let label = label.into();
         let (bg, fg, border) = match tone {
-            Tone::Quiet => (p.raised, p.accent_strong, p.raised),
+            Tone::Quiet => (
+                gpui::transparent_black(),
+                if enabled { p.accent_strong } else { p.ink_4 },
+                gpui::transparent_black(),
+            ),
             Tone::Outline => (p.raised, p.ink_2, p.line_strong),
             Tone::Primary if enabled => (p.accent_fill, p.on_accent, p.accent_fill),
             Tone::Primary => (p.canvas, p.ink_3, p.line),
             Tone::Danger => (p.danger_bg, p.danger_ink, p.danger),
         };
-        self.ai_action(
+        self.ai_clickable(
             id,
             div()
                 .h(px(component::BUTTON_SMALL))
@@ -177,6 +194,12 @@ impl ShellView {
             f,
             cx,
         )
+        .when(enabled && matches!(tone, Tone::Quiet), |d| {
+            d.quiet_button(p)
+        })
+        .when(enabled && !matches!(tone, Tone::Quiet), |d| {
+            d.hover(|s| s.opacity(0.85))
+        })
         .aria_label(label)
     }
 
@@ -190,21 +213,17 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let p = self.palette;
-        self.ai_action(
+        self.ai_quiet_action(
             id,
-            div()
-                .size(px(component::ICON_BUTTON))
-                .flex_none()
-                .flex()
-                .items_center()
-                .justify_center()
+            kit::toolbar_icon()
+                .relative()
                 .border_1()
-                .border_color(p.pane)
-                .rounded(px(radius::MD))
+                .border_color(gpui::transparent_black())
+                .when(id == "assistant-settings", |el| el.child(self.probe(id)))
                 .child(kit::icon(
                     icon,
-                    component::ICON_SMALL,
-                    if enabled { p.ink_2 } else { p.ink_4 },
+                    component::ICON,
+                    if enabled { p.ink_3 } else { p.ink_4 },
                 )),
             enabled,
             f,
@@ -434,7 +453,7 @@ impl ShellView {
                     )
                     .flex_1(),
                 )
-                .child(self.ai_action(
+                .child(self.ai_quiet_action(
                     "assistant-jump",
                     text(ty::BUTTON_SMALL, p.accent_strong, "Jump up"),
                     true,
@@ -748,17 +767,17 @@ impl ShellView {
             |m| model::labels::one_line(&m.model),
         );
         let (light, route, route_ink, model_ink) = match self.ai.connection_health() {
-            ConnectionHealth::Unknown => (None, self.ai.route_label(), p.ink_2, p.ink_3),
-            ConnectionHealth::Testing => (Some(p.accent), "Testing…", p.ink_2, p.ink_3),
+            ConnectionHealth::Unknown => (None, self.ai.route_label(), p.ink_2, p.ink_2),
+            ConnectionHealth::Testing => (Some(p.accent), "Testing…", p.ink_2, p.ink_2),
             ConnectionHealth::Connected => {
-                (Some(p.success), self.ai.route_label(), p.ink_2, p.ink_3)
+                (Some(p.success), self.ai.route_label(), p.ink_2, p.ink_2)
             }
             ConnectionHealth::Unreachable => {
                 (Some(p.danger), "Unreachable", p.danger_ink, p.danger_ink)
             }
         };
         let privacy = self
-            .ai_action(
+            .ai_quiet_action(
                 "assistant-route",
                 div()
                     .flex()
@@ -775,7 +794,7 @@ impl ShellView {
             )
             .aria_label(format!("{route} · {model} · AI settings"));
         let visibility = self
-            .ai_action(
+            .ai_quiet_action(
                 "assistant-privacy",
                 div()
                     .flex()
@@ -785,7 +804,7 @@ impl ShellView {
                     .child(kit::icon(Icon::EyeOff, space::S3, p.ink_3))
                     .child(text(
                         ty::COUNT,
-                        p.ink_3,
+                        p.ink_2,
                         format!(
                             "{hidden} {} hidden",
                             if hidden == 1 { "list" } else { "lists" }
@@ -1075,7 +1094,7 @@ impl ShellView {
             .gap(px(space::S1))
             .when(!running, |card| {
                 card.child(
-                    self.ai_action(
+                    self.ai_quiet_action(
                         format!("assistant-steps-{index}"),
                         div()
                             .flex()
@@ -1090,7 +1109,7 @@ impl ShellView {
                                 space::S3,
                                 p.ink_3,
                             ))
-                            .child(text(ty::META, p.ink_3, summary.label())),
+                            .child(text(ty::META, p.ink_2, summary.label())),
                         true,
                         move |this, _, cx| {
                             if !this.ai.step_details.remove(&id) {
@@ -1472,7 +1491,7 @@ impl ShellView {
             ))
             .aria_toggled(toggled(on));
         let detail = self
-            .ai_action(
+            .ai_quiet_action(
                 format!("assistant-expand-{index}"),
                 div()
                     .flex_1()

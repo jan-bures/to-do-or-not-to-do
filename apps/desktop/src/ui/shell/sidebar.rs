@@ -19,6 +19,7 @@ use crate::model::{self, RoomKey, Tone, commands, labels};
 use crate::theme::{self, Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
+use crate::ui::kit::QuietButton as _;
 
 /// Leading inset for top-level sidebar rows, leaving clear breathing room past the 3 px selection rail.
 const NAV_LEAD: f32 = space::S3;
@@ -513,7 +514,7 @@ impl ShellView {
             .rounded(px(radius::MD))
             .cursor_pointer()
             .track_focus(&self.sync_focus)
-            .hover(|s| s.bg(p.hover))
+            .quiet_button(p)
             .child(kit::icon(Icon::ChevronUp, component::ICON_SMALL, p.ink_3).flex_none())
             .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                 this.toggle_menu(MenuKind::SyncFailures, Stop::SyncFailures, e, window, cx);
@@ -691,8 +692,7 @@ impl ShellView {
                     .flex()
                     .items_center()
                     .justify_center()
-                    .hover(|s| s.bg(p.hover))
-                    .cursor_pointer()
+                    .quiet_button(p)
                     .child(chevron)
                     .on_mouse_down(MouseButton::Left, |_, window, _| window.prevent_default())
                     .on_click(cx.listener(move |this, _, _, cx| {
@@ -847,7 +847,7 @@ impl ShellView {
                     .as_ref()
                     .is_some_and(|m| m.kind == MenuKind::New && m.overlay.look(self.frame).open),
             )
-            .hover(|s| s.bg(p.hover))
+            .quiet_button(p)
             .child(kit::icon(Icon::Plus, component::ICON_SMALL, p.ink_3))
             .child("New")
             .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
@@ -866,7 +866,7 @@ impl ShellView {
             Tone::Problem => p.danger,
         };
         // The account menu opens upwards from the gear. Tab reaches the gear (`hints::tab_stop`).
-        let account = div()
+        let account = kit::toolbar_icon()
             .id("account")
             .role(Role::Button)
             .aria_label("Settings")
@@ -877,13 +877,9 @@ impl ShellView {
                 ) && m.overlay.look(self.frame).open
             }))
             .relative()
-            .size(px(component::ICON_BUTTON))
-            .flex()
-            .items_center()
-            .justify_center()
             .track_focus(&self.account_focus)
-            .hover(|s| s.bg(p.hover))
-            .child(kit::icon(Icon::Settings, component::GLYPH, p.ink_3))
+            .quiet_button(p)
+            .child(kit::icon(Icon::Settings, component::ICON, p.ink_3))
             .on_click(cx.listener(|this, e: &ClickEvent, window, cx| {
                 let kind = MenuKind::Account { confirm: false };
                 this.toggle_menu(kind, Stop::Account, e, window, cx);

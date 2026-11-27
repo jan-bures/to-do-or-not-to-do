@@ -1,8 +1,8 @@
 //! Render one or more fixtures, sequentially, without starting the interactive app.
 //!
-//! Deterministic and input-free: the fixture data and the clock are fixed, the scale factor is forced, and
+//! Deterministic: the fixture data and the clock are fixed, the scale factor is forced, and
 //! the image is read back from the window's own render target (`todo_patch::request_capture`) instead of
-//! capturing the screen. Nothing is clicked or typed.
+//! capturing the screen. Control-state fixtures send synthetic pointer events to the hidden window.
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -10,8 +10,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::Context as _;
 use gpui::{
-    AnyWindowHandle, App, AppContext, AsyncApp, Bounds, QuitMode, TitlebarOptions, WindowBounds,
-    WindowOptions, point, px, size,
+    AnyWindowHandle, App, AppContext, AsyncApp, Bounds, MouseButton, MouseDownEvent,
+    MouseMoveEvent, PlatformInput, QuitMode, TitlebarOptions, WindowBounds, WindowOptions, point,
+    px, size,
 };
 use gpui_platform::application;
 use gpui_windows::todo_patch;
@@ -294,7 +295,12 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
             );
         }
     }
-    let image = capture(cx, handle, hwnd, opened_at).await?;
+    let pointer = match opts.fixture.as_str() {
+        "ai-button-hover" => Some(("assistant-settings", false)),
+        "detail-button-pressed" => Some(("close-detail", true)),
+        _ => None,
+    };
+    let image = capture(cx, handle, hwnd, opened_at, pointer).await?;
     handle.update(cx, |_, window, _| window.remove_window())?;
     let got = image.dimensions();
     // A window the system clamped (to a small screen, say) must not pass as the real thing.
@@ -400,6 +406,7 @@ async fn capture(
     handle: AnyWindowHandle,
     hwnd: isize,
     opened_at: Instant,
+    pointer: Option<(&str, bool)>,
 ) -> anyhow::Result<image::RgbaImage> {
     let deadline = Instant::now() + Duration::from_secs(20);
     // The OS can recycle HWNDs within a batch. Don't count a previous fixture's present.
@@ -417,6 +424,35 @@ async fn capture(
         handle.update(cx, |_, window, _| window.refresh())?;
         win::request_hidden_frame(hwnd)?;
         sleep(cx, 16).await;
+    }
+    if let Some((control, pressed)) = pointer {
+        handle.update(cx, |view, window, cx| {
+            let position = view
+                .downcast::<ShellView>()
+                .ok()
+                .and_then(|view| view.read(cx).control_center(control))
+                .with_context(|| format!("no painted target for {control}"))?;
+            window.dispatch_event(
+                PlatformInput::MouseMove(MouseMoveEvent {
+                    position,
+                    modifiers: Default::default(),
+                    pressed_button: None,
+                }),
+                cx,
+            );
+            if pressed {
+                window.dispatch_event(
+                    PlatformInput::MouseDown(MouseDownEvent {
+                        button: MouseButton::Left,
+                        position,
+                        click_count: 1,
+                        ..Default::default()
+                    }),
+                    cx,
+                );
+            }
+            anyhow::Ok(())
+        })??;
     }
     todo_patch::request_capture(hwnd);
     loop {

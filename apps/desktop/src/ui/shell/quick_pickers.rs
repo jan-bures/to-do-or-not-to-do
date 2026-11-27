@@ -13,6 +13,7 @@ use crate::model::hints::Stop;
 use crate::model::{RoomKey, Smart};
 use crate::theme::{Icon, Palette, TextStyled, component, desktop, elevation, radius, space, ty};
 use crate::ui::kit;
+use crate::ui::kit::QuietButton as _;
 
 pub(super) struct Controls {
     pub input: FocusHandle,
@@ -257,7 +258,7 @@ impl ShellView {
                 gpui::transparent_black()
             })
             .when(open || has_value, |el| el.bg(p.wash))
-            .hover(|el| el.bg(p.hover))
+            .quiet_button(p)
             .child(kit::icon(
                 icon,
                 component::ICON,
@@ -359,7 +360,7 @@ impl ShellView {
             .text_color(ink)
             .style(ty::COUNT.with_weight(500))
             .cursor_pointer()
-            .hover(|el| el.bg(p.hover))
+            .quiet_button(p)
             .when(date, |el| {
                 el.child(kit::icon(Icon::Calendar, component::ICON_SMALL, ink))
             })

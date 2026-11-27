@@ -564,6 +564,12 @@ Due editor accepts the task editor's usual date syntax; Enter saves, a blank cle
 and Esc cancels. The detail pane shows a count instead of a task editor. Each change clears the selection
 and offers one Undo (also **Ctrl+Z**), including any next occurrences created by completing repeats.
 
+### Sort open tasks
+
+In the header menu of a collection or list, choose **Sort by…**. Collections start with newest created
+first across all child lists. Individual lists start in manual order. Each room saves its choice to
+the account, so paired devices use the same order. The Completed section sorts by completion time.
+
 ### Drag tasks
 
 Grab a row by the six-dot grip. A picked row lifts and follows the pointer; dragging a selected row

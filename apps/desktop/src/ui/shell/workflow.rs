@@ -1,5 +1,6 @@
 //! List settings, view switching and the workflow controls shared by List and Board.
 
+use crate::ui::kit::QuietButton as _;
 use gpui::{
     AnyElement, ClickEvent, Context, Div, FocusHandle, KeyDownEvent, Role, Stateful, Window, div,
     prelude::*, px,
@@ -545,7 +546,7 @@ impl ShellView {
             .role(Role::Button)
             .aria_label(label)
             .aria_expanded(open)
-            .hover(|s| s.bg(p.hover))
+            .quiet_button(p)
             .cursor_pointer()
             .child(div().flex_1())
             .child(kit::kbd(&p, key))
@@ -601,7 +602,7 @@ impl ShellView {
                     .aria_expanded(open)
                     .tooltip(kit::tooltip(p, "Choose status"))
                     .cursor_pointer()
-                    .hover(|s| s.bg(p.hover))
+                    .quiet_button(p)
                     .when(open || stage != QueryStatus::Todo, |s| s.bg(p.wash))
                     .child(kit::icon(
                         icon,
@@ -646,7 +647,7 @@ impl ShellView {
                 gpui::transparent_black()
             })
             .cursor_pointer()
-            .hover(|s| s.bg(p.hover))
+            .quiet_button(p)
             .child(status_mark(&p, stage, false))
             .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
             .on_click(cx.listener(|this, _, window, cx| {

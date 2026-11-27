@@ -19,7 +19,7 @@ Options:
   --screenshot-all  Render all fixtures, both themes and scales 1 and 1.5 in one hidden run.
                     To select a subset, pass comma-separated fixture names, themes or scales.
   --fixture         Fixture to render: my-day, work, list-status, list-settings, board, board-detail,
-                    timeline, timeline-month, timeline-tray, timeline-planned, room-menu, account-menu, date-format, device-settings,
+                    timeline, timeline-month, timeline-tray, timeline-planned, room-menu, collection-sort, account-menu, date-format, device-settings,
                     device-invite, device-approve, updates-disabled, updates-up-to-date, updates-checking, updates-downloading,
                     updates-ready, updates-indicator, updates-failed, updates-unverified,
                     updates-footer-current, updates-footer-checking, updates-footer-downloading,
@@ -38,12 +38,12 @@ Options:
                     long-names-narrow and narrow-detail (960 px wide), long-task-list,
                     sidebar-wide, detail-narrow, detail-wide, detail-wide-1920 (1920 × 1080),
                     notes-markdown, notes-code,
-                    resize-handle-hover, caption-hover,
+                    resize-handle-hover, caption-hover, detail-button-pressed,
                     caption-close-hover, popout-pinned, popout-unpinned, empty, finished, finished-short (700 px
                     tall), finished-nothing-tomorrow, handover-complete-50, quick-add, quick-add-chips,
                     quick-add-suggestion, quick-add-destination, quick-add-calendar, quick-add-priority,
                     detail-due-calendar, pairing, pairing-code, open-failed or open-failed-confirm.
-                    Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-error, ai-blocked.
+                    Assistant: ai-empty, ai-proposal, ai-batch, ai-settings, ai-button-hover, ai-error, ai-blocked.
   --theme           Light or dark (default light).
   --scale           Scale factor to render at (default 1).
   --overwrite       Replace <out.png> if it exists (by default the screenshot refuses to).
@@ -58,6 +58,7 @@ pub const FIXTURES: &[&str] = &[
     "my-day",
     "ai-empty",
     "ai-unconfigured",
+    "ai-button-hover",
     "ai-typing",
     "ai-markdown",
     "ai-chatgpt-signed-out",
@@ -92,6 +93,7 @@ pub const FIXTURES: &[&str] = &[
     "timeline-tray",
     "timeline-planned",
     "room-menu",
+    "collection-sort",
     "account-menu",
     "date-format",
     "device-settings",
@@ -179,6 +181,7 @@ pub const FIXTURES: &[&str] = &[
     "resize-handle-hover",
     "caption-hover",
     "caption-close-hover",
+    "detail-button-pressed",
     "popout-pinned",
     "popout-unpinned",
     "empty",

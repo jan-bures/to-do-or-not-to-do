@@ -140,7 +140,13 @@ impl Drag {
         visible: &[TaskId],
         index: usize,
     ) -> Option<Placement> {
-        if index > visible.len() || !self.current(state) {
+        if index > visible.len()
+            || !self.current(state)
+            || !state
+                .lists
+                .get(&list)
+                .is_some_and(|l| l.task_sort() == todo_core::model::TaskSort::Manual)
+        {
             return None;
         }
         let picked: BTreeSet<_> = self.ids().collect();

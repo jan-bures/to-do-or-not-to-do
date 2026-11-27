@@ -716,6 +716,7 @@ Completing a task is the one choreographed moment in the app.
 - **Platform notes:**
   - *GPUI:* Instant hover styles are acceptable on virtualized rows when avoiding extra animation bookkeeping;
     apply `HOVER` colour transitions on persistent chrome (sidebar items, buttons, quick-add focus ring).
+    Borderless action buttons share the stronger `button-hover` and `button-pressed` fills across panes.
   - *Compose:* Replace Material's default ripple with a subtle `wash`/`tint` `Indication` driven by `HOVER`.
   - *Web:* Use `:focus-visible` and transition only `background-color`, `border-color`, `color`, and `box-shadow`
     with `var(--duration-hover) var(--ease-standard)`.

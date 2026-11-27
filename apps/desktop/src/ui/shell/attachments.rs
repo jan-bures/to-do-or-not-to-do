@@ -14,6 +14,7 @@ use gpui::{
 use todo_client::{Connection, failure, intent};
 use todo_core::ids::TaskId;
 
+use super::kit::QuietButton as _;
 use super::{ShellView, kit};
 use crate::model::attachments::{Control, Upload, Uploads, file_controls};
 use crate::model::{Detail, files};
@@ -265,8 +266,7 @@ impl ShellView {
                     .on_key_down(cx.listener(|v, e, window, cx| v.control_key(e, window, cx)))
                     .when_some(blocked, |el, reason| el.aria_description(reason))
                     .when(blocked.is_none(), |el| {
-                        el.cursor_pointer()
-                            .hover(|s| s.bg(p.hover))
+                        el.quiet_button(p)
                             .tooltip(kit::tooltip(p, name))
                             .on_click(cx.listener(move |v, _, _, cx| {
                                 cx.stop_propagation();

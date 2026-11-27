@@ -34,6 +34,8 @@ class TokensTest {
 
     private val room: Map<String, (RoomColors) -> Color> = mapOf(
         "accent" to { it.accent }, "accent-fill" to { it.accentFill }, "accent-strong" to { it.accentStrong },
+        "button-hover" to { it.buttonHover }, "button-pressed" to { it.buttonPressed },
+        "button-sun-ink" to { it.buttonSunInk }, "button-important-fill" to { it.buttonImportantFill },
         "arc" to { it.arc }, "canvas" to { it.canvas }, "check-selected" to { it.checkSelected },
         "control" to { it.control }, "danger" to { it.danger }, "danger-bg" to { it.dangerBg },
         "danger-ink" to { it.dangerInk }, "hill-far" to { it.hillFar }, "hill-near" to { it.hillNear },

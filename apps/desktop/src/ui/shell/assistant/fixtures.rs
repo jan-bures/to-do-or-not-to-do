@@ -19,7 +19,7 @@ impl ShellView {
         }
         self.ai.open = name != "ai-pending";
         self.settle_detail();
-        if name == "ai-unconfigured" {
+        if matches!(name, "ai-unconfigured" | "ai-button-hover") {
             self.ai.cloud.status = Some(todo_client::assistant::relay::Status {
                 chatgpt: true,
                 private_models: true,

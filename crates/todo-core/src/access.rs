@@ -273,6 +273,7 @@ pub fn requirements(state: &State, cmd: &Command) -> Vec<(Need, Target)> {
         C::CreateList { id, .. } | C::UpdateList { id, .. } | C::MoveList { id, .. } => {
             vec![(Need::Structure, Target::List(*id))]
         }
+        C::SetTaskSort { id, .. } => vec![(Need::Structure, entity_target(state, *id))],
         C::CreateTask(n) => {
             let mut v = vec![(Need::Capture, Target::List(n.list))];
             if !n.tags.is_empty() || n.my_day.is_some() || n.recurrence.is_some() {
@@ -570,6 +571,7 @@ mod tests {
         let mut st = State::new();
         let list = crate::model::List {
             features: Default::default(),
+            task_sort: None,
             id: lid(1),
             name: "l".into(),
             collection: None,

@@ -23,8 +23,10 @@ use jiff::civil::DateTime;
 use jiff::tz::TimeZone;
 use todo_core::State;
 use todo_core::ids::{CollectionId, ListId, TaskId};
-use todo_core::model::{Stamp, Task};
-use todo_core::query::{BUILTIN_LISTS, BuiltinList, EvalContext, LocalZone, Matcher, Query};
+use todo_core::model::{Stamp, Task, TaskSort};
+use todo_core::query::{
+    BUILTIN_LISTS, BuiltinList, EvalContext, Expr, LocalZone, Matcher, Query, Sort, SortKey,
+};
 use todo_core::time::{Date, Timestamp, Weekday};
 
 use crate::activity;
@@ -324,8 +326,20 @@ pub struct RoomTasks<'s> {
     pub done: Vec<&'s Task>,
 }
 
-/// The tasks a room holds. Smart lists come in their query's order, lists and collections in manual order
-/// (collections list by list). A held task (completed, still playing its completion) stays in the rows
+impl RoomKey<'_> {
+    /// The effective list-view sort for a collection or list.
+    #[must_use]
+    pub fn task_sort(self, state: &State) -> Option<TaskSort> {
+        match self {
+            Self::Collection(id) => state.collections.get(&id).map(|c| c.task_sort()),
+            Self::List(id) => state.lists.get(&id).map(|l| l.task_sort()),
+            _ => None,
+        }
+    }
+}
+
+/// The tasks a room holds. Smart lists come in their query's order, and lists and collections use
+/// their saved sort. A held task (completed, still playing its completion) stays in the rows
 /// where it was as if it were open.
 #[must_use]
 pub fn room_tasks<'s>(
@@ -429,18 +443,32 @@ fn room_tasks_impl<'s, 'u>(
                     done.push(t);
                 }
             }
-            open.sort_by(|a, b| {
-                (list_pos(a), a.list, &a.position, a.id).cmp(&(
-                    list_pos(b),
-                    b.list,
-                    &b.position,
-                    b.id,
-                ))
-            });
+            let sort = key.task_sort(state).unwrap_or(TaskSort::Manual);
+            if let Some(sort) = sort_clause(sort) {
+                let query = Query {
+                    expr: Expr::True,
+                    sort: vec![sort],
+                };
+                open.sort_by_cached_key(|task| query.order_key(state, task));
+            } else {
+                open.sort_by_key(|t| (list_pos(t), t.list, &t.position, t.id));
+            }
             done.sort_by(|a, b| b.completed_at.cmp(&a.completed_at).then(a.id.cmp(&b.id)));
             RoomTasks { open, done }
         }
     }
+}
+
+fn sort_clause(sort: TaskSort) -> Option<Sort> {
+    let (key, descending) = match sort {
+        TaskSort::Manual => return None,
+        TaskSort::Newest => (SortKey::Created, true),
+        TaskSort::Oldest => (SortKey::Created, false),
+        TaskSort::Due => (SortKey::Due, false),
+        TaskSort::Priority => (SortKey::Priority, true),
+        TaskSort::Title => (SortKey::Title, false),
+    };
+    Some(Sort { key, descending })
 }
 
 /// The line above the room's title.

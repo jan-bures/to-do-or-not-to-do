@@ -67,10 +67,12 @@ impl Ctx {
     }
 
     fn manual_list(self) -> Option<ListId> {
-        match self.room.get_untracked() {
-            RoomId::List(list) => Some(list),
-            _ => None,
-        }
+        let RoomId::List(list) = self.room.get() else {
+            return None;
+        };
+        self.state.with(|s| {
+            (s.lists.get(&list)?.task_sort() == todo_core::model::TaskSort::Manual).then_some(list)
+        })
     }
 
     fn take_target(self, g: &Gesture) -> Option<Target> {
@@ -292,7 +294,7 @@ pub(super) fn Handle(id: TaskId, title: String) -> impl IntoView {
     let c = ctx();
     view! {
         <span class="task-drag-grip" aria-hidden="true" draggable="false"
-            title=move || if c.room.with(|room| matches!(room, RoomId::List(_))) { "Drag to reorder or move" } else { "Drag to a list or My Day" }
+            title=move || if c.manual_list().is_some() { "Drag to reorder or move" } else { "Drag to a list or My Day" }
             on:pointerdown=move |ev| c.start_drag(id, title.clone(), &ev)
             on:pointermove=move |ev| c.move_drag(&ev)
             on:pointerup=move |ev| c.end_drag(&ev)

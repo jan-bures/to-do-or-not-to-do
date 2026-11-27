@@ -756,6 +756,7 @@ impl Builder<'_> {
                 SourceKind::Group,
                 &g.online_id,
                 Entity::Collection(Collection {
+                    task_sort: None,
                     id,
                     name: mapping::name(&g.name),
                     color: None,
@@ -822,6 +823,7 @@ impl Builder<'_> {
                     SourceKind::List,
                     &l.list.id,
                     Entity::List(List {
+                        task_sort: None,
                         id,
                         collection: col,
                         name: mapping::name(&l.list.display_name),

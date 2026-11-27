@@ -79,7 +79,7 @@ fun taskMenu(room: RoomView, id: String, done: Boolean, myDay: Boolean, priority
     add(MenuEntry.Item("list", "Move to…", MenuAction.PickList))
     add(MenuEntry.Item("list-plus", "Merge into…", MenuAction.PickMerge))
     val list = room.key as? RoomKey.List
-    if (list != null && !done && !board) {
+    if (list != null && room.manualTaskOrder && !done && !board) {
         val i = room.tasks.indexOfFirst { it.id == id }
         if (i >= 0) for (by in listOf(-1, 1)) {
             val other = room.tasks.getOrNull(i + by)?.id

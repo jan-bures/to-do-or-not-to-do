@@ -32,6 +32,7 @@ use crate::theme::{
 };
 use crate::ui::input::{InputEvent, TextInput};
 use crate::ui::kit;
+use crate::ui::kit::QuietButton as _;
 use crate::ui::text_area::TextArea;
 use todo_core::model::Priority;
 
@@ -606,7 +607,7 @@ impl ShellView {
                 .items_center()
                 .justify_center()
                 .rounded(px(radius::SM))
-                .hover(|s| s.bg(p.hover))
+                .quiet_button(p)
                 .child(kit::icon(icon, component::ICON_SMALL, p.ink_3))
         };
         div()
@@ -720,22 +721,19 @@ impl ShellView {
             None => crumbs.child(kit::chip(t, &d.list, false)),
         };
         let top_button = |id: &'static str, label: &'static str, glyph: AnyElement| {
-            div()
+            kit::toolbar_icon()
                 .id(id)
-                .size(px(component::ICON_BUTTON))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded(px(radius::MD))
-                .hover(|s| s.bg(p.hover))
+                .relative()
+                .when(live, |el| el.quiet_button(p))
                 .tooltip(kit::tooltip(p, label))
                 .child(glyph)
+                .when(id == "close-detail", |el| el.child(self.probe(id)))
         };
         let top_toggle = |id, label, action, icon, on, handle: &gpui::FocusHandle| {
             top_button(
                 id,
                 action,
-                self.task_glyph(&p, task, icon, on, component::GLYPH)
+                self.task_glyph(&p, task, icon, on, component::ICON)
                     .into_any_element(),
             )
             .when(live, |el| {
@@ -798,10 +796,10 @@ impl ShellView {
                     .rounded(px(radius::SM))
                     .opacity(0.)
                     .group_hover(group.clone(), |s| s.opacity(1.))
-                    .hover(|s| s.bg(p.hover))
                     .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
                     .when(live, |el| {
-                        el.tooltip(kit::tooltip(p, "Remove link"))
+                        el.quiet_button(p)
+                            .tooltip(kit::tooltip(p, "Remove link"))
                             .on_click(cx.listener(move |this, _, _, cx| {
                                 cx.stop_propagation();
                                 let cmd = commands::delete_link(&this.store.view(), link);
@@ -992,7 +990,7 @@ impl ShellView {
                             .role(gpui::Role::Button)
                             .aria_label(format!("Edit due date: {}", f.value))
                             .aria_expanded(open)
-                            .hover(|s| s.bg(p.hover))
+                            .quiet_button(p)
                             .cursor_pointer()
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "D"))
@@ -1005,7 +1003,7 @@ impl ShellView {
                     })
                     // The four levels to pick from (Shift+P from the list); P cycles them.
                     .when(priority && live, |el| {
-                        el.hover(|s| s.bg(p.hover))
+                        el.quiet_button(p)
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "Shift P"))
                             .on_click(cx.listener(move |this, e, window, cx| {
@@ -1032,7 +1030,7 @@ impl ShellView {
                                     f.value.clone()
                                 },
                             ))
-                            .hover(|s| s.bg(p.hover))
+                            .quiet_button(p)
                             .cursor_pointer()
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "R"))
@@ -1066,7 +1064,7 @@ impl ShellView {
                                     format!("Reminds you {}", f.value)
                                 }),
                             ))
-                            .hover(|s| s.bg(p.hover))
+                            .quiet_button(p)
                             .cursor_pointer()
                             .child(div().flex_1())
                             .child(kit::kbd(&p, "Shift R"))
@@ -1084,7 +1082,7 @@ impl ShellView {
                     })
                     // The tag picker (T from the list): put tags on, take them off, make new ones.
                     .when(tags && live && renaming.is_none(), |el| {
-                        el.hover(|s| s.bg(p.hover))
+                        el.quiet_button(p)
                             .when(d.tags.is_empty(), |el| el.child(div().flex_1()))
                             .child(kit::kbd(&p, "T"))
                             .on_click(cx.listener(move |this, e, window, cx| {
@@ -1160,8 +1158,7 @@ impl ShellView {
                                 top_button(
                                     "close-detail",
                                     "Close (Esc)",
-                                    kit::icon(Icon::X, component::GLYPH, p.ink_3)
-                                        .into_any_element(),
+                                    kit::icon(Icon::X, component::ICON, p.ink_3).into_any_element(),
                                 )
                                 .role(gpui::Role::Button)
                                 .aria_label("Close")

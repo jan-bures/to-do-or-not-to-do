@@ -401,6 +401,8 @@ pub struct Tomorrow {
 pub struct RoomView {
     /// Which room (a deleted list falls back to My Day).
     pub key: RoomKey,
+    /// Whether open rows can be reordered in list view.
+    pub manual_task_order: bool,
     /// "My Day", "Personal".
     pub title: String,
     /// Hue token key of the room.
@@ -976,6 +978,8 @@ pub fn room_filtered(state: &State, key: &RoomKey, filter_text: &str, now: &Now)
         None
     };
     RoomView {
+        manual_task_order: matches!(shared, room_header::RoomKey::List(_))
+            && shared.task_sort(state) == Some(todo_core::model::TaskSort::Manual),
         title,
         eyebrow: header.eyebrow.clone().into(),
         hue,

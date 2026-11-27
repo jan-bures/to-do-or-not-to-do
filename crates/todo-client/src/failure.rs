@@ -86,6 +86,7 @@ pub fn what(entry: &OutboxEntry) -> &'static str {
         Command::UpdateCollection { .. } => "Change a collection",
         Command::CreateList { .. } => "Add a list",
         Command::UpdateList { .. } => "Change a list",
+        Command::SetTaskSort { .. } => "Change task sort order",
         Command::MoveList { .. } => "Move a list",
         Command::CreateTask(_) => "Add a task",
         Command::UpdateTask { .. } => "Edit a task",
@@ -127,6 +128,7 @@ pub fn subject(entry: &OutboxEntry) -> Option<EntityId> {
     Some(match entry.command()? {
         Command::UpdateCollection { id, .. } => (*id).into(),
         Command::UpdateList { id, .. } | Command::MoveList { id, .. } => (*id).into(),
+        Command::SetTaskSort { id, .. } => *id,
         Command::UpdateTask { id, .. }
         | Command::MoveTask { id, .. }
         | Command::MoveTaskStatus { id, .. }

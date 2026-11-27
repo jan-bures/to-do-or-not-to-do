@@ -97,6 +97,7 @@ pub fn referenced(cmd: &Command) -> Vec<EntityId> {
             place(placement, &mut v);
         }
         C::UpdateList { id, .. } => v.push(EntityId::List(*id)),
+        C::SetTaskSort { id, .. } => v.push(*id),
         C::MoveList {
             id,
             collection,

@@ -529,6 +529,9 @@ pub fn reorder_open_task(
     neighbour: TaskId,
     by: i32,
 ) -> Option<Command> {
+    if state.lists.get(&list)?.task_sort() != todo_core::model::TaskSort::Manual {
+        return None;
+    }
     let open = |id: TaskId| {
         state
             .tasks

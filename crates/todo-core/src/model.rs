@@ -75,6 +75,25 @@ impl Priority {
     }
 }
 
+/// How a room orders its open tasks in list view.
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TaskSort {
+    /// Stored task positions, grouped by list in a collection.
+    Manual,
+    /// Newest creation time first.
+    Newest,
+    /// Oldest creation time first.
+    Oldest,
+    /// Earliest due date first, undated tasks last.
+    Due,
+    /// Highest priority first.
+    Priority,
+    /// Alphabetical by title.
+    Title,
+}
+
 /// A group of lists (Microsoft To Do: "list group").
 #[cfg_attr(feature = "openapi", derive(utoipa::ToSchema))]
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,12 +104,23 @@ pub struct Collection {
     pub name: String,
     /// Optional colour, for example `#3366ff`.
     pub color: Option<String>,
+    /// Open-task sort override. Collections default to newest first.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_sort: Option<TaskSort>,
     /// Sort key among collections.
     pub position: PosKey,
     /// Creation stamp.
     pub created: Stamp,
     /// Set while deleted.
     pub deleted: Option<Tombstone>,
+}
+
+impl Collection {
+    /// Effective open-task sort.
+    #[must_use]
+    pub fn task_sort(&self) -> TaskSort {
+        self.task_sort.unwrap_or(TaskSort::Newest)
+    }
 }
 
 /// Stored open stage. Completion is represented only by a task's `completed_at`.
@@ -179,12 +209,23 @@ pub struct List {
     /// Optional list capabilities and the default presentation.
     #[serde(default, skip_serializing_if = "ListFeatures::is_default")]
     pub features: ListFeatures,
+    /// Open-task sort override. Lists default to manual order.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_sort: Option<TaskSort>,
     /// Sort key among the lists of the same collection.
     pub position: PosKey,
     /// Creation stamp.
     pub created: Stamp,
     /// Set while deleted.
     pub deleted: Option<Tombstone>,
+}
+
+impl List {
+    /// Effective open-task sort.
+    #[must_use]
+    pub fn task_sort(&self) -> TaskSort {
+        self.task_sort.unwrap_or(TaskSort::Manual)
+    }
 }
 
 /// A task.

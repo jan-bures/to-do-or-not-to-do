@@ -93,6 +93,64 @@ fn day(s: &str) -> Date {
 }
 
 #[test]
+fn collections_default_to_creation_order_across_lists_and_sort_open_tasks_only() {
+    let mut w = World::new();
+    let collection = w.collection("Project");
+    let a = w.list("A", Some(collection));
+    let b = w.list("B", Some(collection));
+    let first = w.task(a, "Zebra");
+    let last = w.task(b, "Map");
+    let middle = w.task(a, "Álpha");
+    w.task_mut(middle).created.at = ts("2026-11-03T08:00:00Z");
+    w.task_mut(last).created.at = ts("2026-11-04T08:00:00Z");
+    w.task_mut(last).due = Some(day("2026-11-30"));
+    w.task_mut(middle).due = Some(day("2026-11-29"));
+    w.important(first);
+    let done_a = w.task(a, "Done first");
+    let done_b = w.task(b, "Done last");
+    w.done_at(done_a, "2026-11-06T08:00:00Z");
+    w.done_at(done_b, "2026-11-07T08:00:00Z");
+
+    let ctx = utc("2026-11-21T10:35:00Z").eval();
+    let rows = |w: &World, key| {
+        let tasks = room_tasks(&w.state, key, &BTreeSet::new(), &ctx);
+        let ids = |tasks: Vec<&Task>| tasks.into_iter().map(|t| t.id).collect::<Vec<_>>();
+        (ids(tasks.open), ids(tasks.done))
+    };
+    let key = RoomKey::Collection(collection);
+    assert_eq!(
+        rows(&w, key),
+        (vec![last, middle, first], vec![done_b, done_a])
+    );
+    assert_eq!(rows(&w, RoomKey::List(a)).0, [first, middle]);
+
+    for (sort, expected) in [
+        (TaskSort::Oldest, [first, middle, last]),
+        (TaskSort::Due, [middle, last, first]),
+        (TaskSort::Priority, [first, middle, last]),
+        (TaskSort::Title, [middle, last, first]),
+        (TaskSort::Manual, [first, middle, last]),
+        (TaskSort::Newest, [last, middle, first]),
+    ] {
+        w.run(Command::SetTaskSort {
+            id: collection.into(),
+            sort,
+        });
+        assert_eq!(
+            rows(&w, key),
+            (expected.to_vec(), vec![done_b, done_a]),
+            "{sort:?}"
+        );
+    }
+    w.run(Command::SetTaskSort {
+        id: a.into(),
+        sort: TaskSort::Title,
+    });
+    assert_eq!(rows(&w, RoomKey::List(a)).0, [middle, first]);
+    assert_eq!(rows(&w, key).0, [last, middle, first]);
+}
+
+#[test]
 fn a_list_measures_today_and_not_its_old_completions() {
     let mut w = World::new();
     let list = w.list("Errands", None);

@@ -127,6 +127,7 @@ impl<'a> Builder<'a> {
         let position = self.next_pos();
         let created = self.stamp(60 * 24 * 30, &self.owner.clone());
         self.insert(Entity::Collection(Collection {
+            task_sort: None,
             id,
             name: name.into(),
             color: Some(color.into()),
@@ -143,6 +144,7 @@ impl<'a> Builder<'a> {
         let position = self.next_pos();
         let created = self.stamp(60 * 24 * 30, &self.owner.clone());
         self.insert(Entity::List(List {
+            task_sort: None,
             features: Default::default(),
             id,
             collection,

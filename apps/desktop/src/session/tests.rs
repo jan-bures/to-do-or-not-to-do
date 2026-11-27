@@ -1106,6 +1106,33 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
         a.client().view().lists[&list].name == "Groceries"
     });
 
+    use todo_core::{Command, ids::CollectionId, model::TaskSort};
+    let collection = CollectionId::from_uuid(a.client().new_uuid());
+    submit(
+        &a,
+        vec![
+            commands::organize::create_collection(collection, "Household"),
+            Command::SetTaskSort {
+                id: collection.into(),
+                sort: TaskSort::Oldest,
+            },
+        ],
+    );
+    b.client()
+        .submit(Command::SetTaskSort {
+            id: list.into(),
+            sort: TaskSort::Due,
+        })
+        .expect("set list sort");
+    eventually("sort orders sync both ways", || {
+        a.client().view().lists[&list].task_sort() == TaskSort::Due
+            && b.client()
+                .view()
+                .collections
+                .get(&collection)
+                .is_some_and(|c| c.task_sort() == TaskSort::Oldest)
+    });
+
     eventually("both online and converged", || {
         let (sa, sb) = (a.client().status(), b.client().status());
         sa.connection == Connection::Online
@@ -1125,6 +1152,8 @@ fn two_paired_devices_create_complete_and_reorder_in_sync() {
     let reopened = Session::open(net.clone(), &pa, &pair_a).expect("reopen");
     let v = reopened.client().view();
     assert_eq!(v.lists[&list].name, "Groceries");
+    assert_eq!(v.lists[&list].task_sort(), TaskSort::Due);
+    assert_eq!(v.collections[&collection].task_sort(), TaskSort::Oldest);
     assert_eq!(order(&v, list), vec![milk, bread]);
     assert!(v.tasks[&milk].is_done());
     drop(reopened);

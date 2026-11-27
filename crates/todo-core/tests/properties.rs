@@ -13,7 +13,7 @@ use todo_core::error::{ApplyError, DomainError, UndoError};
 use todo_core::event::{Event, EventPayload, FieldChange, FieldKey};
 use todo_core::ids::{EntityId, EventId, TaskId};
 use todo_core::model::{
-    EmailLink, Entity, LinkKind, List, ListFeatures, ListView, Priority, Stamp, Task,
+    EmailLink, Entity, LinkKind, List, ListFeatures, ListView, Priority, Stamp, Task, TaskSort,
     WorkflowStatus,
 };
 use todo_core::ordering::{MAX_KEY_LEN, OrderError, PosKey};
@@ -58,7 +58,7 @@ fn apply(state: &mut State, event: &Event) -> Result<(), ApplyError> {
 type Op = (u8, u16, u16, u8);
 
 /// Number of op kinds [`build`] understands.
-const OP_KINDS: u8 = 31;
+const OP_KINDS: u8 = 32;
 /// The op kind that imports an entity with historical times.
 const IMPORT_OP: u8 = 27;
 /// The op kind that tries to create a task with the ID of an earlier task (which must fail).
@@ -501,6 +501,7 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                         collection,
                         name: format!("imported list {c}"),
                         color: Some("#123456".into()),
+                        task_sort: None,
                         features: ListFeatures {
                             workflow: true,
                             default_view: ListView::Board,
@@ -559,6 +560,21 @@ fn build(w: &mut World, (kind, a, b, c): Op) -> Option<Command> {
                 },
             }
         }
+        31 => Command::SetTaskSort {
+            id: if b % 2 == 0 {
+                pick(&live_lists, a)?.into()
+            } else {
+                pick(&live_cols, a)?.into()
+            },
+            sort: [
+                TaskSort::Manual,
+                TaskSort::Newest,
+                TaskSort::Oldest,
+                TaskSort::Due,
+                TaskSort::Priority,
+                TaskSort::Title,
+            ][usize::from(c) % 6],
+        },
         _ => Command::AddAttachment {
             id: w.ids.attachment(),
             task: pick(&live_tasks, a)?,

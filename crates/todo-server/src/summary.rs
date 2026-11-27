@@ -68,6 +68,7 @@ fn field_name(c: &FieldChange) -> Option<&'static str> {
         FieldChange::StartDate(_) => "start date",
         FieldChange::Status(_) => "status",
         FieldChange::ListFeatures(_) => "list settings",
+        FieldChange::TaskSort(_) => "task sort order",
         FieldChange::Priority(_) => "priority",
         FieldChange::MyDay(_) => "My Day",
         FieldChange::CompletedAt(_) => "completion",
@@ -183,6 +184,7 @@ pub fn command(state: &State, cmd: &Command, events: &[Event]) -> String {
         C::Restore { id } => format!("Restored {}", d(*id)),
         C::UpdateCollection { .. }
         | C::UpdateList { .. }
+        | C::SetTaskSort { .. }
         | C::UpdateTask { .. }
         | C::MoveTaskStatus { .. }
         | C::UpdateStep { .. }

@@ -13,7 +13,7 @@ use todo_client::intent::merge;
 use todo_client::outbox::FailedEntry;
 use todo_core::State;
 use todo_core::ids::{CollectionId, EntityId, LinkId, ListId, TagId, TaskId};
-use todo_core::model::Priority;
+use todo_core::model::{Priority, TaskSort};
 use todo_core::query::fold;
 use todo_core::time::Date;
 
@@ -31,6 +31,7 @@ pub enum Page {
     Move,
     Colour,
     Settings,
+    Sort,
 }
 
 /// What the tag picker shows: every tag to put on the task or take off, one tag's own page (rename,
@@ -56,6 +57,9 @@ pub enum MenuAction {
     RenameCollection(CollectionId),
     /// Show or hide the room's Completed section.
     ToggleCompleted,
+    OpenSort,
+    CloseSort,
+    SetSort(TaskSort),
     /// Ask before deleting: the menu turns into the confirmation.
     AskDeleteList(ListId),
     /// Leave a confirmation without doing anything: the menu closes.
@@ -749,6 +753,17 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         }
         entries.push(pop_out_item(PopoutRoom::List(id)));
     }
+    if room.resolved(state) == room {
+        entries.insert(
+            0,
+            item(
+                "room-sort",
+                Icon::ArrowDownUp,
+                "Sort by…",
+                MenuAction::OpenSort,
+            ),
+        );
+    }
     entries.push(completed_item(show_completed));
     match room {
         RoomKey::List(id) if state.is_live(id.into()) => {
@@ -771,6 +786,53 @@ pub fn room_menu(state: &State, room: RoomKey, show_completed: bool, page: Page)
         }
         _ => {}
     }
+    entries
+}
+
+pub fn sort_key(sort: TaskSort) -> &'static str {
+    match sort {
+        TaskSort::Manual => "sort-manual",
+        TaskSort::Newest => "sort-newest",
+        TaskSort::Oldest => "sort-oldest",
+        TaskSort::Due => "sort-due",
+        TaskSort::Priority => "sort-priority",
+        TaskSort::Title => "sort-title",
+    }
+}
+
+pub fn sort_menu(room: RoomKey, current: TaskSort) -> Vec<MenuEntry> {
+    let mut entries = vec![MenuEntry::Heading("Sort open tasks by".into())];
+    let manual = if matches!(room, RoomKey::Collection(_)) {
+        "List order"
+    } else {
+        "Manual order"
+    };
+    entries.extend(
+        [
+            (TaskSort::Newest, Icon::Calendar, "Newest created first"),
+            (TaskSort::Oldest, Icon::Calendar, "Oldest created first"),
+            (TaskSort::Due, Icon::Calendar, "Due date"),
+            (TaskSort::Priority, Icon::Flag, "Priority"),
+            (TaskSort::Title, Icon::ArrowDownUp, "Title (A–Z)"),
+            (TaskSort::Manual, Icon::List, manual),
+        ]
+        .map(|(sort, icon, label)| {
+            with(
+                item(sort_key(sort), icon, label, MenuAction::SetSort(sort)),
+                |i| MenuItem {
+                    checked: sort == current,
+                    ..i
+                },
+            )
+        }),
+    );
+    entries.push(MenuEntry::Separator);
+    entries.push(item(
+        "sort-back",
+        Icon::ChevronLeft,
+        "Back",
+        MenuAction::CloseSort,
+    ));
     entries
 }
 
@@ -870,6 +932,7 @@ pub fn list_menu(state: &State, id: ListId, page: Page) -> Vec<MenuEntry> {
         }
         Page::Move => return move_list_menu(state, id),
         Page::Settings => return list_settings(state, id),
+        Page::Sort => return Vec::new(),
         Page::Colour => return colour_menu(state, id.into()),
         Page::Main => {}
     }
@@ -1102,7 +1165,7 @@ pub fn collection_menu(
             .collect();
         }
         Page::Colour => return colour_menu(state, id.into()),
-        Page::Settings => return Vec::new(),
+        Page::Settings | Page::Sort => return Vec::new(),
         Page::Move | Page::Main => {}
     }
     let (icon, label) = if collapsed {
@@ -1772,6 +1835,7 @@ mod tests {
         assert_eq!(
             actions(&menu),
             [
+                MenuAction::OpenSort,
                 MenuAction::RenameList(office),
                 MenuAction::AskColour(office.into()),
                 MenuAction::AskMoveList(office),
@@ -1782,7 +1846,9 @@ mod tests {
             ]
         );
         // Colour… shows the list's own colour.
-        let colour = items(&menu).nth(1).expect("colour");
+        let colour = items(&menu)
+            .find(|i| i.key == "room-colour")
+            .expect("colour");
         let list = &f.state.lists[&office];
         assert_eq!(
             colour.dot,
@@ -2016,13 +2082,17 @@ second line"
         assert_eq!(
             actions(&menu),
             [
+                MenuAction::OpenSort,
                 MenuAction::RenameCollection(id),
                 MenuAction::AskColour(id.into()),
                 MenuAction::ToggleCompleted,
                 MenuAction::AskDeleteCollection(id),
             ]
         );
-        assert_eq!(items(&menu).nth(2).expect("toggle").label, "Hide completed");
+        let toggle = items(&menu)
+            .find(|i| i.action == MenuAction::ToggleCompleted)
+            .expect("toggle");
+        assert_eq!(toggle.label, "Hide completed");
         assert!(items(&menu).last().is_some_and(|i| i.danger));
         // A collection's own pages: its confirmation and its colours. It has no collection picker.
         let confirm = room_menu(&f.state, RoomKey::Collection(id), true, Page::Confirm);
@@ -2037,6 +2107,24 @@ second line"
             Page::Colour
         )));
         assert!(room_menu(&f.state, RoomKey::Collection(id), true, Page::Move).is_empty());
+    }
+
+    #[test]
+    fn sort_menu_ticks_the_current_order_and_labels_manual_order_for_the_room() {
+        let f = fixtures::work();
+        let office = RoomKey::List(list_named(&f.state, "Office"));
+        for (room, current, manual) in [
+            (f.ui.room, TaskSort::Newest, "List order"),
+            (office, TaskSort::Title, "Manual order"),
+        ] {
+            let menu = sort_menu(room, current);
+            let checked: Vec<_> = items(&menu)
+                .filter(|i| i.checked)
+                .map(|i| i.action)
+                .collect();
+            assert_eq!(checked, [MenuAction::SetSort(current)]);
+            assert!(items(&menu).any(|i| i.action == MenuAction::SetSort(TaskSort::Manual) && i.label == manual));
+        }
     }
 
     #[test]

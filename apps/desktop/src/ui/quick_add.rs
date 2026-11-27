@@ -16,6 +16,7 @@ use gpui::{
 
 use super::input::{InputEvent, TextInput};
 use super::kit;
+use super::kit::QuietButton as _;
 use super::landscape::{LandscapeCache, Sky, landscape, sun_at};
 use super::shell::quick_add_colors;
 use crate::model::{Smart, lists};
@@ -376,7 +377,7 @@ impl DestinationControls {
                 .aria_label(label.clone())
                 .tooltip(kit::tooltip(p, label))
                 .cursor_pointer()
-                .hover(|d| d.bg(p.hover))
+                .quiet_button(p)
                 .rounded(px(radius::MD))
                 .border(px(elevation::HAIRLINE))
                 .border_color(if focus.is_focused(window) {

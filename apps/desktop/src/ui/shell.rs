@@ -44,6 +44,7 @@ use todo_core::model::Priority;
 
 use super::input::{InputColors, InputEvent, TextInput};
 use super::kit;
+use super::kit::QuietButton as _;
 use super::landscape::{Blend, HeaderCache, header_landscape, sun_at};
 use crate::fixtures::Moment;
 use crate::model::activity::FeedInput;
@@ -1530,6 +1531,7 @@ impl ShellView {
         let tags = |page| task.map(|task| MenuKind::Tags { task, page });
         let kind = match fixture {
             "room-menu" | "activity-menu" => Some(MenuKind::Room { page: Page::Main }),
+            "collection-sort" => Some(MenuKind::Room { page: Page::Sort }),
             "list-settings" => Some(MenuKind::Room {
                 page: Page::Settings,
             }),
@@ -1601,6 +1603,7 @@ impl ShellView {
         } else if !matches!(
             fixture,
             "room-menu"
+                | "collection-sort"
                 | "list-settings"
                 | "account-menu"
                 | "date-format"
@@ -2394,7 +2397,7 @@ impl ShellView {
                             div()
                                 .id("clear-filter")
                                 .rounded(px(radius::SM))
-                                .hover(|s| s.bg(p.hover))
+                                .quiet_button(*p)
                                 .child(kit::icon(Icon::X, component::ICON_SMALL, p.ink_3))
                                 .on_click(cx.listener(|this, _, window, cx| {
                                     this.filter.update(cx, |i, cx| i.reset(window, cx));
@@ -2573,17 +2576,16 @@ impl ShellView {
         let open = self.menu.as_ref().is_some_and(|m| {
             matches!(m.kind, MenuKind::Room { .. }) && m.overlay.look(self.frame).open
         });
-        let hover = p.hover;
-        let button = div()
+        let button = kit::toolbar_icon()
             .id("room-menu")
             .relative()
-            .size(px(component::ICON_BUTTON))
-            .flex()
-            .items_center()
-            .justify_center()
             .track_focus(&self.room_menu_focus)
-            .when(open, |d| d.bg(hover))
-            .hover(move |s| s.bg(hover))
+            .role(gpui::Role::Button)
+            .aria_label("Room options")
+            .aria_expanded(open)
+            .tooltip(kit::tooltip(*p, "Room options"))
+            .when(open, |d| d.bg(p.wash))
+            .quiet_button(*p)
             .child(kit::icon(Icon::Ellipsis, component::ICON, ink))
             .on_click(cx.listener(|this, e: &gpui::ClickEvent, window, cx| {
                 this.toggle_menu(
@@ -3249,7 +3251,7 @@ impl ShellView {
                     .child(self.task_glyph(p, id, Icon::Star, on, component::ICON))
                     .when_some(room, |el, room| {
                         el.cursor_pointer()
-                            .hover(|s| s.bg(p.hover))
+                            .quiet_button(*p)
                             .role(gpui::Role::Button)
                             .aria_label(format!("Important: {}", task.title))
                             .aria_toggled(if on {
@@ -3303,7 +3305,7 @@ impl ShellView {
                         }
                     }),
                 )
-                .when(!self.ui.compact || matches!(room, RoomKey::List(_)), |el| {
+                .when(!self.ui.compact || self.manual_list().is_some(), |el| {
                     el.child(self.drag_handle(id, room, task.title.clone(), cx))
                 })
                 // Where it is, so a menu opened from the keyboard can hang under it.
@@ -3388,6 +3390,10 @@ impl ShellView {
         )
         .absolute()
         .inset_0()
+    }
+
+    pub(crate) fn control_center(&self, key: &str) -> Option<Point<Pixels>> {
+        self.probes.borrow().get(key).map(|bounds| bounds.center())
     }
 
     /// Scrolls the pane of `handle` so the control `key` (a `probe`) is in view, a small margin clear of

@@ -23,6 +23,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('Fixtures')) {
+    $Fixtures += @('collection-sort', 'ai-button-hover', 'detail-button-pressed')
     $Fixtures += @('updates-footer-current', 'updates-footer-checking', 'updates-footer-downloading', 'updates-footer-failed', 'updates-footer-skipped')
     $Fixtures += @('date-format', 'sidebar-footer-syncing', 'ai-empty', 'ai-unconfigured', 'ai-typing', 'ai-markdown', 'ai-proposal', 'ai-pending', 'ai-batch', 'ai-settings', 'ai-settings-testing', 'ai-settings-unreachable', 'ai-error', 'ai-blocked', 'ai-chatgpt-signed-out', 'ai-chatgpt-device-code', 'ai-chatgpt-signed-in', 'ai-chatgpt-model-picker', 'ai-chatgpt-account', 'ai-private-relay')
 }

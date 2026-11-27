@@ -24,6 +24,7 @@ fn collection(e: &mut Collection, c: &FieldChange) -> bool {
         FieldChange::Name(c) => e.name.clone_from(&c.new),
         FieldChange::Color(c) => e.color.clone_from(&c.new),
         FieldChange::Position(c) => e.position.clone_from(&c.new),
+        FieldChange::TaskSort(c) => e.task_sort = c.new,
         _ => return false,
     }
     true
@@ -36,6 +37,7 @@ fn list(e: &mut List, c: &FieldChange) -> bool {
         FieldChange::Position(c) => e.position.clone_from(&c.new),
         FieldChange::ListCollection(c) => e.collection = c.new,
         FieldChange::ListFeatures(c) => e.features = c.new,
+        FieldChange::TaskSort(c) => e.task_sort = c.new,
         _ => return false,
     }
     true

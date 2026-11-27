@@ -9,6 +9,7 @@ use gpui::{
 };
 use todo_client::task_drag::{Destination, Drag, Slot};
 use todo_core::ids::{ListId, TaskId};
+use todo_core::model::TaskSort;
 use todo_design::motion;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -55,7 +56,7 @@ impl ShellView {
         let p = self.palette;
         let tip = if self.ui.compact {
             "Drag to reorder"
-        } else if matches!(room, RoomKey::List(_)) {
+        } else if self.manual_list().is_some() {
             "Drag to reorder or move"
         } else {
             "Drag to a list or My Day"
@@ -110,9 +111,18 @@ impl ShellView {
         }
     }
 
-    fn manual_list(&self) -> Option<ListId> {
+    pub(super) fn manual_list(&self) -> Option<ListId> {
         match self.shell.room.key {
-            RoomKey::List(id) => Some(id),
+            RoomKey::List(id)
+                if self
+                    .store
+                    .view()
+                    .lists
+                    .get(&id)
+                    .is_some_and(|list| list.task_sort() == TaskSort::Manual) =>
+            {
+                Some(id)
+            }
             _ => None,
         }
     }

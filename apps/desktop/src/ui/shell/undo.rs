@@ -8,6 +8,7 @@ use todo_core::ids::{CollectionId, EntityId, TaskId};
 use todo_core::model::Entity;
 use todo_core::{Command, State};
 
+use super::kit::QuietButton as _;
 use super::{
     Icon, Notice, RoomKey, ShellView, component, desktop, elevation, kit, radius, space, ty,
 };
@@ -650,11 +651,16 @@ impl ShellView {
         let completed = (count > 0 && !self.on_board() && !self.on_timeline()).then(|| {
             div()
                 .id("completed-toggle")
+                .role(Role::Button)
+                .aria_label(format!("Completed, {count} tasks"))
+                .aria_expanded(open)
                 .h_full()
                 .flex_none()
                 .flex()
                 .items_center()
                 .gap(px(space::S2))
+                .rounded(px(radius::MD))
+                .px(px(space::S1))
                 .child(kit::icon(
                     if open {
                         Icon::ChevronDown
@@ -668,11 +674,11 @@ impl ShellView {
                 .child(
                     div()
                         .style(ty::CAPS_LABEL)
-                        .text_color(p.ink_3)
+                        .text_color(p.ink_2)
                         .child(count.to_string()),
                 )
                 .when(completed_enabled, |d| {
-                    d.on_click(cx.listener(|this, _, _, cx| {
+                    d.quiet_button(p).on_click(cx.listener(|this, _, _, cx| {
                         this.ui.show_completed = !this.ui.show_completed;
                         this.refresh(cx);
                     }))

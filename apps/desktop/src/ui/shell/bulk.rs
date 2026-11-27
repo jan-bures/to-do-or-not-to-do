@@ -1,5 +1,6 @@
 //! The room's multi-selection strip, above the reserved Undo footer.
 
+use super::kit::QuietButton as _;
 use super::{MenuKind, Notice, ShellView, hints, kit, undo};
 use crate::theme::{Icon, TextStyled, component, desktop, elevation, radius, space, ty};
 use gpui::{Context, Div, Modifiers, ScrollStrategy, Stateful, Window, div, point, prelude::*, px};
@@ -330,8 +331,7 @@ impl ShellView {
             .h(px(component::ICON_BUTTON))
             .px(px(space::S1))
             .rounded(px(radius::BUTTON))
-            .cursor_pointer()
-            .hover(move |el| el.bg(p.pane))
+            .quiet_button(p)
             .border_1()
             .border_color(if focus.is_focused(window) {
                 p.accent

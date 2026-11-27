@@ -276,7 +276,7 @@ impl ShellView {
         cx: &mut Context<Self>,
     ) -> Stateful<Div> {
         let p = self.palette;
-        self.ai_action(
+        self.ai_clickable(
             id,
             div()
                 .self_start()
@@ -307,6 +307,10 @@ impl ShellView {
             },
             cx,
         )
+        .when(matches!(tone, Tone::Quiet), |d| d.quiet_button(p))
+        .when(!matches!(tone, Tone::Quiet), |d| {
+            d.hover(|s| s.opacity(0.85))
+        })
         .role(Role::Link)
         .aria_label("Manage usage")
     }

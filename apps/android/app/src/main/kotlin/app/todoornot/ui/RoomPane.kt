@@ -625,7 +625,7 @@ private fun LazyItemScope.MovingRow(
     val l = look ?: if (s.ghost) RowLook.hidden(t.done) else null
     val done = checked ?: t.done
     val selecting = state.bulk != null
-    val manual = state.room.key is RoomKey.List
+    val manual = state.room.manualTaskOrder
     val dragHandle: (@Composable () -> Unit)? = if (t.id in state.bulkIds && !s.ghost && l?.gone != true) {
         { DragGrip(t, manual) }
     } else null
