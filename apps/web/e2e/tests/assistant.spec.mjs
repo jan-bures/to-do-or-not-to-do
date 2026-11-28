@@ -28,6 +28,7 @@ test("Ask AI keyboard toggle, modal settings, and persistent keyboard/pointer sp
   await expect(trigger(page)).toBeFocused();
   await expect(panel(page)).not.toBeVisible();
   await page.keyboard.press("Meta+j");
+  await expect(page.getByRole("button", { name: "This device", exact: true })).toBeFocused();
   const divider = page.getByRole("separator", { name: "Resize AI assistant" });
   await divider.press("Shift+ArrowLeft");
   await expect(divider).toHaveAttribute("aria-valuenow", "432");
