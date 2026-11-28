@@ -423,15 +423,15 @@ pub mod phone {
     pub const HEADER_SCENE_COVER: f32 = 72.0;
     /// Taller at-rest Daybreak landscape scene on Android unfolded inner screens.
     pub const HEADER_SCENE_INNER: f32 = 80.0;
-    /// Horizon progress hairline height along the bottom edge of the compact 36 dp header.
+    /// Horizon progress hairline height along the bottom edge of the compact header.
     pub const COMPACT_PROGRESS_HEIGHT: f32 = 2.0;
     /// Share of pull-down reach expansion absorbed above the text block; the rest grows the landscape.
     pub const HEADER_REACH_TEXT_SHARE: f32 = 0.25;
     /// Width of the list pane on the inner screen.
     pub const INNER_LIST: f32 = 450.0;
 
-    /// Read-only collapsed room header.
-    pub const COMPACT_HEADER: f32 = 36.0;
+    /// Read-only collapsed room header (matches [`DETAIL_BREADCRUMB`]).
+    pub const COMPACT_HEADER: f32 = 40.0;
     /// Read-only task detail breadcrumb.
     pub const DETAIL_BREADCRUMB: f32 = 40.0;
     /// Bottom utility and detail action bars.

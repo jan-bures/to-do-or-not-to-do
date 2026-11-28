@@ -109,6 +109,23 @@ import androidx.compose.runtime.compositionLocalOf
 private val S = Tokens.Space
 private val P = Tokens.Metrics.Phone
 
+/** Initial or post-measure first visible item in the room switcher's scrollable list. */
+internal fun switcherScrollTarget(
+    current: RoomKey?,
+    currentIndex: Int,
+    targetCount: Int,
+    filtering: Boolean,
+    grid: Boolean,
+    visibleCount: Int? = null,
+): Int {
+    if (filtering || (grid && current is RoomKey.Smart)) return 0
+    if (currentIndex >= 0) {
+        val above = if (visibleCount != null) visibleCount * 2 / 3 else 3
+        return (currentIndex - above).coerceAtLeast(0)
+    }
+    return (targetCount - 1).coerceAtLeast(0)
+}
+
 @Composable
 internal fun BottomRoomSwitcherSheet(
     state: UiState,
@@ -191,18 +208,13 @@ private fun SwitcherRooms(state: UiState, text: String, keyboard: Boolean, actio
         if (matches.trash) add(RoomKey.Trash)
     } }
     val currentIndex = targets.indexOf(current).takeIf { current != null } ?: -1
-    val initial = when {
-        filtering -> 0
-        currentIndex >= 0 -> (currentIndex - 3).coerceAtLeast(0)
-        else -> targets.lastIndex.coerceAtLeast(0)
-    }
+    val initial = switcherScrollTarget(current, currentIndex, targets.size, filtering, grid)
     val list = rememberLazyListState(initialFirstVisibleItemIndex = initial)
-    LaunchedEffect(current, filtering) {
-        if (filtering) list.scrollToItem(0)
+    LaunchedEffect(current, filtering, grid) {
+        if (filtering || (grid && current is RoomKey.Smart)) list.scrollToItem(0)
         else if (currentIndex >= 0) {
             val measured = snapshotFlow { list.layoutInfo }.first { it.visibleItemsInfo.isNotEmpty() }
-            val above = measured.visibleItemsInfo.size * 2 / 3
-            list.scrollToItem((currentIndex - above).coerceAtLeast(0))
+            list.scrollToItem(switcherScrollTarget(current, currentIndex, targets.size, filtering, grid, measured.visibleItemsInfo.size))
         } else if (targets.isNotEmpty()) list.scrollToItem(targets.lastIndex)
     }
     val sidebar = remember(state.generation) { SidebarInput() }
@@ -297,7 +309,6 @@ private fun SmartTile(item: NavItem, active: Boolean, modifier: Modifier, open: 
     Row(modifier.then(probe).heightIn(min = P.SMART_TILE.dp).clip(shape)
         .background(if (drop) r.selectionWash else if (active) r.wash else r.raised)
         .border(Tokens.Elevation.HAIRLINE.dp, if (active || drop) r.accentStrong else r.line, shape)
-        .then(if (active) Modifier.selectionBar(r.accentStrong) else Modifier)
         .selectable(active, role = Role.Tab, onClick = open)
         .semantics { contentDescription = item.name }
         .padding(horizontal = S.S2.dp), verticalAlignment = Alignment.CenterVertically,

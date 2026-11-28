@@ -332,7 +332,8 @@ composer. A row is at least 64 dp and grows with the font scale, so its metadata
 
 **Sky above, hands below on Android.** The Daybreak header (eyebrow, big title, count and landscape) stays at
 the top of the room as a glanceable, non-interactive sky—no top app bar buttons. As the list scrolls up, the
-header slides away into a 36 dp glanceable title strip (`phone::COMPACT_HEADER`) showing the room name in
+header slides away into a 40 dp glanceable title strip (`phone::COMPACT_HEADER`, matching
+`phone::DETAIL_BREADCRUMB` so both panes align when collapsed) showing the room name in
 `room-title-bar` and the compact count. Scrolling back to the top brings it back; pulling further down from
 the top on the cover screen expands the sky smoothly (`phone::HEADER_REACH_EXPAND`) to bring the top rows into
 thumb reach. While the keyboard is open, or when the window is short (under 480 dp), the header stays collapsed

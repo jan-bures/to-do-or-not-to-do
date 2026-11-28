@@ -81,7 +81,9 @@ class TokensTest {
             "row-pad-top" to p.ROW_PAD_TOP, "due-slot" to p.DUE_SLOT, "composer" to p.COMPOSER,
             "room-pill" to p.ROOM_PILL, "room-row" to p.ROOM_ROW, "inner-list" to p.INNER_LIST,
             "toast" to p.TOAST, "toast-strip" to p.TOAST_STRIP, "app-bar" to p.APP_BAR, "touch" to p.TOUCH,
+            "compact-header" to p.COMPACT_HEADER, "detail-breadcrumb" to p.DETAIL_BREADCRUMB,
         ).forEach { (k, v) -> assertEquals(k, phone.getDouble(k).toFloat(), v, 0f) }
+        assertEquals("collapsed phone header aligns with detail breadcrumb", p.DETAIL_BREADCRUMB, p.COMPACT_HEADER, 0f)
 
         val type = json.getJSONObject("type")
         mapOf(

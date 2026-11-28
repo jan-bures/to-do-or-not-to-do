@@ -9,6 +9,7 @@ import app.todoornot.core.filterRoomSwitcher
 import app.todoornot.session.ThumbHand
 import app.todoornot.session.ThumbHandPreference
 import app.todoornot.ui.DragInput
+import app.todoornot.ui.switcherScrollTarget
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -56,5 +57,19 @@ class RoomSwitcherTest {
         input.position = Offset(120f, 100f)
         assertEquals(TaskDrop.Slot("task", true), input.candidate(false))
         assertNull(input.candidate(true))
+    }
+
+    @Test fun switcher_opens_at_top_for_smart_rooms_and_keeps_list_or_activity_in_view() {
+        for (smart in SmartList.entries) {
+            assertEquals(0, switcherScrollTarget(RoomKey.Smart(smart), -1, 18, filtering = false, grid = true))
+            assertEquals(0, switcherScrollTarget(RoomKey.Smart(smart), -1, 18, filtering = false, grid = true, visibleCount = 9))
+        }
+        // Filtering always resets to the top.
+        assertEquals(0, switcherScrollTarget(RoomKey.List("a"), 10, 18, filtering = true, grid = false))
+        // Lists and collections keep their target comfortably in view.
+        assertEquals(7, switcherScrollTarget(RoomKey.List("a"), 10, 18, filtering = false, grid = true))
+        assertEquals(4, switcherScrollTarget(RoomKey.List("a"), 10, 18, filtering = false, grid = true, visibleCount = 9))
+        // Activity sits at the bottom of the list, so null current still opens scrolled to the bottom.
+        assertEquals(17, switcherScrollTarget(null, -1, 18, filtering = false, grid = true))
     }
 }
