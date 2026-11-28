@@ -106,8 +106,13 @@ of six with the current one ticked; there is no free-form color.
 - **Priority is never colour.** It is `!` / `!!` / `!!!` in Geist Mono. Count, weight and ink step together from
   `ink-3` up to `ink`.
 - **Translucency** is used in the landscape (the sun's halo, stars, the moon and the dusk rings), in neutral
-  modal scrims, in small desktop chrome overlays (caption button tints and scrollbar thumbs), and in the
-  task list's file drop highlight. UI surfaces are opaque.
+  modal scrims, in small desktop chrome overlays (caption button tints and scrollbar thumbs), in the
+  task list's file drop highlight, and on Windows for native acrylic window materials. On Windows, window chrome
+  (`canvas`: title bar, sidebar, status bar), the room header sky (`sky`) and docked reading panes (`pane`) layer
+  their room-hued tints at the opacities in `todo_design::chrome` (`ACRYLIC_*`) over the OS system acrylic
+  backdrop, automatically falling back to opaque surfaces when Windows Transparency Effects are off or High
+  Contrast mode is active. Transient in-window overlays (menus, popovers, dialogs, toasts, overlay panes) stay
+  opaque. On Android and web, UI surfaces are opaque.
 
 ### Contrast
 
@@ -438,7 +443,8 @@ The design is **flat**. Surfaces are separated by colour steps and 1 px lines.
 - A focused input gets an `accent` border plus a 3 px ring in `tint`.
 - There is exactly one shadow, a soft two-layer one for transient overlays: menus, popovers and the date picker.
   In dark mode it comes with a 1 px `line-strong` border.
-- Nothing is blurred.
+- In-window overlays and modal scrims never blur underlying app content; backdrop blur is limited to the OS
+  native Windows acrylic window material.
 
 ## Motion
 
@@ -1015,7 +1021,8 @@ Agents are shown as **round letter marks**: **C** (Claude), **X** (Codex) and **
 These are the generic "AI-default" looks, and they don't ship:
 
 - purple-to-blue gradients, and gradients in general (only the Daybreak sky on Android and finished dusk use them);
-- glassmorphism, background blur and frosted panels;
+- glassmorphism and arbitrary frosted in-window cards or blurred modal scrims (native OS Windows acrylic window
+  materials are defined by the `chrome::ACRYLIC_*` tokens and keep in-window overlays opaque);
 - emoji used as icons;
 - colored dots for identity or static labels, and decorative diamonds next to counts or dates;
 - floating cards with heavy drop shadows;

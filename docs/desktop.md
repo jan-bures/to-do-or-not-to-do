@@ -266,6 +266,11 @@ it once for that signed offer. Once staged, an update belongs to the installatio
   the window keeps the bounds it asked for even when they don't fit on the display, and
   `WM_GETMINMAXINFO` lifts the maximum track size, so a 2160 × 1350 capture works on a 1024 × 768 CI
   screen.
+- **Windows 11 acrylic backdrop.** Extends the DWM frame into the client area and applies native Desktop
+  Acrylic (`DWMWA_SYSTEMBACKDROP_TYPE = DWMSBT_TRANSIENTWINDOW`) for `WindowBackgroundAppearance::Blurred`
+  on Windows 11 22H2+ (falling back to `SetWindowCompositionAttribute` on older builds), gives frameless
+  popups native rounded corners (`DWMWCP_ROUND`), and un-premultiplies translucent pixels during frame
+  readback.
 
 ## gpui-component: not adopted
 

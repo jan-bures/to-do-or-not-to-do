@@ -328,6 +328,7 @@ impl ShellView {
             .flex_none()
             .flex()
             .items_center()
+            .bg(p.surface_canvas())
             .child(
                 div()
                     .h_full()
@@ -372,6 +373,7 @@ impl ShellView {
             .child(pin)
             .child(kit::window_controls(&p, window, self.caption_preview).flex_none());
         let summary = div()
+            .bg(p.surface_sky())
             .px(px(desktop::LIST_PAD_X))
             .pt(px(space::S2))
             .text_color(p.ink_2)
@@ -379,7 +381,6 @@ impl ShellView {
             .child(self.shell.room.score.text());
         let header = div()
             .flex_none()
-            .bg(p.sky)
             .border_y_1()
             .border_color(p.line)
             .child(summary)
@@ -402,6 +403,7 @@ impl ShellView {
                 .px(px(space::S4))
                 .flex()
                 .items_center()
+                .bg(p.surface_canvas())
                 .border_t_1()
                 .border_color(p.line)
                 .style(ty::META)
@@ -419,6 +421,7 @@ impl ShellView {
                 .id("list-unavailable")
                 .track_focus(&self.list_focus)
                 .flex_1()
+                .bg(p.surface_pane())
                 .p(px(desktop::LIST_PAD_X))
                 .text_color(p.ink_2)
                 .child("This list is unavailable.")
@@ -429,12 +432,19 @@ impl ShellView {
                 .min_h_0()
                 .flex()
                 .flex_col()
-                .bg(p.pane)
                 .child(header)
-                .child(self.quick_add_field(window, cx))
-                .child(self.list(window, cx))
-                .children(self.bulk_bar(window, cx))
-                .child(self.list_footer(true, window, cx))
+                .child(
+                    div()
+                        .flex_1()
+                        .min_h_0()
+                        .flex()
+                        .flex_col()
+                        .bg(p.surface_pane())
+                        .child(self.quick_add_field(window, cx))
+                        .child(self.list(window, cx))
+                        .children(self.bulk_bar(window, cx))
+                        .child(self.list_footer(true, window, cx)),
+                )
                 .children(status)
                 .into_any_element()
         };
@@ -444,7 +454,6 @@ impl ShellView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.canvas)
             .text_color(p.ink)
             .style(ty::BODY)
             .child(

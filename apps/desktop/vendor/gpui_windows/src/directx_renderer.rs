@@ -555,9 +555,18 @@ impl DirectXRenderer {
             }
             context.Unmap(&staging, 0);
         }
-        // The render target is BGRA; image::RgbaImage expects RGBA.
+        // The render target is premultiplied BGRA (under DirectComposition); image::RgbaImage
+        // expects straight RGBA.
+        // TO-DO PATCH (acrylic): un-premultiply translucent pixels so screenshot readbacks of
+        // acrylic windows keep accurate straight-alpha colours.
         for px in pixels.chunks_exact_mut(4) {
             px.swap(0, 2);
+            let a = u32::from(px[3]);
+            if a > 0 && a < 255 {
+                for ch in &mut px[..3] {
+                    *ch = ((u32::from(*ch) * 255 + a / 2) / a).min(255) as u8;
+                }
+            }
         }
         image::RgbaImage::from_raw(width, height, pixels)
             .context("Failed to build RgbaImage from staging readback")

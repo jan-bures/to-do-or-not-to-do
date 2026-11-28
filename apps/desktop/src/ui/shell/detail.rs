@@ -1125,11 +1125,12 @@ impl ShellView {
                     _ => None,
                 };
                 if let Some(focus) = focus {
+                    let focused = live && focus.is_focused(window);
                     super::menu::ring(
                         &p,
-                        live && focus.is_focused(window),
+                        focused,
                         radius::BUTTON,
-                        row.bg(p.pane),
+                        row.when(focused, |row| row.bg(p.pane)),
                     )
                     .into_any_element()
                 } else {
@@ -1471,6 +1472,8 @@ impl ShellView {
                         )
                     })
             });
+        let overlay = narrow || self.detail_placement() == super::DetailPane::Overlay;
+        let pane_bg = if overlay { p.pane } else { p.surface_pane() };
         div()
             .id("detail")
             .relative()
@@ -1478,7 +1481,7 @@ impl ShellView {
             .flex_none()
             .h_full()
             .overflow_hidden()
-            .bg(theme::with_alpha(p.pane, surface))
+            .bg(theme::with_alpha(pane_bg, pane_bg.a * surface))
             .border_l_1()
             .border_color(theme::with_alpha(p.line, surface))
             .children(placeholder)

@@ -22,7 +22,7 @@ use crate::assets::Assets;
 use crate::model;
 use crate::platform::win;
 use crate::store::Store;
-use crate::theme::desktop;
+use crate::theme::{Material, Theme, desktop};
 use crate::ui::failed::FailedView;
 use crate::ui::kit::CaptionPreview;
 use crate::ui::pairing::PairingView;
@@ -74,6 +74,7 @@ fn fixture_window_options(width: f32, height: f32) -> WindowOptions {
         }),
         focus: false,
         show: false,
+        window_background: Material::Acrylic.window_background(),
         is_resizable: false,
         ..WindowOptions::default()
     }
@@ -207,36 +208,46 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
     let opened_at = Instant::now();
     let handle: AnyWindowHandle = cx.update(|cx| {
         if quick {
-            cx.open_window(quick_add::window_options(cx), |window, cx| {
+            let mut opts = quick_add::window_options(cx);
+            opts.window_background = Material::Acrylic.window_background();
+            cx.open_window(opts, |window, cx| {
                 cx.new(|cx| {
-                    QuickAddView::new(
+                    let mut view = QuickAddView::new(
                         model::my_day_progress(&fixture.state, fixture.now.today()),
                         theme,
                         Some(QUICK_ADD_TYPED),
                         true,
                         window,
                         cx,
-                    )
+                    );
+                    view.set_material(Material::Acrylic, window, cx);
+                    view
                 })
             })
             .map(Into::into)
         } else if let Some(waiting) = pairing {
             cx.open_window(main_options(), |window, cx| {
                 cx.new(|cx| {
-                    PairingView::fixture(
+                    let mut view = PairingView::fixture(
                         theme,
                         fixtures::PAIRING_SERVER,
                         fixtures::PAIRING_CODE,
                         waiting,
                         window,
                         cx,
-                    )
+                    );
+                    view.set_material(Material::Acrylic, cx);
+                    view
                 })
             })
             .map(Into::into)
         } else if let Some(confirming) = failed {
             cx.open_window(main_options(), |_, cx| {
-                cx.new(|cx| FailedView::fixture(theme, confirming, cx))
+                cx.new(|cx| {
+                    let mut view = FailedView::fixture(theme, confirming, cx);
+                    view.set_material(Material::Acrylic, cx);
+                    view
+                })
             })
             .map(Into::into)
         } else {
@@ -251,6 +262,7 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
                         window,
                         cx,
                     );
+                    shell.set_material(Material::Acrylic, cx);
                     shell.preview_caption(caption);
                     if fixture.ui.compact {
                         shell.preview_popout(opts.fixture == "popout-pinned", cx);
@@ -300,14 +312,56 @@ async fn render(cx: &mut AsyncApp, opts: &ScreenshotOptions) -> anyhow::Result<(
         "detail-button-pressed" => Some(("close-detail", true)),
         _ => None,
     };
-    let image = capture(cx, handle, hwnd, opened_at, pointer).await?;
+    let mut image = capture(cx, handle, hwnd, opened_at, pointer).await?;
     handle.update(cx, |_, window, _| window.remove_window())?;
     let got = image.dimensions();
     // A window the system clamped (to a small screen, say) must not pass as the real thing.
     anyhow::ensure!(got == expected, "captured {got:?}, expected {expected:?}");
+    composite_acrylic_backdrop(&mut image, theme);
     save(&image, &opts.out, opts.overwrite)?;
     println!("wrote {} ({}x{})", opts.out.display(), got.0, got.1);
     Ok(())
+}
+
+/// Composites translucent pixels read back from a hidden acrylic window over a calm simulated
+/// Windows 11 DWM system acrylic backdrop so gallery PNGs reflect on-screen depth and contrast
+/// regardless of the image viewer's background.
+fn composite_acrylic_backdrop(image: &mut image::RgbaImage, theme: Theme) {
+    let (w, h) = image.dimensions();
+    let max_x = (w.saturating_sub(1)).max(1) as f32;
+    let max_y = (h.saturating_sub(1)).max(1) as f32;
+    // Soft Windows 11-inspired blurred acrylic backdrop corners (top-left, top-right, bottom-left,
+    // bottom-right), staying inside DWM's light/dark acrylic luminosity range.
+    let (tl, tr, bl, br): ([f32; 3], [f32; 3], [f32; 3], [f32; 3]) = match theme {
+        Theme::Light => (
+            [219., 229., 242.],
+            [240., 228., 220.],
+            [228., 224., 238.],
+            [216., 232., 236.],
+        ),
+        Theme::Dark => (
+            [32., 42., 56.],
+            [48., 38., 44.],
+            [40., 36., 52.],
+            [28., 44., 48.],
+        ),
+    };
+    for (x, y, px) in image.enumerate_pixels_mut() {
+        let a = f32::from(px[3]) / 255.;
+        if a >= 1. {
+            continue;
+        }
+        let u = x as f32 / max_x;
+        let v = y as f32 / max_y;
+        let inv_a = 1. - a;
+        for c in 0..3 {
+            let top = tl[c] + (tr[c] - tl[c]) * u;
+            let bot = bl[c] + (br[c] - bl[c]) * u;
+            let bg = top + (bot - top) * v;
+            px[c] = (f32::from(px[c]) * a + bg * inv_a).round().clamp(0., 255.) as u8;
+        }
+        px[3] = 255;
+    }
 }
 
 fn update_fixture(name: &str, now: todo_core::time::Timestamp) -> Option<UpdateState> {
@@ -475,6 +529,26 @@ mod tests {
     fn main_fixture_window_does_not_request_show_or_focus() {
         let opts = fixture_window_options(MAIN_SIZE.0, MAIN_SIZE.1);
         assert!(!opts.show && !opts.focus);
+        assert_eq!(
+            opts.window_background,
+            Material::Acrylic.window_background()
+        );
+    }
+
+    #[test]
+    fn acrylic_backdrop_preserves_opaque_pixels_and_flattens_translucent_ones() {
+        let mut img = image::RgbaImage::from_fn(2, 1, |x, _| {
+            if x == 0 {
+                image::Rgba([40, 80, 120, 255])
+            } else {
+                image::Rgba([247, 241, 236, 168])
+            }
+        });
+        composite_acrylic_backdrop(&mut img, Theme::Light);
+        assert_eq!(*img.get_pixel(0, 0), image::Rgba([40, 80, 120, 255]));
+        let blended = img.get_pixel(1, 0);
+        assert_eq!(blended[3], 255);
+        assert!(blended[0] > 230 && blended[1] > 225 && blended[2] > 220);
     }
 
     #[test]

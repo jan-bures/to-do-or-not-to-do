@@ -400,6 +400,79 @@ pub fn palette(theme: Theme, room_hue: f64) -> Palette {
     palette_scaled(theme, room_hue, 1.0)
 }
 
+/// Conservative worst-case Windows 11 system acrylic (`DWMSBT_TRANSIENTWINDOW`) backdrop colours:
+/// a dark desktop behind light acrylic, or a bright window behind dark acrylic.
+pub const ACRYLIC_BACKDROP_LIGHT: Rgb = Rgb::from_u32(0xd4d4d4);
+/// See [`ACRYLIC_BACKDROP_LIGHT`].
+pub const ACRYLIC_BACKDROP_DARK: Rgb = Rgb::from_u32(0x444444);
+
+fn composite_srgb(fg: Rgb, alpha: f32, bg: Rgb) -> Rgb {
+    let a = f64::from(alpha);
+    let mix = |f: u8, b: u8| (f64::from(f) * a + f64::from(b) * (1.0 - a)).round() as u8;
+    Rgb {
+        r: mix(fg.r, bg.r),
+        g: mix(fg.g, bg.g),
+        b: mix(fg.b, bg.b),
+    }
+}
+
+/// [`palette()`] with contrast guards checked against Windows acrylic compositing so `arc` and `accent`
+/// still meet 3:1 over translucent `sky` and `pane` surfaces across every room hue.
+#[must_use]
+pub fn palette_acrylic(theme: Theme, hue: f64) -> Palette {
+    use crate::chrome;
+
+    let hh = room_hue(theme, hue);
+    let mut p = palette(theme, hue);
+    let (backdrop, sky_a, pane_a) = match theme {
+        Theme::Light => (
+            ACRYLIC_BACKDROP_LIGHT,
+            chrome::ACRYLIC_SKY_LIGHT,
+            chrome::ACRYLIC_PANE_LIGHT,
+        ),
+        Theme::Dark => (
+            ACRYLIC_BACKDROP_DARK,
+            chrome::ACRYLIC_SKY_DARK,
+            chrome::ACRYLIC_PANE_DARK,
+        ),
+    };
+    let acrylic_sky = composite_srgb(p.sky, sky_a, backdrop);
+    let acrylic_pane = composite_srgb(p.pane, pane_a, backdrop);
+    let specs = Palette::specs();
+    for (token, bg, min) in [("arc", acrylic_sky, 3.0), ("accent", acrylic_pane, 3.0)] {
+        let Some(current) = p.get(token) else {
+            continue;
+        };
+        if current.contrast(bg) >= min {
+            continue;
+        }
+        let Some(spec) = specs.iter().find(|s| s.0 == token).map(|s| match theme {
+            Theme::Light => s.1,
+            Theme::Dark => s.2,
+        }) else {
+            continue;
+        };
+        let (l, c, h) = match spec {
+            Spec::Hued { l, c } => (l, c, hh),
+            Spec::Fixed(o) => (o.l, o.c, o.h),
+            Spec::Srgb(_) => continue,
+        };
+        let dir = if current.luminance() > bg.luminance() {
+            1.0
+        } else {
+            -1.0
+        };
+        for i in 1..=100 {
+            let candidate = oklch((l + dir * GUARD_STEP * f64::from(i)).clamp(0.0, 1.0), c, h);
+            if candidate.contrast(bg) >= min {
+                p.set(token, candidate);
+                break;
+            }
+        }
+    }
+    p
+}
+
 /// [`palette()`] with the room-hued chroma multiplied by `chroma_scale`. The inner phone screen uses 0.85 for
 /// rooms whose hue would otherwise feel loud on a large dark surface.
 pub fn palette_scaled(theme: Theme, hue: f64, chroma_scale: f64) -> Palette {

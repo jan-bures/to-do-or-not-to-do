@@ -17,7 +17,7 @@ use crate::theme::landscape::{
     self as geo, ARC_STROKE, HALO_OPACITY, Landscape, MOON_OPACITY, PathEl, RAY_STROKE,
     RING_STROKE, STAR_OPACITY, Scene, TRAVELLED_STROKE, TRAVELLED_STROKE_FINISHED,
 };
-use crate::theme::{Dusk, Palette, with_alpha};
+use crate::theme::{Dusk, Palette, mix, with_alpha};
 
 /// Which colour a cached path is painted with. Resolved against the palette at paint time, so switching
 /// themes doesn't rebuild paths.
@@ -267,17 +267,28 @@ fn bottom(bounds: Bounds<Pixels>, height: f32) -> Bounds<Pixels> {
 }
 
 /// The everyday strip's sky in `bounds`, with the dark theme's horizon band behind the strip at the bottom.
+/// The sky and horizon quads are split cleanly so translucent acrylic surfaces never double-blend.
 fn paint_strip_sky(window: &mut Window, bounds: Bounds<Pixels>, p: &Palette) {
-    window.paint_quad(fill(bounds, p.sky));
     if p.night() {
         let strip = bottom(bounds, crate::theme::desktop::LANDSCAPE);
         let land = Landscape::slim(f32::from(strip.size.width), f32::from(strip.size.height));
-        let top = px(land.horizon_top());
-        let band = Bounds::new(
-            point(strip.origin.x, strip.origin.y + top),
-            gpui::size(strip.size.width, strip.size.height - top),
-        );
-        window.paint_quad(fill(band, p.horizon));
+        let split_y =
+            (strip.origin.y + px(land.horizon_top())).clamp(bounds.origin.y, bounds.bottom());
+        let upper_h = split_y - bounds.origin.y;
+        if upper_h > px(0.) {
+            let upper = Bounds::new(bounds.origin, gpui::size(bounds.size.width, upper_h));
+            window.paint_quad(fill(upper, p.surface_sky()));
+        }
+        let lower_h = bounds.bottom() - split_y;
+        if lower_h > px(0.) {
+            let band = Bounds::new(
+                point(bounds.origin.x, split_y),
+                gpui::size(bounds.size.width, lower_h),
+            );
+            window.paint_quad(fill(band, p.surface_horizon()));
+        }
+    } else {
+        window.paint_quad(fill(bounds, p.surface_sky()));
     }
 }
 
@@ -388,22 +399,47 @@ pub fn header_landscape(
             (strip, night)
         },
         move |bounds, (strip, night), window: &mut Window, _cx| {
-            if let Some(paths) = strip {
+            // Paint the sky once (never double-blending two translucent skies during a transition)
+            // so its top edge matches the header's `sky_bg` pixel-for-pixel at every frame.
+            if blend.scene <= 0. {
                 paint_strip_sky(window, bounds, &palette);
+            } else if blend.scene >= 1. {
+                paint_dusk_sky(window, bounds, &dusk, palette.dusk_alpha());
+            } else {
+                let top = mix(
+                    palette.surface_sky(),
+                    with_alpha(dusk.top, palette.dusk_alpha()),
+                    blend.scene,
+                );
+                let strip_low = if palette.night() {
+                    palette.surface_horizon()
+                } else {
+                    palette.surface_sky()
+                };
+                let low = mix(
+                    strip_low,
+                    with_alpha(dusk.low, palette.dusk_alpha()),
+                    blend.scene,
+                );
+                window.paint_quad(fill(
+                    bounds,
+                    linear_gradient(180., linear_color_stop(top, 0.), linear_color_stop(low, 1.)),
+                ));
+            }
+            if let Some(paths) = strip {
                 let sky = Sky::Slim(palette);
+                let fade = 1. - blend.scene;
                 for (path, ink) in paths {
                     let alpha = match ink {
                         Ink::Arc | Ink::Travelled | Ink::SunHalo | Ink::SunRing(_) | Ink::Sun => {
-                            blend.sun_alpha
+                            blend.sun_alpha * fade
                         }
-                        _ => 1.,
+                        _ => fade,
                     };
                     window.paint_path(path, faded(color(&sky, ink), alpha));
                 }
             }
             if let Some(paths) = night {
-                // Drawn over the strip at the scene's opacity; its gradient covers it all at the end.
-                paint_dusk_sky(window, bounds, &dusk, blend.scene);
                 let sky = Sky::Finished(dusk);
                 for (path, ink) in paths {
                     let alpha = match ink {

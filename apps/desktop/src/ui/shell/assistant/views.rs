@@ -248,7 +248,11 @@ impl ShellView {
                 .h(px(desktop::TITLEBAR - space::S2 - space::S1 / 2.))
                 .rounded(px(radius::MD))
                 .border_1()
-                .bg(if self.ai.open { p.wash } else { p.pane })
+                .bg(if self.ai.open {
+                    p.surface_wash()
+                } else {
+                    p.surface_control()
+                })
                 .border_color(if self.ai.open {
                     p.accent
                 } else {
@@ -477,7 +481,11 @@ impl ShellView {
             .min_h_0()
             .border_l_1()
             .border_color(p.line)
-            .bg(p.pane)
+            .bg(if self.ai_docked() {
+                p.surface_pane()
+            } else {
+                p.pane
+            })
             .block_mouse_except_scroll()
             .on_key_down(cx.listener(|this, e: &gpui::KeyDownEvent, window, cx| {
                 if super::super::navigation_tab(e) {

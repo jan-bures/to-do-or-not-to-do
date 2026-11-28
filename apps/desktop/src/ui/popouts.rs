@@ -15,7 +15,7 @@ use crate::config::DataDir;
 use crate::model::UiState;
 use crate::model::popouts::{MIN_SIZE, Preference, Preferences, Room, SIZE};
 use crate::platform::win;
-use crate::theme::Theme;
+use crate::theme::{Material, Theme};
 
 use super::shell::ShellView;
 
@@ -203,6 +203,16 @@ impl Popouts {
         .detach();
     }
 
+    /// Syncs open pop-out list windows when Windows Transparency effects change.
+    pub fn set_material(&self, material: Material, cx: &mut App) {
+        for handle in self.windows.values() {
+            let _ = handle.update(cx, |view, window, cx| {
+                window.set_background_appearance(material.window_background());
+                view.set_material(material, cx);
+            });
+        }
+    }
+
     /// Quit and sign-out don't count as explicitly closing a room. Save the last placement; if
     /// sign-out fails and resumes this pairing, its windows can be restored as before.
     pub fn close_all(&mut self, cx: &mut App) {
@@ -231,6 +241,7 @@ fn window_options(cx: &App) -> WindowOptions {
             ..Default::default()
         }),
         window_min_size: Some(size(px(MIN_SIZE.0), px(MIN_SIZE.1))),
+        window_background: Material::system().window_background(),
         show: false,
         focus: false,
         app_id: Some("to-do-or-not-to-do".into()),

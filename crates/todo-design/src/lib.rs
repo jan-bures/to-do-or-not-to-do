@@ -57,5 +57,5 @@ pub use color::{Oklch, Rgb, Rgba, oklch};
 pub use icons::{Glyph, Icon};
 pub use palette::{
     AgentColors, Dusk, ListColors, Palette, Theme, agent_colors, dusk, list_colors, palette,
-    palette_scaled,
+    palette_acrylic, palette_scaled,
 };

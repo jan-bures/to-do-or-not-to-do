@@ -10,7 +10,7 @@ use gpui::{
 use super::kit;
 use crate::model::Smart;
 use crate::session::Pending;
-use crate::theme::{self, TextStyled, Theme, elevation, radius, space, ty};
+use crate::theme::{self, Material, TextStyled, Theme, elevation, radius, space, ty};
 
 /// What the owner chose.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -28,6 +28,7 @@ pub const START_FRESH: &str = "Start fresh (keep the damaged copy)";
 #[allow(missing_debug_implementations)] // Holds a GPUI focus handle.
 pub struct FailedView {
     theme: Theme,
+    material: Material,
     why: SharedString,
     /// What opening stopped at: a recovery (starting fresh is offered too) or a start fresh (only
     /// finishing it is offered).
@@ -48,10 +49,18 @@ impl FailedView {
     ) -> Self {
         Self {
             theme,
+            material: Material::system(),
             why,
             pending,
             confirming: false,
             focus: cx.focus_handle(),
+        }
+    }
+
+    pub fn set_material(&mut self, material: Material, cx: &mut Context<Self>) {
+        if self.material != material {
+            self.material = material;
+            cx.notify();
         }
     }
 
@@ -79,7 +88,7 @@ impl Focusable for FailedView {
 
 impl Render for FailedView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let p = theme::palette(self.theme, Smart::MyDay.hue());
+        let p = theme::palette_with_material(self.theme, Smart::MyDay.hue(), self.material);
         let recovery = self.pending == Some(Pending::Recovery);
         let finishing = self.pending == Some(Pending::StartFresh);
         let hint = match self.pending {
@@ -173,7 +182,6 @@ impl Render for FailedView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.pane)
             .style(ty::BODY)
             .text_color(p.ink)
             .child(
@@ -182,32 +190,37 @@ impl Render for FailedView {
                     .flex_none()
                     .flex()
                     .justify_end()
+                    .bg(p.surface_canvas())
+                    .border_b_1()
+                    .border_color(p.line)
                     .window_control_area(gpui::WindowControlArea::Drag)
                     .child(kit::window_controls(&p, window, kit::CaptionPreview::Live)),
             )
             .child(
-                div()
-                    .w(px(560.))
-                    .mx_auto()
-                    .pt(px(space::S10 * 2.))
-                    .flex()
-                    .flex_col()
-                    .gap(px(space::S4))
-                    .child(
-                        div()
-                            .style(ty::ROOM_TITLE)
-                            .child("Your tasks couldn't be opened"),
-                    )
-                    // What to do first, in plain words; the technical detail after it, quieter.
-                    .child(div().text_color(p.ink).child(hint))
-                    .child(
-                        div()
-                            .style(ty::COUNT)
-                            .text_color(p.ink_3)
-                            .child(self.why.clone()),
-                    )
-                    .child(actions)
-                    .children(confirm),
+                div().flex_1().bg(p.surface_pane()).child(
+                    div()
+                        .w(px(560.))
+                        .mx_auto()
+                        .pt(px(space::S10 * 2.))
+                        .flex()
+                        .flex_col()
+                        .gap(px(space::S4))
+                        .child(
+                            div()
+                                .style(ty::ROOM_TITLE)
+                                .child("Your tasks couldn't be opened"),
+                        )
+                        // What to do first, in plain words; the technical detail after it, quieter.
+                        .child(div().text_color(p.ink).child(hint))
+                        .child(
+                            div()
+                                .style(ty::COUNT)
+                                .text_color(p.ink_3)
+                                .child(self.why.clone()),
+                        )
+                        .child(actions)
+                        .children(confirm),
+                ),
             )
     }
 }

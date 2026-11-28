@@ -18,7 +18,7 @@ use crate::config::{self, Pairing, Paths};
 use crate::model::{RoomKey, Smart, UiState};
 use crate::session::{self, OpenError, Pending, Recovered, Runtime, Session, SignedOut};
 use crate::store::{LiveStore, Store};
-use crate::theme::Theme;
+use crate::theme::{Material, Theme};
 
 /// What startup loads before the first frame, off the UI thread.
 #[allow(missing_debug_implementations)] // Holds the session.
@@ -492,6 +492,26 @@ impl RootView {
 
     pub fn is_signing_out(&self) -> bool {
         self.signing_out
+    }
+
+    /// Re-applies the window backdrop and translucent surface materials when Windows Transparency
+    /// effects or High Contrast settings change.
+    pub fn set_material(
+        &mut self,
+        material: Material,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.set_background_appearance(material.window_background());
+        match &self.screen {
+            Screen::Shell(s) => s.update(cx, |s, cx| s.set_material(material, cx)),
+            Screen::Pairing(p) => p.update(cx, |p, cx| p.set_material(material, cx)),
+            Screen::Failed(f) => f.update(cx, |f, cx| f.set_material(material, cx)),
+            Screen::Starting => {}
+        }
+        if let Some(popouts) = &self.popouts {
+            popouts.set_material(material, cx);
+        }
     }
 
     pub fn update_ready(&self) -> bool {

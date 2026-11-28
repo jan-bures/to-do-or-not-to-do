@@ -27,7 +27,8 @@ use crate::config::{self, Config, Pairing, Paths};
 use crate::model::Smart;
 use crate::session::{self, Runtime};
 use crate::theme::{
-    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
+    self, Icon, Material, Palette, TextStyled, Theme, component, desktop, elevation, radius, space,
+    ty,
 };
 
 /// The width of the pairing column.
@@ -241,7 +242,7 @@ impl PairingView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let palette = theme::palette(theme, Smart::MyDay.hue());
+        let palette = theme::palette_with_material(theme, Smart::MyDay.hue(), Material::system());
         let input = cx.new(|cx| TextInput::new("todo.example.com", quick_add_colors(&palette), cx));
         cx.subscribe_in(
             &input,
@@ -279,6 +280,21 @@ impl PairingView {
             scroll: kit::ScrollPane::default(),
             device_name,
             attempt: 0,
+        }
+    }
+
+    pub fn set_material(&mut self, material: Material, cx: &mut Context<Self>) {
+        if self.palette.material != material {
+            self.palette =
+                theme::palette_with_material(self.palette.theme, Smart::MyDay.hue(), material);
+            let colors = quick_add_colors(&self.palette);
+            for input in [&self.input, &self.invite] {
+                input.update(cx, |i, cx| {
+                    i.colors = colors;
+                    cx.notify();
+                });
+            }
+            cx.notify();
         }
     }
 
@@ -851,7 +867,6 @@ impl Render for PairingView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.pane)
             .style(ty::BODY)
             .text_color(p.ink)
             .child(
@@ -860,7 +875,7 @@ impl Render for PairingView {
                     .flex_none()
                     .flex()
                     .items_center()
-                    .bg(p.sky)
+                    .bg(p.surface_sky())
                     .child(
                         div()
                             .flex()
@@ -886,34 +901,35 @@ impl Render for PairingView {
             .child(
                 div()
                     .flex_none()
-                    .bg(p.sky)
                     .child(
-                        div()
-                            .w(px(COLUMN))
-                            .mx_auto()
-                            .pt(px(space::S10 * 2.))
-                            .pb(px(space::S4))
-                            .child(
-                                div()
-                                    .h(px(desktop::EYEBROW))
-                                    .flex()
-                                    .items_center()
-                                    .gap(px(space::S2 + 2.))
-                                    .child(
-                                        div()
-                                            .style(ty::EYEBROW_DAY)
-                                            .text_color(p.accent_strong)
-                                            .child("Welcome"),
-                                    )
-                                    .child(bar())
-                                    .child(
-                                        div()
-                                            .style(ty::EYEBROW_META)
-                                            .text_color(p.ink_3)
-                                            .child("THIS COMPUTER ISN'T CONNECTED YET"),
-                                    ),
-                            )
-                            .child(div().style(ty::ROOM_TITLE).text_color(p.ink).child(title)),
+                        div().bg(p.surface_sky()).child(
+                            div()
+                                .w(px(COLUMN))
+                                .mx_auto()
+                                .pt(px(space::S10 * 2.))
+                                .pb(px(space::S4))
+                                .child(
+                                    div()
+                                        .h(px(desktop::EYEBROW))
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(space::S2 + 2.))
+                                        .child(
+                                            div()
+                                                .style(ty::EYEBROW_DAY)
+                                                .text_color(p.accent_strong)
+                                                .child("Welcome"),
+                                        )
+                                        .child(bar())
+                                        .child(
+                                            div()
+                                                .style(ty::EYEBROW_META)
+                                                .text_color(p.ink_3)
+                                                .child("THIS COMPUTER ISN'T CONNECTED YET"),
+                                        ),
+                                )
+                                .child(div().style(ty::ROOM_TITLE).text_color(p.ink).child(title)),
+                        ),
                     )
                     .child(landscape(&self.landscape, Sky::Slim(p), None)),
             )
@@ -923,6 +939,7 @@ impl Render for PairingView {
                     .relative()
                     .flex_1()
                     .min_h_0()
+                    .bg(p.surface_pane())
                     .child(
                         self.scroll
                             .viewport("pairing-content")

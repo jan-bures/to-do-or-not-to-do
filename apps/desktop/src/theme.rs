@@ -2,12 +2,41 @@
 //! modules. Nothing else in the app hard-codes a colour, a font family, a size or a duration; it all comes
 //! from here, and everything here comes from `todo_design`.
 
-use gpui::{FontWeight, Hsla, Styled, px, rgb};
+use gpui::{FontWeight, Hsla, Styled, WindowBackgroundAppearance, px, rgb};
 use todo_design::Rgb;
 pub use todo_design::Theme;
 pub use todo_design::layout::{component, desktop, elevation, radius, space};
 pub use todo_design::typography as ty;
 pub use todo_design::{Glyph, Icon, chrome, hues, landscape, motion};
+
+/// Whether Windows acrylic translucent materials are active for a window.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Material {
+    /// Translucent room-hued layers over the Windows system acrylic backdrop.
+    Acrylic,
+    /// Solid Daybreak surfaces (when Windows Transparency effects are off or High Contrast is on).
+    #[default]
+    Opaque,
+}
+
+impl Material {
+    /// Reads Windows' transparency and accessibility settings for live app windows.
+    pub fn system() -> Self {
+        if crate::platform::win::transparency_enabled() {
+            Self::Acrylic
+        } else {
+            Self::Opaque
+        }
+    }
+
+    /// Matching GPUI window backdrop appearance.
+    pub const fn window_background(self) -> WindowBackgroundAppearance {
+        match self {
+            Self::Acrylic => WindowBackgroundAppearance::Blurred,
+            Self::Opaque => WindowBackgroundAppearance::Opaque,
+        }
+    }
+}
 
 /// A hue in OKLCH degrees, as `todo_design` takes it.
 pub type Hue = f64;
@@ -52,6 +81,7 @@ pub fn mix(a: Hsla, b: Hsla, t: f32) -> Hsla {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Palette {
     pub theme: Theme,
+    pub material: Material,
     pub canvas: Hsla,
     pub pane: Hsla,
     pub raised: Hsla,
@@ -109,14 +139,105 @@ impl Palette {
     pub fn night(&self) -> bool {
         self.theme == Theme::Dark
     }
+
+    /// Opacity of the room-hued `canvas` chrome (title bar, sidebar, status bar).
+    pub fn canvas_alpha(&self) -> f32 {
+        match (self.material, self.theme) {
+            (Material::Opaque, _) => 1.0,
+            (Material::Acrylic, Theme::Light) => chrome::ACRYLIC_CANVAS_LIGHT,
+            (Material::Acrylic, Theme::Dark) => chrome::ACRYLIC_CANVAS_DARK,
+        }
+    }
+
+    /// Opacity of the room header `sky`.
+    pub fn sky_alpha(&self) -> f32 {
+        match (self.material, self.theme) {
+            (Material::Opaque, _) => 1.0,
+            (Material::Acrylic, Theme::Light) => chrome::ACRYLIC_SKY_LIGHT,
+            (Material::Acrylic, Theme::Dark) => chrome::ACRYLIC_SKY_DARK,
+        }
+    }
+
+    /// Opacity of primary reading panes (`pane`).
+    pub fn pane_alpha(&self) -> f32 {
+        match (self.material, self.theme) {
+            (Material::Opaque, _) => 1.0,
+            (Material::Acrylic, Theme::Light) => chrome::ACRYLIC_PANE_LIGHT,
+            (Material::Acrylic, Theme::Dark) => chrome::ACRYLIC_PANE_DARK,
+        }
+    }
+
+    /// Opacity of controls and hover fills sitting on the acrylic chrome.
+    pub fn control_alpha(&self) -> f32 {
+        match (self.material, self.theme) {
+            (Material::Opaque, _) => 1.0,
+            (Material::Acrylic, Theme::Light) => chrome::ACRYLIC_CONTROL_LIGHT,
+            (Material::Acrylic, Theme::Dark) => chrome::ACRYLIC_CONTROL_DARK,
+        }
+    }
+
+    /// Opacity of the finished dusk scene over Windows acrylic.
+    pub fn dusk_alpha(&self) -> f32 {
+        match self.material {
+            Material::Opaque => 1.0,
+            Material::Acrylic => chrome::ACRYLIC_DUSK,
+        }
+    }
+
+    /// Window chrome fill (title bar, sidebar, status bar).
+    pub fn surface_canvas(&self) -> Hsla {
+        with_alpha(self.canvas, self.canvas_alpha())
+    }
+
+    /// Header sky fill.
+    pub fn surface_sky(&self) -> Hsla {
+        with_alpha(self.sky, self.sky_alpha())
+    }
+
+    /// Dark-theme horizon band fill, matching the sky's material opacity.
+    pub fn surface_horizon(&self) -> Hsla {
+        with_alpha(self.horizon, self.sky_alpha())
+    }
+
+    /// Primary reading pane fill (task list, docked detail, docked assistant, quick-add and pairing bodies).
+    pub fn surface_pane(&self) -> Hsla {
+        with_alpha(self.pane, self.pane_alpha())
+    }
+
+    /// Elevated control resting on the acrylic chrome (title bar filter input, Ask AI button).
+    pub fn surface_control(&self) -> Hsla {
+        match self.material {
+            Material::Opaque => self.pane,
+            Material::Acrylic => with_alpha(self.raised, self.control_alpha()),
+        }
+    }
+
+    /// Hover fill on the acrylic sidebar.
+    pub fn surface_hover(&self) -> Hsla {
+        with_alpha(self.hover, self.control_alpha())
+    }
+
+    /// Selected pill fill on the acrylic chrome (active sidebar row, active title bar controls).
+    pub fn surface_wash(&self) -> Hsla {
+        with_alpha(self.wash, self.pane_alpha())
+    }
 }
 
-/// The palette of a room with hue `room_hue`.
+/// The opaque palette of a room with hue `room_hue`.
 pub fn palette(theme: Theme, room_hue: Hue) -> Palette {
-    let t = todo_design::palette(theme, room_hue);
+    palette_with_material(theme, room_hue, Material::Opaque)
+}
+
+/// The palette of a room with hue `room_hue` and the chosen Windows window material.
+pub fn palette_with_material(theme: Theme, room_hue: Hue, material: Material) -> Palette {
+    let t = match material {
+        Material::Acrylic => todo_design::palette_acrylic(theme, room_hue),
+        Material::Opaque => todo_design::palette(theme, room_hue),
+    };
     let scrim = elevation::scrim(theme, t.ink);
     Palette {
         theme,
+        material,
         canvas: color(t.canvas),
         pane: color(t.pane),
         raised: color(t.raised),
@@ -299,6 +420,32 @@ mod tests {
         assert_eq!(p.check_selected, color(t.check_selected));
         // The guard nudges the checked box on a selected row away from plain accent in My Day.
         assert_ne!(p.check_selected, p.accent);
+        assert_eq!(p.surface_canvas().a, 1.0);
+        assert_eq!(p.surface_pane().a, 1.0);
+    }
+
+    #[test]
+    fn acrylic_material_applies_token_opacities_for_both_themes() {
+        let light = palette_with_material(Theme::Light, hues::MY_DAY, Material::Acrylic);
+        assert_eq!(light.surface_canvas().a, chrome::ACRYLIC_CANVAS_LIGHT);
+        assert_eq!(light.surface_sky().a, chrome::ACRYLIC_SKY_LIGHT);
+        assert_eq!(light.surface_pane().a, chrome::ACRYLIC_PANE_LIGHT);
+        assert_eq!(light.surface_control().a, chrome::ACRYLIC_CONTROL_LIGHT);
+        assert_eq!(light.dusk_alpha(), chrome::ACRYLIC_DUSK);
+
+        let dark = palette_with_material(Theme::Dark, hues::MY_DAY, Material::Acrylic);
+        assert_eq!(dark.surface_canvas().a, chrome::ACRYLIC_CANVAS_DARK);
+        assert_eq!(dark.surface_sky().a, chrome::ACRYLIC_SKY_DARK);
+        assert_eq!(dark.surface_pane().a, chrome::ACRYLIC_PANE_DARK);
+        assert_eq!(dark.surface_control().a, chrome::ACRYLIC_CONTROL_DARK);
+        assert_eq!(
+            Material::Acrylic.window_background(),
+            WindowBackgroundAppearance::Blurred
+        );
+        assert_eq!(
+            Material::Opaque.window_background(),
+            WindowBackgroundAppearance::Opaque
+        );
     }
 
     #[test]

@@ -23,7 +23,8 @@ use crate::model::{Smart, lists};
 use crate::platform::win;
 use crate::store::Store;
 use crate::theme::{
-    self, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
+    self, Icon, Material, Palette, TextStyled, Theme, component, desktop, elevation, radius, space,
+    ty,
 };
 
 /// The window's logical size.
@@ -68,7 +69,7 @@ impl QuickAddView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let palette = theme::palette(theme, Smart::MyDay.hue());
+        let palette = theme::palette_with_material(theme, Smart::MyDay.hue(), Material::system());
         let input = cx.new(|cx| {
             let mut input = TextInput::new("Add a task to My Day…", quick_add_colors(&palette), cx);
             if let Some(t) = typed {
@@ -124,6 +125,24 @@ impl QuickAddView {
 
     pub fn input(&self) -> &Entity<TextInput> {
         &self.input
+    }
+
+    pub fn set_material(
+        &mut self,
+        material: Material,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.set_background_appearance(material.window_background());
+        if self.palette.material != material {
+            self.palette = theme::palette_with_material(self.theme, Smart::MyDay.hue(), material);
+            let colors = quick_add_colors(&self.palette);
+            self.input.update(cx, |i, cx| {
+                i.colors = colors;
+                cx.notify();
+            });
+            cx.notify();
+        }
     }
 
     /// Updates the suggested destination and the sun when the replica changes.
@@ -253,7 +272,6 @@ impl Render for QuickAddView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.pane)
             .border(px(elevation::HAIRLINE))
             .border_color(p.line_strong)
             .style(ty::BODY)
@@ -261,9 +279,9 @@ impl Render for QuickAddView {
             .child(
                 div()
                     .flex_none()
-                    .bg(p.sky)
                     .child(
                         div()
+                            .bg(p.surface_sky())
                             .pt(px(space::S3 + 2.))
                             .px(px(space::S5))
                             .flex()
@@ -304,33 +322,40 @@ impl Render for QuickAddView {
             .child(div().h(px(elevation::HAIRLINE)).bg(p.line))
             .child(
                 div()
-                    .px(px(space::S4 - elevation::FOCUS_RING))
-                    .pt(px(space::S4 - elevation::FOCUS_RING))
+                    .flex_1()
+                    .flex()
+                    .flex_col()
+                    .bg(p.surface_pane())
                     .child(
                         div()
-                            .p(px(elevation::FOCUS_RING))
-                            .rounded(px(radius::QUICK_ADD + elevation::FOCUS_RING))
-                            .bg(if active {
-                                p.tint
-                            } else {
-                                gpui::transparent_black()
-                            })
-                            .child(field),
+                            .px(px(space::S4 - elevation::FOCUS_RING))
+                            .pt(px(space::S4 - elevation::FOCUS_RING))
+                            .child(
+                                div()
+                                    .p(px(elevation::FOCUS_RING))
+                                    .rounded(px(radius::QUICK_ADD + elevation::FOCUS_RING))
+                                    .bg(if active {
+                                        p.tint
+                                    } else {
+                                        gpui::transparent_black()
+                                    })
+                                    .child(field),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .px(px(space::S5))
+                            .pt(px(space::S2))
+                            .flex()
+                            .gap(px(space::S4 + 2.))
+                            .style(ty::META)
+                            .text_color(p.ink_3)
+                            .child(hint("Enter", "add"))
+                            .child(hint("Esc", "close"))
+                            .when(self.hotkey, |row| {
+                                row.child(hint("Ctrl Alt Space", "from anywhere"))
+                            }),
                     ),
-            )
-            .child(
-                div()
-                    .px(px(space::S5))
-                    .pt(px(space::S2))
-                    .flex()
-                    .gap(px(space::S4 + 2.))
-                    .style(ty::META)
-                    .text_color(p.ink_3)
-                    .child(hint("Enter", "add"))
-                    .child(hint("Esc", "close"))
-                    .when(self.hotkey, |row| {
-                        row.child(hint("Ctrl Alt Space", "from anywhere"))
-                    }),
             )
     }
 }
@@ -470,6 +495,7 @@ pub fn window_options(cx: &App) -> WindowOptions {
         focus: false,
         show: false,
         kind: WindowKind::PopUp,
+        window_background: Material::system().window_background(),
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,

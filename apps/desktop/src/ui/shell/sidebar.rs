@@ -356,8 +356,9 @@ impl ShellView {
     fn nav_row(&self, key: RoomKey, on: bool, el: Div) -> Div {
         let p = &self.palette;
         let alpha = self.motion.sidebar.ring(key, on, self.frame);
+        let selected_bg = p.surface_wash();
         el.relative()
-            .bg(theme::with_alpha(p.wash, alpha))
+            .bg(theme::with_alpha(selected_bg, selected_bg.a * alpha))
             .border(px(elevation::HAIRLINE))
             .border_color(theme::with_alpha(p.line, alpha))
             .child(kit::leading_rail(
@@ -383,7 +384,7 @@ impl ShellView {
         cx: &mut Context<Self>,
         f: impl Fn(&mut Self, &ClickEvent, &mut Window, &mut Context<Self>) + 'static,
     ) -> Stateful<Div> {
-        let hover = self.palette.hover;
+        let hover = self.palette.surface_hover();
         el.id(id)
             .when(!on, |el| el.hover(move |s| s.bg(hover)))
             .on_click(cx.listener(f))
@@ -996,7 +997,7 @@ impl ShellView {
             .h_full()
             .flex()
             .flex_col()
-            .bg(p.canvas)
+            .bg(p.surface_canvas())
             .border_r_1()
             .border_color(p.line)
             .child(

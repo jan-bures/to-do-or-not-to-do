@@ -63,7 +63,8 @@ use crate::model::{
 use crate::platform::win;
 use crate::store::Store;
 use crate::theme::{
-    self, Hue, Icon, Palette, TextStyled, Theme, component, desktop, elevation, radius, space, ty,
+    self, Hue, Icon, Material, Palette, TextStyled, Theme, component, desktop, elevation, radius,
+    space, ty,
 };
 use detail::Editors;
 use menu::{Menu, MenuKind, TaskPage};
@@ -265,6 +266,7 @@ pub struct ShellView {
     shell: Shell,
     my_day_progress: model::MyDayProgress,
     theme: Theme,
+    material: Material,
     palette: Palette,
     painted_hue: Hue,
     landscape: HeaderCache,
@@ -411,7 +413,8 @@ impl ShellView {
         let mut my_day_progress = model::MyDayProgress::default();
         my_day_progress.update(&state, now.today());
         let shell = model::derive(&state, &ui, &store.sync(), &now);
-        let palette = theme::palette(theme, shell.room.hue);
+        let material = Material::system();
+        let palette = theme::palette_with_material(theme, shell.room.hue, material);
         let placeholder = shell.room.quick_add_placeholder.clone();
         let quick_add = cx.new(|cx| {
             let mut input = TextInput::new(placeholder, quick_add_colors(&palette), cx);
@@ -512,6 +515,7 @@ impl ShellView {
             shell,
             my_day_progress,
             theme,
+            material,
             palette,
             painted_hue,
             landscape: HeaderCache::default(),
@@ -1752,13 +1756,24 @@ impl ShellView {
         self.closing = None;
     }
 
+    pub fn set_material(&mut self, material: Material, cx: &mut Context<Self>) {
+        if self.material != material {
+            self.material = material;
+            self.paint_palette(cx);
+            cx.notify();
+        }
+    }
+
     fn paint_palette(&mut self, cx: &mut Context<Self>) {
         let hue = self.motion.navigation.hue(self.frame, self.shell.room.hue);
-        if hue == self.painted_hue && self.palette.theme == self.theme {
+        if hue == self.painted_hue
+            && self.palette.theme == self.theme
+            && self.palette.material == self.material
+        {
             return;
         }
         self.painted_hue = hue;
-        self.palette = theme::palette(self.theme, hue);
+        self.palette = theme::palette_with_material(self.theme, hue, self.material);
         self.ai.set_colors(&self.palette, cx);
         let colors = quick_add_colors(&self.palette);
         for input in [&self.quick_add, &self.filter, &self.edit.link] {
@@ -2376,7 +2391,7 @@ impl ShellView {
             .flex_none()
             .flex()
             .items_center()
-            .bg(p.canvas)
+            .bg(p.surface_canvas())
             .child(
                 div()
                     .flex_1()
@@ -2415,7 +2430,11 @@ impl ShellView {
                         .rounded(px(radius::MD))
                         .border(px(elevation::HAIRLINE))
                         .border_color(if focused { p.accent_strong } else { p.control })
-                        .bg(if filtering { p.wash } else { p.pane })
+                        .bg(if filtering {
+                            p.surface_wash()
+                        } else {
+                            p.surface_control()
+                        })
                         .when(focused, |d| {
                             d.shadow(vec![gpui::BoxShadow {
                                 color: p.tint,
@@ -2831,7 +2850,11 @@ impl ShellView {
         // The everyday strip, the finished day's dusk scene, or the dusk falling or lifting between them.
         let look = self.motion.dusk(self.frame);
         let dusk = theme::dusk(self.painted_hue);
-        let sky_bg = theme::mix(p.sky, dusk.top, look.scene());
+        let sky_bg = theme::mix(
+            p.surface_sky(),
+            theme::with_alpha(dusk.top, p.dusk_alpha()),
+            look.scene(),
+        );
         let title_ink = if look.night_ink() {
             theme::palette(Theme::Dark, self.painted_hue).ink
         } else {
@@ -2908,9 +2931,9 @@ impl ShellView {
             .relative()
             .flex()
             .flex_col()
-            .bg(sky_bg)
             .child(
                 div()
+                    .bg(sky_bg)
                     .pt(px(desktop::HEADER_PAD_TOP))
                     .pb(px(space::S2))
                     .px(px(desktop::LIST_PAD_X))
@@ -3029,7 +3052,6 @@ impl ShellView {
             .flex_none()
             .h(px(current_h))
             .overflow_hidden()
-            .bg(sky_bg)
             .when(expanded_alpha > 0., |d| {
                 d.child(
                     expanded
@@ -3094,7 +3116,7 @@ impl ShellView {
             } else {
                 p.control
             })
-            .bg(if quiet { p.pane } else { p.raised })
+            .when(!quiet, |field| field.bg(p.raised))
             .style(ty::QUICK_ADD)
             .child(kit::icon(
                 Icon::Plus,
@@ -4817,7 +4839,7 @@ impl ShellView {
             .px(px(space::S4))
             .border_t_1()
             .border_color(p.line)
-            .bg(p.canvas)
+            .bg(p.surface_canvas())
             .style(ty::COUNT)
             .text_color(p.ink_3)
             .child(
@@ -5214,7 +5236,6 @@ impl Render for ShellView {
             .size_full()
             .flex()
             .flex_col()
-            .bg(p.canvas)
             .style(ty::BODY)
             .text_color(p.ink)
             .child(self.titlebar(window, cx))
@@ -5235,7 +5256,6 @@ impl Render for ShellView {
                             .h_full()
                             .flex()
                             .flex_col()
-                            .bg(p.pane)
                             .child(
                                 div()
                                     .relative()
@@ -5244,46 +5264,71 @@ impl Render for ShellView {
                                     .flex()
                                     .flex_col()
                                     .child(self.header(window, cx))
-                                    .child(quick_add)
                                     .child(
                                         div()
-                                            .id("room-body-scroll")
                                             .flex_1()
                                             .min_h_0()
                                             .flex()
                                             .flex_col()
-                                            .on_scroll(cx.listener(
-                                                |this, e: &gpui::ScrollEvent, _, cx| {
-                                                    let Some((scroll_y, max_scroll, empty)) =
-                                                        this.scroll_metrics()
-                                                    else {
-                                                        return;
-                                                    };
-                                                    if empty {
-                                                        return;
-                                                    }
-                                                    let dy = f32::from(
-                                                        e.delta.pixel_delta(px(desktop::ROW)).y,
-                                                    );
-                                                    let (now, pace) = (this.now(), this.pace());
-                                                    if this.header_collapse.on_wheel(
-                                                        dy,
-                                                        scroll_y,
-                                                        max_scroll,
-                                                        now,
-                                                        pace,
-                                                        this.animate,
-                                                    ) {
-                                                        cx.notify();
-                                                    }
-                                                },
-                                            ))
-                                            .child(room_body),
+                                            .bg(p.surface_pane())
+                                            .child(quick_add)
+                                            .child(
+                                                div()
+                                                    .id("room-body-scroll")
+                                                    .flex_1()
+                                                    .min_h_0()
+                                                    .flex()
+                                                    .flex_col()
+                                                    .on_scroll(
+                                                        cx.listener(
+                                                            |this, e: &gpui::ScrollEvent, _, cx| {
+                                                                let Some((
+                                                                    scroll_y,
+                                                                    max_scroll,
+                                                                    empty,
+                                                                )) = this.scroll_metrics()
+                                                                else {
+                                                                    return;
+                                                                };
+                                                                if empty {
+                                                                    return;
+                                                                }
+                                                                let dy = f32::from(
+                                                                    e.delta
+                                                                        .pixel_delta(px(
+                                                                            desktop::ROW,
+                                                                        ))
+                                                                        .y,
+                                                                );
+                                                                let (now, pace) =
+                                                                    (this.now(), this.pace());
+                                                                if this.header_collapse.on_wheel(
+                                                                    dy,
+                                                                    scroll_y,
+                                                                    max_scroll,
+                                                                    now,
+                                                                    pace,
+                                                                    this.animate,
+                                                                ) {
+                                                                    cx.notify();
+                                                                }
+                                                            },
+                                                        ),
+                                                    )
+                                                    .child(room_body),
+                                            ),
                                     )
                                     .children(overlay.into_iter().flatten()),
                             )
-                            .children(self.bulk_bar(window, cx))
-                            .child(footer),
+                            .child(
+                                div()
+                                    .flex_none()
+                                    .flex()
+                                    .flex_col()
+                                    .bg(p.surface_pane())
+                                    .children(self.bulk_bar(window, cx))
+                                    .child(footer),
+                            ),
                     )
                     .children(detail)
                     .child(self.pane_handle(Pane::Sidebar, window, cx))

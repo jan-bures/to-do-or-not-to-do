@@ -982,25 +982,66 @@ impl PlatformWindow for WindowsWindow {
         self.state.background_appearance.set(background_appearance);
         let hwnd = self.0.hwnd;
 
-        // using Dwm APIs for Mica and MicaAlt backdrops.
-        // others follow the set_window_composition_attribute approach
+        let hide_title_bar = self.0.hide_title_bar;
+        let is_fullscreen = self.state.is_fullscreen();
+
+        // TO-DO PATCH (acrylic): on Windows 11 22H2+ (build 22621+), use native DWM system
+        // backdrops (`DWMSBT_TRANSIENTWINDOW` for Acrylic, `DWMSBT_MAINWINDOW` for Mica,
+        // `DWMSBT_TABBEDWINDOW` for Mica Alt) with `DwmExtendFrameIntoClientArea(-1)` so the
+        // backdrop spans the entire client area without SetWindowCompositionAttribute drag stutter
+        // or square-corner artifacts. Older builds fall back to `SetWindowCompositionAttribute`.
         match background_appearance {
             WindowBackgroundAppearance::Opaque => {
-                set_window_composition_attribute(hwnd, None, 0);
+                if !dwm_set_system_backdrop(
+                    hwnd,
+                    DWMSBT_NONE.0 as u32,
+                    false,
+                    hide_title_bar,
+                    is_fullscreen,
+                ) {
+                    set_window_composition_attribute(hwnd, None, 0);
+                }
             }
             WindowBackgroundAppearance::Transparent => {
+                let _ = dwm_set_system_backdrop(
+                    hwnd,
+                    DWMSBT_NONE.0 as u32,
+                    false,
+                    hide_title_bar,
+                    is_fullscreen,
+                );
                 set_window_composition_attribute(hwnd, None, 2);
             }
             WindowBackgroundAppearance::Blurred => {
-                set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
+                if !dwm_set_system_backdrop(
+                    hwnd,
+                    DWMSBT_TRANSIENTWINDOW.0 as u32,
+                    true,
+                    hide_title_bar,
+                    is_fullscreen,
+                ) {
+                    set_window_composition_attribute(hwnd, Some((0, 0, 0, 0)), 4);
+                }
             }
             WindowBackgroundAppearance::MicaBackdrop => {
                 // DWMSBT_MAINWINDOW => MicaBase
-                dwm_set_window_composition_attribute(hwnd, 2);
+                let _ = dwm_set_system_backdrop(
+                    hwnd,
+                    DWMSBT_MAINWINDOW.0 as u32,
+                    true,
+                    hide_title_bar,
+                    is_fullscreen,
+                );
             }
             WindowBackgroundAppearance::MicaAltBackdrop => {
                 // DWMSBT_TABBEDWINDOW => MicaAlt
-                dwm_set_window_composition_attribute(hwnd, 4);
+                let _ = dwm_set_system_backdrop(
+                    hwnd,
+                    DWMSBT_TABBEDWINDOW.0 as u32,
+                    true,
+                    hide_title_bar,
+                    is_fullscreen,
+                );
             }
         }
     }
@@ -1727,17 +1768,69 @@ fn retrieve_window_placement(
     Ok(placement)
 }
 
-fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) {
+// TO-DO PATCH (acrylic): apply Windows 11 DWM system backdrops across the full client area.
+fn dwm_set_system_backdrop(
+    hwnd: HWND,
+    backdrop_type: u32,
+    extend_frame: bool,
+    hide_title_bar: bool,
+    is_fullscreen: bool,
+) -> bool {
     let mut version = unsafe { std::mem::zeroed() };
     let status = unsafe { windows::Wdk::System::SystemServices::RtlGetVersion(&mut version) };
 
-    // DWMWA_SYSTEMBACKDROP_TYPE is available only on version 22621 or later
-    // using SetWindowCompositionAttributeType as a fallback
+    // DWMWA_SYSTEMBACKDROP_TYPE is available only on version 22621 or later;
+    // callers fall back to SetWindowCompositionAttribute on older builds.
     if !status.is_ok() || version.dwBuildNumber < 22621 {
-        return;
+        return false;
     }
 
+    let margins = if extend_frame {
+        MARGINS {
+            cxLeftWidth: -1,
+            cxRightWidth: -1,
+            cyTopHeight: -1,
+            cyBottomHeight: -1,
+        }
+    } else {
+        MARGINS {
+            cxLeftWidth: 0,
+            cxRightWidth: 0,
+            cyTopHeight: 0,
+            cyBottomHeight: 0,
+        }
+    };
+
     unsafe {
+        // When `DwmExtendFrameIntoClientArea(-1)` is active on a window with `WS_CAPTION` and
+        // `WS_SYSMENU`, DWM paints its native minimize/maximize/close glyphs onto the extended
+        // frame behind our translucent custom title bar. Clearing `WS_SYSMENU` on custom-titlebar
+        // windows drops DWM's native caption buttons to zero width while keeping `WS_CAPTION`,
+        // `WS_THICKFRAME`, `WS_MINIMIZEBOX`, and `WS_MAXIMIZEBOX` intact (preserving exact
+        // `WM_NCCALCSIZE` frame insets, native rounded corners, drop shadow, Aero Snap, and
+        // Snap Layouts via `HTMAXBUTTON`; caption clicks are already handled in `events.rs`).
+        let style = get_window_long(hwnd, GWL_STYLE) as u32;
+        if hide_title_bar && !is_fullscreen && (style & WS_POPUP.0) == 0 {
+            let desired = if extend_frame {
+                style & !WS_SYSMENU.0
+            } else {
+                style | WS_SYSMENU.0
+            };
+            if desired != style {
+                set_window_long(hwnd, GWL_STYLE, desired as isize);
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE,
+                );
+            }
+        }
+
+        let _ = DwmExtendFrameIntoClientArea(hwnd, &margins);
         let result = DwmSetWindowAttribute(
             hwnd,
             DWMWA_SYSTEMBACKDROP_TYPE,
@@ -1745,8 +1838,21 @@ fn dwm_set_window_composition_attribute(hwnd: HWND, backdrop_type: u32) {
             std::mem::size_of_val(&backdrop_type) as u32,
         );
 
-        if !result.is_ok() {
-            return;
+        if result.is_ok() {
+            // Give frameless popup windows (such as Quick Add) native Windows 11 rounded corners
+            // so the acrylic backdrop and drop shadow clip cleanly to the popup frame.
+            if extend_frame && !is_fullscreen && (style & WS_POPUP.0) != 0 {
+                let corner = DWMWCP_ROUND;
+                let _ = DwmSetWindowAttribute(
+                    hwnd,
+                    DWMWA_WINDOW_CORNER_PREFERENCE,
+                    &corner as *const _ as *const _,
+                    std::mem::size_of_val(&corner) as u32,
+                );
+            }
+            true
+        } else {
+            false
         }
     }
 }

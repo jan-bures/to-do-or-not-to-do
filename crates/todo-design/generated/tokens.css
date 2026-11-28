@@ -361,6 +361,15 @@
   --caption-pressed-dark: 0.06;
   --scrollbar-alpha: 0.26;
   --scrollbar-hover-alpha: 0.52;
+  --acrylic-canvas-light: 0.66;
+  --acrylic-canvas-dark: 0.62;
+  --acrylic-sky-light: 0.78;
+  --acrylic-sky-dark: 0.76;
+  --acrylic-pane-light: 0.88;
+  --acrylic-pane-dark: 0.84;
+  --acrylic-control-light: 0.74;
+  --acrylic-control-dark: 0.7;
+  --acrylic-dusk: 0.94;
 }
 
 [data-theme="light"] {

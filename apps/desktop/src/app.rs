@@ -22,7 +22,7 @@ use crate::platform::autostart::Autostart;
 use crate::platform::single_instance::{self, Instance};
 use crate::platform::tray::{self, TrayAction};
 use crate::platform::{hotkey, win};
-use crate::theme::Theme;
+use crate::theme::{Material, Theme};
 use crate::ui::quick_add::{self, QuickAddEvent, QuickAddView};
 use crate::ui::root::{self, RootView};
 use crate::ui::shell;
@@ -76,6 +76,7 @@ fn main_window_options(cx: &App, show: bool) -> WindowOptions {
         }),
         focus: show,
         show,
+        window_background: Material::system().window_background(),
         window_min_size: Some(size(px(MIN_WINDOW.0), px(MIN_WINDOW.1))),
         app_id: Some("to-do-or-not-to-do".into()),
         ..WindowOptions::default()
@@ -334,7 +335,9 @@ fn wire_windows(
 ) {
     let _ = main.update(cx, |_, window, cx| {
         let mut inactive_since = (!window.is_window_active()).then(Instant::now);
-        cx.observe_window_activation(window, move |_, window, _| {
+        cx.observe_window_activation(window, move |root, window, cx| {
+            let material = Material::system();
+            root.set_material(material, window, cx);
             if window.is_window_active() {
                 if inactive_since
                     .take()
@@ -380,8 +383,10 @@ fn wire_windows(
             }
         })
         .detach();
-        cx.observe_window_activation(window, move |_, window, _| {
-            if !window.is_window_active() {
+        cx.observe_window_activation(window, move |view, window, cx| {
+            if window.is_window_active() {
+                view.set_material(Material::system(), window, cx);
+            } else {
                 win::hide(hwnds.quick);
             }
         })

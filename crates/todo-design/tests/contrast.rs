@@ -344,3 +344,76 @@ fn every_hue_passes() {
         failures.join("\n")
     );
 }
+
+fn composite_srgb(fg: Rgb, alpha: f32, bg: Rgb) -> Rgb {
+    let a = f64::from(alpha);
+    let mix = |f: u8, b: u8| (f64::from(f) * a + f64::from(b) * (1.0 - a)).round() as u8;
+    Rgb {
+        r: mix(fg.r, bg.r),
+        g: mix(fg.g, bg.g),
+        b: mix(fg.b, bg.b),
+    }
+}
+
+/// Windows 11 system acrylic (`DWMSBT_TRANSIENTWINDOW`) applies its own light/dark luminosity layer behind
+/// the window. Verify that compositing our acrylic-tinted chrome, sky and reading panes over conservative
+/// worst-case light/dark backdrops preserves WCAG text and control contrast across every room hue.
+#[test]
+fn windows_acrylic_surfaces_preserve_contrast_across_the_hue_wheel() {
+    use todo_design::chrome;
+    use todo_design::palette::{ACRYLIC_BACKDROP_DARK, ACRYLIC_BACKDROP_LIGHT, palette_acrylic};
+
+    let mut failures = Vec::new();
+    for theme in Theme::ALL {
+        let (backdrop, canvas_a, sky_a, pane_a) = match theme {
+            Theme::Light => (
+                ACRYLIC_BACKDROP_LIGHT,
+                chrome::ACRYLIC_CANVAS_LIGHT,
+                chrome::ACRYLIC_SKY_LIGHT,
+                chrome::ACRYLIC_PANE_LIGHT,
+            ),
+            Theme::Dark => (
+                ACRYLIC_BACKDROP_DARK,
+                chrome::ACRYLIC_CANVAS_DARK,
+                chrome::ACRYLIC_SKY_DARK,
+                chrome::ACRYLIC_PANE_DARK,
+            ),
+        };
+        for hue in 0..360 {
+            let t = palette_acrylic(theme, f64::from(hue));
+            let canvas = composite_srgb(t.canvas, canvas_a, backdrop);
+            let sky = composite_srgb(t.sky, sky_a, backdrop);
+            let pane = composite_srgb(t.pane, pane_a, backdrop);
+            for (name, fg, bg, target) in [
+                ("ink/acrylic-canvas", t.ink, canvas, 4.5),
+                ("ink-2/acrylic-canvas", t.ink_2, canvas, 4.5),
+                ("ink-3/acrylic-canvas", t.ink_3, canvas, 4.5),
+                ("ink/acrylic-pane", t.ink, pane, 4.5),
+                ("ink-2/acrylic-pane", t.ink_2, pane, 4.5),
+                ("ink-3/acrylic-pane", t.ink_3, pane, 4.5),
+                ("accent-strong/acrylic-pane", t.accent_strong, pane, 4.5),
+                ("control/acrylic-pane", t.control, pane, 3.0),
+                ("accent/acrylic-pane", t.accent, pane, 3.0),
+                ("danger/acrylic-pane", t.danger, pane, 3.0),
+                ("ink-2/acrylic-sky", t.ink_2, sky, 4.5),
+                ("accent-strong/acrylic-sky", t.accent_strong, sky, 4.5),
+                ("arc/acrylic-sky", t.arc, sky, 3.0),
+                ("sun-ink/acrylic-sky", t.sun_ink, sky, 3.0),
+            ] {
+                let ratio = fg.contrast(bg);
+                if ratio < target {
+                    failures.push(format!(
+                        "{} hue {hue}: {name} {ratio:.2}:1 (< {target:.1}:1)",
+                        theme.key()
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        failures.is_empty(),
+        "{} acrylic contrast failures:\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+}

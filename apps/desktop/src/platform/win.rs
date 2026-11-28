@@ -358,6 +358,32 @@ pub fn reduced_motion() -> bool {
     ok != 0 && animate == 0
 }
 
+/// Whether Windows acrylic translucency should be active: enabled unless DirectComposition is disabled,
+/// High Contrast accessibility mode is on, or the user turned off Transparency effects in Windows Settings.
+pub fn transparency_enabled() -> bool {
+    if std::env::var_os("GPUI_DISABLE_DIRECT_COMPOSITION").is_some() {
+        return false;
+    }
+    if high_contrast_enabled() {
+        return false;
+    }
+    let key = windows_registry::CURRENT_USER
+        .open(r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize");
+    match key.and_then(|k| k.get_u32("EnableTransparency")) {
+        Ok(0) => false,
+        Ok(_) | Err(_) => true,
+    }
+}
+
+fn high_contrast_enabled() -> bool {
+    // Bit 0 of `Control Panel\Accessibility\HighContrast\Flags` is `HCF_HIGHCONTRASTON` (0x1).
+    let key = windows_registry::CURRENT_USER.open(r"Control Panel\Accessibility\HighContrast");
+    key.and_then(|k| k.get_string("Flags"))
+        .ok()
+        .and_then(|flags| flags.trim().parse::<u32>().ok())
+        .is_some_and(|flags| (flags & 1) != 0)
+}
+
 /// App builds are GUI-subsystem executables. When started from a terminal, write `--help`, errors
 /// and benchmark output there.
 pub fn attach_parent_console() {
